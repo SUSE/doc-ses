@@ -1,0 +1,400 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE chapter PUBLIC "-//Novell//DTD NovDoc XML V1.0//EN"
+"novdocx.dtd"
+[
+  <!ENTITY % NOVDOC.DEACTIVATE.IDREF "INCLUDE">
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+  %entities;
+]>
+<chapter id="cha.ceph.tiered">
+ <title>Cache Tiering</title>
+ <para>
+   In the context of &ceph; <quote>tiered storage</quote> is implemented
+   as a cache tier.
+ </para>
+
+ <para>
+   <!-- reusing
+   http://docs.ceph.com/docs/master/rados/operations/cache-tiering/ -->
+A cache tier provides &ceph; Clients with better I/O performance for a
+subset of the data stored in a backing storage tier. Cache tiering
+involves creating a pool of relatively fast/expensive storage devices
+(e.g., solid state drives) configured to act as a cache tier, and a
+backing pool of either erasure-coded or relatively slower/cheaper
+devices configured to act as an economical storage tier. The &ceph;
+objecter handles where to place the objects and the tiering agent
+determines when to flush objects from the cache to the backing storage
+tier. So the cache tier and the backing storage tier are completely
+transparent to &ceph; clients.
+ </para>
+
+ <sect1 id="sec.ceph.tiered.cachemodes">
+  <title>Cache Modes</title>
+ <para>
+The cache tiering agent handles the migration of data between the cache
+tier and the backing storage tier. Administrators have the ability to
+configure how this migration takes place. There are two main scenarios:
+ </para>
+ <variablelist>
+   <varlistentry>
+    <term>Write-back Mode</term>
+    <listitem>
+     <para>
+      When administrators configure tiers with write-back mode, &ceph;
+      clients write data to the cache tier and receive an ACK from the
+      cache tier. In time, the data written to the cache tier migrates
+      to the storage tier and gets flushed from the cache
+      tier. Conceptually, the cache tier is overlaid <quote>in
+      front</quote> of the backing storage tier. When a &ceph; client
+      needs data that resides in the storage tier, the cache tiering
+      agent migrates the data to the cache tier on read, then it is sent
+      to the &ceph; client. Thereafter, the &ceph; client can perform I/O
+      using the cache tier, until the data becomes inactive. This is
+      ideal for mutable data such as photo or video editing, transactional
+      data, etc.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Read-only Mode</term>
+    <listitem>
+     <para>
+      When administrators configure tiers with read-only mode, &ceph;
+      clients write data to the backing tier. On read, &ceph; copies the
+      requested objects from the backing tier to the cache tier. Stale
+      objects get removed from the cache tier based on the defined
+      policy. This approach is ideal for immutable data such as
+      presenting pictures or videos on a social network, DNA data, X-Ray
+      imaging, etc., because reading data from a cache pool that might
+      contain out-of-date data provides weak consistency. Do not use
+      read-only mode for mutable data.
+     </para>
+    </listitem>
+   </varlistentry>
+ </variablelist>
+ </sect1>
+ <!-- ============================================================== --> 
+ <sect1>
+  <title>&ceph; Pools in the Context of Tiered Storage</title>
+  <para>
+   For general information on pools, see <xref
+   linkend="ceph.pools"/>.
+  </para>
+  <sect2>
+   <title>The Backing Storage Pool</title>
+   
+   <para>
+    Either a standard storage that stores several copies of an object in
+    the &ceph; Storage Cluster or storage with erasure coding which is a
+    way to store data much more efficiently with a small performance
+    tradeoff.  For erasure coding, see <xref linkend="cha.ceph.erasure"/>.
+   </para>
+   <para>
+    In the context of tiered storage this backing storage pool will also
+    be referred as <quote>cold-storage</quote>.
+   </para>
+  </sect2>
+  <sect2>
+   <title>The Cache Pool</title>
+   <para>
+    For the cache pool you configure standard storage, but you use high
+    performance drives in dedicated servers with their own ruleset.
+
+    See
+    <ulink url="http://docs.ceph.com/docs/master/rados/operations/crush-map/#placing-different-pools-on-different-osds"/>.
+   </para>
+   <para>
+    In the context of tiered storage this cache pool will also be
+    referred as <quote>hot-storage</quote>.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1>
+  <title>Setting Up Tiered Storage</title>
+
+  <para>
+   For <quote>hot-storage</quote> (= cache pool) create OSDs with fast
+   disks.  Then associate a ceph storage pool with them.  Here is a
+   procedure how to do this.
+   </para>
+
+
+   <procedure>
+    <step>
+     <para>
+      Prepare a host machine with fast drives (SSDs).
+     </para>
+    </step>
+
+    <step>
+     <para>
+      Turn the machine into a ceph node.  Install the software and
+      configure the host machine as described in
+      <xref linkend="ceph.install.ceph-deploy.eachnode"/>.  Let's assume
+      that its name is <literal><replaceable>node</replaceable>-4</literal>.
+     </para>
+<!--
+Add the SUSE Enterprise Storage add-on
+zypper ar http://download.suse.de/ibs/Devel:/Storage:/1.0:/Staging/SLE_12/ ceph_staging
+zypper ar http://download.suse.de/ibs/Devel:/Storage:/1.0/SLE_12/ ceph
+
+and install NTP.
+sudo zypper in ntp yast2-ntp-client
+
+and SSH (zypper in openssh)
+
+
+Then run ceph-deploy "node" to actually install needed software on the
+new host machine.
+-->
+    </step>
+    <step>
+     <para>
+      To create four OSDs, call <command>ceph-deploy</command> commands
+      on the administration node as follows, replace
+      <literal><replaceable>node</replaceable>-4</literal> the actual
+      node and <literal><replaceable>device</replaceable></literal> with
+      the actual device name:
+     </para>
+     <!--
+         node: lanner
+         device: vd
+     -->
+<screen>for d in a b c d; do
+  ceph-deploy osd prepare <replaceable>node</replaceable>-4:<replaceable>device</replaceable>${d}
+  ceph-deploy osd activate <replaceable>node</replaceable>-4:<replaceable>device</replaceable>${d}1
+done</screen>
+<para>
+Or call just <command>ceph-deploy osd create</command> in one go.
+</para>
+<para>
+This may result in an entry like this in the CRUSH map:
+</para>
+
+<screen>host <replaceable>node</replaceable>-4 {
+        id -5           # do not change unnecessarily
+        # weight 0.000
+        alg straw
+        hash 0  # rjenkins1
+        item osd.6 weight 0.000
+        item osd.7 weight 0.000
+        item osd.8 weight 0.000
+        item osd.9 weight 0.000
+}</screen>
+    </step>
+    <step>
+     <para>
+      Edit the CRUSH map the hot-storage pool to the OSDs backed by the
+      fast solid-state disks (SSDs).  Define a second hierarchy with a
+      root node for the SSDs (as <quote>root ssd</quote>). Additionally,
+      change the weight and a CRUSH rule for the SSDs.  For more
+      information on CRUSH map, see <ulink
+      url="http://docs.ceph.com/docs/master/rados/operations/crush-map/"/>.
+     </para>
+     <para>
+      Edit the CRUSH map directly with command line tools such as
+      <command>getcrushmap</command> and <command>crushtool</command>:
+     </para>
+     <substeps>
+      <step>
+       <para>
+        Retrieve the current map and save it as <filename>c.map</filename>:
+       </para>
+        <screen>ceph osd getcrushmap -o c.map</screen>
+      </step>
+      <step>
+       <para>
+        Decompile <filename>c.map</filename> and save it as
+        <filename>c.txt</filename>:
+       </para>
+       <screen>crushtool -d c.map -o c.txt</screen>
+      </step>
+      <step>
+       <para>
+        Edit <filename>c.txt</filename>:
+       </para>
+       <screen>host <replaceable>node</replaceable>-4 {
+        id -5           # do not change unnecessarily
+        # weight 4.000
+        alg straw
+        hash 0  # rjenkins1
+        item osd.6 weight 1.000
+        item osd.7 weight 1.000
+        item osd.8 weight 1.000
+        item osd.9 weight 1.000
+}
+root ssd {
+        id -6
+        alg straw
+        hash 0
+        item <replaceable>node</replaceable>-4 weight 4.00
+}
+rule ssd {
+        ruleset 4
+        type replicated
+        min_size 0
+        max_size 4
+        step take ssd
+        step chooseleaf firstn 0 type host
+        step emit
+}
+</screen>
+      </step>
+      <step>
+       <para>
+        Compile the edited <filename>c.txt</filename> file and save it
+        as <filename>ssd.map</filename>:
+       </para>
+       <screen>crushtool -c c.txt -o ssd.map</screen>
+      </step>
+      <step>
+       <para>
+        Finally install <filename>ssd.map</filename> as the new CRUSH map:
+       </para>
+       <screen>ceph osd setcrushmap -i ssd.map</screen>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      Create the hot-storage pool (to be used for cache tiering) and the
+      cold-storage backing pool:
+     </para>
+<screen>ceph osd pool create hot-storage 100 100 replicated replicated_ruleset
+ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+    </step>
+    <step>
+     <para>
+      Set the above defined hot-storage pool to use the SSD rule:
+     </para>
+     <screen>ceph osd pool set hot-storage crush_ruleset 4</screen>
+     <para>
+      For now, the cold-storage pool will stick with default
+      <quote>replicated_ruleset</quote>.
+      <!--
+-=-=-=-=-=-=-=-=-=-=-=-=-=- cut here -=-=-=-=-=-=-=-=-=-=-=-=-=-
+ceph@lanner:~/clean> ceph osd tree
+# id    weight  type name       up/down reweight
+-6      4       root ssd
+-5      4               host lanner-4
+6       1                       osd.6   up      1
+7       1                       osd.7   up      1
+8       1                       osd.8   up      1
+9       1                       osd.9   up      1
+-1      3       root default
+-2      1               host lanner-1
+0       1                       osd.0   up      1
+-3      1               host lanner-2
+1       1                       osd.1   up      1
+-4      1               host lanner-3
+2       1                       osd.2   up      1
+3       0       osd.3   down    0
+4       0       osd.4   down    0
+5       0       osd.5   down    0
+-=-=-=-=-=-=-=-=-=-=-=-=-=- cut here -=-=-=-=-=-=-=-=-=-=-=-=-=-
+      -->
+     </para>
+    </step>
+    <!-- ============================================================ -->
+    <step>
+     <para>
+      Then setting up a cache tier involves associating a backing
+      storage pool with a cache pool, in this case cold-storage (=
+      storage pool) with hot-storage (= cache pool):
+     </para>
+     <screen>ceph osd tier add cold-storage hot-storage</screen>
+    </step>
+    <step>
+     <para>
+      To set the cache mode to <quote>writeback</quote>, execute the following:
+     </para>
+     <screen>ceph osd tier cache-mode hot-storage writeback</screen>
+     <para>For more information about cache modes, see <xref
+     linkend="sec.ceph.tiered.cachemodes"/></para>
+     <para>
+      Writeback cache tiers overlay the backing storage tier, so they
+      require one additional step: you must direct all client traffic
+      from the storage pool to the cache pool. To direct client traffic
+      directly to the cache pool, execute the following for example:
+     </para>
+     <screen>ceph osd tier set-overlay cold-storage hot-storage</screen>
+    </step>
+   </procedure>
+
+   <para>
+    For detailed information about configuring a cache tier, see <ulink
+    url="http://docs.ceph.com/docs/master/rados/operations/cache-tiering/#configuring-a-cache-tier"/>.
+   </para>
+  </sect1>
+ <sect1 id="ceph.tier.erasure">
+  <title>Erasure Coded Pool And Cache Tiering</title>
+  <para>
+   Erasure coded pools require more resources than replicated pools and
+   lack some functionalities such as partial writes. To overcome these
+   limitations, it is recommended to set a cache tier before the erasure
+   coded pool.
+  </para>
+  <para>
+   For instance, if the pool <quote>hot-storage</quote> is made of fast
+   storage:
+  </para>
+<screen><prompt>> </prompt>ceph osd tier add ecpool hot-storage
+<prompt>> </prompt>ceph osd tier cache-mode hot-storage writeback
+<prompt>> </prompt>ceph osd tier set-overlay ecpool hot-storage</screen>
+
+<para>
+ This will place the <quote>hot-storage</quote> pool as tier of ecpool
+ in write-back mode so that every write and read to the ecpool are
+ actually using the hot-storage and benefit from its flexibility and
+ speed.
+</para>
+<para>
+ It is not possible to create an RBD image on an erasure coded pool
+ because it requires partial writes. It is however possible to create an
+ RBD image on an erasure coded pools when a replicated pool tier set a
+ cache tier:
+</para>
+<screen><prompt>> </prompt>rbd --pool ecpool create --size 10 myvolume</screen>
+<para>
+ For more information about cache tiering, see <xref
+ linkend="cha.ceph.tiered"/>.
+</para>
+ </sect1>
+
+  <!-- 
+  <sect1>
+   <title>Draft Notes</title>
+   <para><emphasis>These are just draft notes to myself!</emphasis></para>
+   <screen>
+
+# Reusing:
+# http://docs.ceph.com/docs/master/rados/operations/crush-map/
+
+Suppose you want to have most pools default to OSDs backed by large hard
+disks, but have some pools mapped to OSDs backed by fast solid-state
+drives (SSDs). It’s possible to have multiple independent CRUSH
+hierarchies within the same CRUSH map. Define two hierarchies with two
+different root nodes–one for hard disks (e.g., “root default”) and one
+for SSDs (e.g., “root ssd”) as shown below:
+
+Change weight and add root ssd (could be useful if you intent to provide
+more ssds on additional machines):
+   </screen>
+
+   <screen>
+   Removing a cache tier:
+http://docs.ceph.com/docs/master/rados/operations/cache-tiering/#removing-a-cache-tier
+
+</screen>
+  </sect1>
+  <sect1>
+  <title>For more Information</title>
+  <para>
+https://wiki.innerweb.novell.com/index.php/SUSE/Storage/ceph-erasure#Configuring_a_Cache_Tier
+  </para>
+  <para>
+http://docs.ceph.com/docs/master/rados/operations/cache-tiering/
+  </para>
+ </sect1>
+  -->
+</chapter>

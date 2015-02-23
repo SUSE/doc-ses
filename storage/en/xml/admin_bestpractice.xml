@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE chapter PUBLIC "-//Novell//DTD NovDoc XML V1.0//EN"
+"novdocx.dtd"
+[
+  <!ENTITY % NOVDOC.DEACTIVATE.IDREF "INCLUDE">
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+  %entities;
+]>
+<chapter id="cha.storage.bestpractice">
+ <title>Best Practice</title>
+ <para>
+  This chapter introduces a list of selected topics which you can encounter
+  when managing &ceph; environment. To every topic there is a recommended
+  solution that helps you understand or fix the existing problem. The topics
+  are sorted into relevant categories.
+ </para>
+ <sect1 id="storage.bp.hwreq">
+  <title>Hardware Requirements</title>
+
+  <para></para>
+
+  <sect2>
+   <title>How Much RAM Do I Need in a Storage Server?</title>
+   <para>
+    TBD
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 id="storage.bp.monitoring">
+  <title>Monitoring</title>
+
+  <para></para>
+
+  <sect2 id="storage.bp.monitoring.osd">
+   <title>Checking if OSD Daemons are Running on a Node</title>
+   <para>
+    If you need to check the status of OSD services on a specific node, log
+    in to the node, and run the following:
+   </para>
+<screen>sudo systemctl status ceph-osd*
+ceph-osd@0.service - Ceph object storage daemon
+   Loaded: loaded (/usr/lib/systemd/system/ceph-osd@.service; enabled)
+   Active: active (running) since Fri 2015-02-20 11:13:18 CET; 2 days ago
+ Main PID: 1822 (ceph-osd)
+   CGroup: /system.slice/system-ceph\x2dosd.slice/ceph-osd@0.service
+           └─1822 /usr/bin/ceph-osd -f --cluster ceph --id 0</screen>
+   <para>
+    For more information, see <xref linkend="ceph.operating.services"/>.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 id="storage.bp.disk">
+  <title>Disk Management</title>
+
+  <para></para>
+
+  <sect2 id="storage.bp.disk.add">
+   <title>Adding Disks</title>
+   <important>
+    <itemizedlist>
+     <listitem>
+      <para>
+       This can be done on a live cluster without downtime.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       This will cause increased replication traffic between servers.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Doing this operation repeatedly before the last operation has
+       completed replication can save the cluster overall rebuild time.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </important>
+   <para>
+    To add a disk (<filename>/dev/sdd</filename> in our example) to a &ceph;
+    cluster, follow these steps:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Create a partition <literal>sdd1</literal> on the disk:
+     </para>
+<screen>sudo parted /dev/sdd1 mkpart primary 0.0 -1s</screen>
+    </step>
+    <step>
+     <para>
+      Format the partition with either the XFS (strongly recommended) or
+      Btrfs filesystem:
+     </para>
+<screen>sudo mkfs.xfs -f /dev/sdd1</screen>
+    </step>
+    <step>
+     <para>
+      Find out the UUID (Universally Unique Identifier) of the disk:
+     </para>
+<screen>ls -l /dev/disk/by-uuid | grep sdd1
+[...] 04bb24f1-d631-47ff-a2ee-22d94ad4f80c -> ../../sdd1</screen>
+    </step>
+    <step>
+     <para>
+      Add the corresponding line to <filename>/etc/fstab</filename> for the
+      example disk <literal>osd.12</literal>:
+     </para>
+<screen>[...]
+UUID=04bb24f1-d631-47ff-a2ee-22d94ad4f80c /mnt/osd.12 xfs \
+defaults,errors=remount-ro 0 1
+[...]</screen>
+    </step>
+    <step>
+     <para>
+      Mount the disk:
+     </para>
+<screen>sudo mount /mnt/osd.12</screen>
+    </step>
+    <step>
+     <para>
+      Add the new disk to <filename>/etc/ceph/ceph.conf</filename> and copy
+      the updated configuration file to all other nodes in the cluster.
+     </para>
+    </step>
+    <step>
+     <para>
+      Create the OSD.
+     </para>
+<screen>ceph osd create 04bb24f1-d631-47ff-a2ee-22d94ad4f80c</screen>
+    </step>
+    <step>
+     <para>
+      Make sure that the new OSD is accepted into the cluster:
+     </para>
+<screen>sudo mkdir /srv/ceph/04bb24f1-d631-47ff-a2ee-22d94ad4f80c
+ceph-osd -i 12 --mkfs --mkkey
+ceph auth add osd.12 osd 'allow *' mon 'allow rwx' -i /etc/ceph/keyring.osd.12</screen>
+    </step>
+    <step>
+     <para>
+      Start the newly added OSD:
+     </para>
+<screen>sudo systemctl start ceph-osd@12.service</screen>
+    </step>
+    <step>
+     <para>
+      Add it to the cluster and allow replication based on &crushmap;:
+     </para>
+<screen>ceph osd crush set 12 osd.12 1.0 \
+pool=<replaceable>pool_name</replaceable> rack=<replaceable>rack_name</replaceable> host=<replaceable>host_name</replaceable>-osd</screen>
+    </step>
+    <step>
+     <para>
+      Check that the new OSD is in the right place within the cluster:
+     </para>
+<screen>ceph osd tree</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 id="storage.bp.disk.del">
+   <title>Deleting disks</title>
+   <important>
+    <itemizedlist>
+     <listitem>
+      <para>
+       This can be done on a live cluster without downtime.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       This will cause increased replication traffic between servers.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Be sure not to remove too many disks from your cluster to be able to
+       keep the replication rules. See <xref linkend="datamgm.rules"/> for
+       more information.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </important>
+   <para>
+    To delete a disk (for example <literal>osd.12</literal>) from a &ceph;
+    cluster, follow these steps:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Make sure you have the right disk:
+     </para>
+<screen>ceph osd tree</screen>
+    </step>
+    <step>
+     <para>
+      If the disk is a member of a pool and/or active:
+     </para>
+     <substeps>
+      <step>
+       <para>
+        Mark the disk out:
+       </para>
+<screen>ceph osd out 12</screen>
+      </step>
+      <step>
+       <para>
+        Wait for data migration to complete with <command>ceph -w</command>,
+        then stop it:
+       </para>
+<screen>sudo systemctl stop ceph-osd@12.service</screen>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      Remove the disk from &crushmap;:
+     </para>
+<screen>ceph osd crush remove osd.12</screen>
+    </step>
+    <step>
+     <para>
+      Remove authentication information for the disk:
+     </para>
+<screen>ceph auth del osd.12</screen>
+    </step>
+    <step>
+     <para>
+      Remove the disk from the cluster:
+     </para>
+<screen>ceph osd rm 12</screen>
+    </step>
+   </procedure>
+   <tip>
+    <para>
+     The process of preparing/adding a disk can be simplified with the
+     <command>ceph-disk</command> command. See
+     <ulink url="http://ceph.com/docs/master/man/8/ceph-disk/"/> for more
+     information on <command>ceph-disk</command>.
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+</chapter>
