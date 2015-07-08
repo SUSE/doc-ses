@@ -1,2 +1,2 @@
 # SUSE Linux Enterprise Storage Documentation
-Documentation for SUSE Enterprise Products
+Documentation for the SUSE Enterprise Storage Product
