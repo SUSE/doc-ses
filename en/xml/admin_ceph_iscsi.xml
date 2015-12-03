@@ -19,314 +19,393 @@
    <dm:release>SES2.1</dm:release>
   </dm:docmanager>
  </info>
+<!-- 2015-12-03 tbazant, post-processing:
+ * Ceph -> &ceph;
+ * iscsid -> <systemitem>iscsid</systemitem>
+ * dm-multipath -> <systemitem>dm-multipath</systemitem>
+ * lrbd -> <systemitem>lrbd</systemitem>
+ -->
  <para>
   iSCSI is a storage area network (SAN) protocol that allows clients (called
   <emphasis>initiators</emphasis>) to send SCSI commands to SCSI storage
-  devices (<emphasis>targets</emphasis>) on remote servers.
+  devices (<emphasis>targets</emphasis>) on remote servers. &storage;
+  includes a facility that opens Ceph storage management to heterogeneous
+  clients, such as Microsoft Windows and VMware vSphere, through the iSCSI
+  protocol. Multipath iSCSI access enables availability and scalability for
+  these clients, and the standardized iSCSI protocol also provides an
+  additional layer of security isolation between clients and the SUSE
+  Enterprise Storage 2 cluster. The configuration facility is named lrbd.
+  Using lrbd, Ceph storage administrators can define thin-provisioned,
+  replicated, highly-available volumes supporting read-only snapshots,
+  read-write clones, and automatic resizing with Ceph RADOS Block Device
+  (RBD). Administrators can then export volumes either via a single lrbd
+  gateway host, or via multiple gateway hosts supporting multipath failover.
+  Linux, Windows, and VMware hosts can connect to volumes using the iSCSI
+  protocol, which makes them available like any other SCSI block device.
+  This means &storage; 2 customers can effectively run a complete
+  block-storage infrastructure subsystem on Ceph that provides all features
+  and benefits of a conventional SAN enabling future growth.
  </para>
  <para>
   This chapter introduces detailed information how to set up a &ceph;
-  cluster infrastructure and an iSCSI gateway so that the client hosts can
-  utilize remotely stored data as local storage devices using the iSCSI
-  protocol.
+  cluster infrastructure together with an iSCSI gateway so that the client
+  hosts can utilize remotely stored data as local storage devices using the
+  iSCSI protocol.
  </para>
- <sect1 xml:id="ceph.iscsi.prerequisites">
-  <title>Prerequisites</title>
+ <sect1 xml:id="ceph.iscsi.iscsi">
+  <title>iSCSI Block Storage</title>
 
   <para>
-   To access the data stored in a &ceph; cluster via iSCSI, you need to have
-   the following:
+   iSCSI is an implementation of the Small Computer System Interface (SCSI)
+   command set using the Internet Protocol (IP), specified in RFC 3720.
+   iSCSI is implemented as a service where a client (the initiator) talks to
+   a server (the target) via a session on TCP port 3260. An iSCSI target's
+   IP address and port are called an iSCSI portal, where a target can be
+   exposed through one or more portals. The combination of a target and one
+   or more portals is called the target portal group (TPG).
+  </para>
+
+  <para>
+   The underlying data link layer protocol for iSCSI is commonly Ethernet.
+   More specifically, modern iSCSI infrastructures use 10 Gigabit Ethernet
+   or faster networks for optimal throughput. 10 Gigabit Ethernet
+   connectivity between the iSCSI gateway and the backend Ceph cluster is
+   strongly recommended.
+  </para>
+
+  <sect2 xml:id="ceph.iscsi.iscsi.target">
+   <title>The Linux Kernel iSCSI Target</title>
+   <para>
+    The Linux kernel iSCSI target was originally named LIO for
+    linux-iscsi.org, the project's original domain and website. For some
+    time, no fewer than 4 competing iSCSI target implementations were
+    available for the Linux platform, but LIO ultimately prevailed as the
+    single iSCSI reference target. The mainline kernel code for LIO uses the
+    simple, but somewhat ambiguous name "target", distinguishing between
+    "target core" and a variety of front-end and back-end target modules.
+   </para>
+   <para>
+    The most commonly used front-end module is arguably iSCSI. However, LIO
+    also supports Fibre Channel (FC), Fibre Channel over Ethernet (FCoE) and
+    several other front-end protocols. At this time, only the iSCSI protocol
+    is supported by &storage;.
+   </para>
+   <para>
+    The most frequently used target back-end module is one that is capable
+    of simply re-exporting any available block device on the target host.
+    This module is named iblock. However, LIO also has an RBD-specific
+    backend module supporting parallelized multipath I/O access to RBD
+    images.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.iscsi.initiators">
+   <title>iSCSI Initiators</title>
+   <para>
+    This section introduces a brief information on iSCSI initiators used on
+    Linux, Microsoft Windows, and VMware platforms.
+   </para>
+   <sect3>
+    <title>Linux</title>
+    <para>
+     The standard initiator for the Linux platform is open-iscsi. open-iscsi
+     launches a daemon, iscsid, which the user can then use to discover
+     iSCSI targets on any given portal, log in to targets, and map iSCSI
+     volumes. iscsid communicates with the SCSI mid layer to create
+     in-kernel block devices that the kernel can then treat like any other
+     SCSI block device on the system. The open-iscsi initiator can be
+     deploying in conjunction with the Device Mapper Multipath
+     (dm-multipath) facility to provide a highly available iSCSI block
+     device.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Microsoft Windows and Hyper-V</title>
+    <para>
+     The default iSCSI initiator for the Microsoft Windows operating system
+     is the Microsoft iSCSI initiator. The iSCSI service can be configured
+     via a Graphical User Interface (GUI), and supports multipath I/O for
+     high availability.
+    </para>
+   </sect3>
+   <sect3>
+    <title>VMware</title>
+    <para>
+     The default iSCSI initiator for VMware vSphere and ESX is the VMware
+     ESX software iSCSI initiator, <systemitem>vmkiscsi</systemitem>. Once
+     enabled, it can be configured either from the vSphere client, or using
+     the <command>vmkiscsi-tool</command> command. You can then format
+     storage volumes connected through the vSphere iSCSI storage adapter
+     with VMFS, and use them like any other VM storage device. The VMware
+     initiator also supports multipath I/O for high availability.
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.lrdb">
+  <title>lrdb: Configuring iSCSI Gateways</title>
+
+  <para>
+   lrbd combines the benefits of RADOS Block Devices with the ubiquitous
+   versatility of iSCSI. By employing lrbd on an iSCSI target host (known as
+   the lrbd gateway), any application that needs to make use of block
+   storage can benefit from Ceph, even if it does not speak any Ceph client
+   protocol. Instead, users can use iSCSI or any other target frontend
+   protocol to connect to an LIO target, which translates all target I/O to
+   RBD storage operations.
+  </para>
+
+  <figure>
+   <title>&ceph; Cluster with a Single iSCSI Gateway</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   lrbd is inherently highly-available and supports multipath operations.
+   Thus, downstream initiator hosts can use multiple iSCSI gateways for both
+   high availability and scalability. When communicating with an iSCSI
+   configuration with more than one gateway, initiators may load-balance
+   iSCSI requests across multiple gateways. In the event of a gateway
+   failing, being temporarily unreachable, or being disabled for
+   maintenance, I/O will transparently continue via another gateway.
+  </para>
+
+  <figure>
+   <title>&ceph; Cluster with Multiple iSCSI Gateways</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.deploy">
+  <title>lrdb Deployment Considerations</title>
+
+  <para>
+   A minimum configuration of &storage; with lrbd consists of the following
+   components:
   </para>
 
   <itemizedlist>
    <listitem>
     <para>
-     a working &ceph; cluster
+     A Ceph storage cluster. The Ceph cluster consists of a minimum of four
+     physical servers hosting at least eight object storage daemons (OSDs)
+     each. In such a configuration, three OSD nodes also double as a monitor
+     (MON) host.
     </para>
    </listitem>
    <listitem>
     <para>
-     a host to act as a gateway (iSCSI target)
+     An iSCSI target server running the LIO iSCSI target, configured via
+     lrbd.
     </para>
    </listitem>
    <listitem>
     <para>
-     a host to act as a client (iSCSI initiator)
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     <systemitem>lrbd</systemitem> installed on the gateway
+     An iSCSI initiator host, running open-iscsi (Linux), the Microsoft
+     iSCSI Initiator (Microsoft Windows), or any other compatible iSCSI
+     initiator implementation.
     </para>
    </listitem>
   </itemizedlist>
 
   <para>
-   <remark>
-    2015-12-02 tbazant: i dont understand this. Did you mean
-    'To add another gateway or target, you need another host...' ?
-   </remark>
-   For Adding a Gateway and Adding a Target * another host to act as a
-   second or redundant gateway
+   A recommended production configuration of &storage; with lrbd consists
+   of:
   </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     A Ceph storage cluster. A production Ceph cluster consists of any
+     number of (typically more than 10) OSD nodes, each typically running
+     10-12 object storage daemons (OSDs), with no fewer than three dedicated
+     MON hosts.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Several iSCSI target servers running the LIO iSCSI target, configured
+     via lrbd. For iSCSI fail-over and load-balancing, these servers must
+     run a kernel supporting the <systemitem>target_core_rbd</systemitem>
+     module. Updates packages are available from the &sls; maintenance
+     channel.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Any number of iSCSI initiator hosts, running open-iscsi (Linux), the
+     Microsoft iSCSI Initiator (Microsoft Windows), or any other compatible
+     iSCSI initiator implementation.
+    </para>
+   </listitem>
+  </itemizedlist>
  </sect1>
- <sect1 xml:id="ceph.iscsi.building-a-configuration">
-  <title>Building a configuration</title>
+ <sect1 xml:id="ceph.iscsi.install">
+  <title>lrdb Installation and Configuration</title>
 
   <para>
-   The <systemitem>lrbd</systemitem> configuration is a global configuration
-   for all gateways and clients. The gateway sections include the &ceph;
-   pools, RBD images, portals (i.e. network interfaces), static targets and
-   authentication. Within these sections are specific access definitions and
-   restrictions for initiators.
+   This section describes steps to install and configure iSCSI gateway on
+   top of &storage;.
   </para>
 
-  <para>
-   Consider the following physical layout with a single client acting as an
-   initiator connecting via a gateway to a &ceph; cluster.
-  </para>
-
-  <figure>
-   <title>Physical Layout</title>
-   <mediaobject>
-    <imageobject>
-     <imagedata fileref="iscsi-physical.png" />
-    </imageobject>
-    <textobject><phrase>Physical Layout</phrase>
-    </textobject>
-   </mediaobject>
-  </figure>
-
-  <para>
-   For a first configuration, find the <filename>simple.json</filename> file
-   located in <filename>/usr/share/doc/packages/lrbd/samples</filename>.
-   Copy this file to another location such as your home directory. The file
-   contains four sections: <literal>targets</literal>,
-   <literal>auth</literal>, <literal>portals</literal> and
-   <literal>pools</literal>. The purpose of these sections is to accommodate
-   the huge number of configurations that iSCSI can support.
-  </para>
-
-  <para>
-   For your convenience, the contents of <filename>simple.json</filename>
-   are displayed below.
-  </para>
-
-<screen>
-{
-    "targets": [
-      {
-        "host": "igw1",
-        "target": "iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk"
-      }
-    ],
-    "auth": [
-        {
-            "host": "igw1",
-            "authentication": "tpg",
-            "tpg": {
-                "userid": "common1",
-                "password": "pass1"
-            }
-        }
-    ],
-    "portals": [
-        {
-            "name": "portal1",
-            "addresses": [ "172.16.1.16" ]
-        }
-    ],
-    "pools": [
-        {
-            "pool": "rbd",
-            "gateways": [
-                {
-                    "host": "igw1",
-                    "tpg": [
-                        {
-                            "portal": "portal1",
-                            "image": "archive"
-                        }
-                    ]
-                }
-            ]
-        }
-    ]
-}
-</screen>
-
-  <para>
-   In SCSI terminology, LUN stands for logical unit number. A LUN represents
-   an individually addressable (logical) SCSI device that is part of a
-   physical SCSI device (target). In an iSCSI environment, the mapped RBD
-   image is the LUN. <systemitem>Lrbd</systemitem> uses the &ceph;
-   terminology of pool and image, but uses the iSCSI terms target, initiator
-   and portal. The following diagram shows the relationship.
-  </para>
-
-  <figure>
-   <title>Abstract Layout</title>
-   <mediaobject>
-    <imageobject>
-     <imagedata fileref="iscsi-abstract.png" />
-    </imageobject>
-    <textobject><phrase>Abstract Layout</phrase>
-    </textobject>
-   </mediaobject>
-  </figure>
-  <!-- finished here -->
-  <para>
-   Note that this configuration is one portal within one target on one
-   gateway accessing one image within one pool. Before exploring more
-   complex configurations, follow these instructions for customizing and
-   applying the configuration.
-  </para>
-
-  <sect2 xml:id="ceph.iscsi.pools">
-   <title>Pools</title>
+  <sect2>
+   <title>Install &storage; and Deploy a &ceph; Cluster</title>
    <para>
-    If you wish to use the default pool and RBD image, verify the following:
+    Before you start installing and configuring an iSCSI gateway, you need
+    to install &storage; and deploy a &ceph; cluster as described in
+    <xref linkend="cha.ceph.install"/>.
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Installing the <systemitem>ceph_iscsi</systemitem> Pattern</title>
+   <para>
+    On your designated iSCSI target server nodes, install the
+    <systemitem>ceph_iscsi</systemitem> pattern. Doing so will automatically
+    install <systemitem>lrbd</systemitem>, the necessary Ceph binaries and
+    libraries, and the <command>targetcli</command> command-line tool:
+   </para>
+<screen>sudo zypper in -t pattern ceph_iscsi</screen>
+   <para>
+    Repeat this step on any node that you want to act as a fail-over or
+    load-balancing target server node.
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Create RBD Images</title>
+   <para>
+    RBD images are created in the Ceph store and subsequently exported to
+    iSCSI. We recommend that you use a dedicated RADOS pool for this
+    purpose. You can create a volume from any host that is able to connect
+    to your storage cluster using the Ceph <command>rbd</command>
+    command-line utility. This requires the client to have at least a
+    minimal ceph.conf configuration file, and appropriate CephX
+    authentication credentials.
+   </para>
+   <para>
+    To create a new volume for subsequent export via iSCSI, use the
+    <command>rbd create</command> command, specifying the volume size in
+    megabytes. For example, in order to create a 100GB volume named
+    <literal>testvol</literal> in the pool named <literal>iscsi</literal>,
+    run:
+   </para>
+<screen>rbd --pool iscsi create --size=102400 testvol</screen>
+   <para>
+    The above command creates an RBD "format 1" volume. In order to enable
+    layered snapshots and cloning, you may want to create a "format 2"
+    volume instead:
+   </para>
+<screen>rbd --pool iscsi create --image-format 2 --size=102400 testvol</screen>
+   <para>
+    To always enable format 2 on all newly-created images, add the following
+    configuration options to <filename>/etc/ceph/ceph.conf</filename>:
+   </para>
+<screen>[client]
+   rbd default image format = 2</screen>
+   <para>
+    Once this option is set, every invocation of <command>rbd
+    create</command> becomes functionally equivalent to <command>rbd create
+    --image-format 2</command>, and always creates a volume in the new image
+    format. Note that this is a client-side option that must be set on any
+    host you use to create a new volume. It is not sufficient to set this on
+    your Ceph servers.
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Export RBD Images via iSCSI</title>
+   <para>
+    To export RBD images via iSCSI, use the lrbd utility. lrbd allows you to
+    create, review, and modify the iSCSI target configuration, which uses a
+    JSON format.
+   </para>
+   <para>
+    In order to edit the configuration, use <command>lrbd -e</command> or
+    <command>lrbd --edit</command>. This command will invoke the default
+    editor, as defined by the <literal>EDITOR</literal> environment
+    variable. You may override this behavior by setting the
+    <option>-E</option> option in addition to <option>-e</option>.
+   </para>
+   <para>
+    Below is an example configuration for
    </para>
    <itemizedlist>
     <listitem>
      <para>
-      the rbd pool exists
+      two iSCSI gateway hosts named <literal>iscsi1.example.com</literal>
+      and <literal>iscsi2.example.com</literal>,
      </para>
-<screen>rados lspools</screen>
     </listitem>
     <listitem>
      <para>
-      the archive image exists
+      defining a single iSCSI target with an iSCSI Qualified Name (IQN) of
+      <literal>iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol</literal>,
      </para>
-<screen>rbd -p rbd ls</screen>
+    </listitem>
+    <listitem>
+     <para>
+      with a single iSCSI Logical Unit (LU),
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      backed by an RBD image named <literal>testvol</literal> in the RADOS
+      pool <literal>rbd</literal>,
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      and exporting the target via two portals named "east" and "west":
+     </para>
     </listitem>
    </itemizedlist>
-   <para>
-    Otherwise, create your own pool and RBD image. Update the pool and image
-    in the pools section.
-   </para>
-   <para>
-    Update the <emphasis>host</emphasis> to match the hostname of the
-    gateway.
-   </para>
-<screen>
-"pools": [  
-    {  
-        "pool": "rbd",  
-        "gateways": [  
-            {  
-                "host": igw1,   
-                "tpg": [  
-                    {  
-                        "portal": "portal1",  
-                        "image": "archive"
-                    }  
-                ]  
-            }   
-        ]   
-    }  
-]  
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.targets">
-   <title>Targets</title>
-   <para>
-    Under the targets section, update the host to match the hostname of the
-    gateway. Replace the target with the output of
-    <emphasis role="strong">iscsi-name</emphasis>.
-   </para>
-<screen>
-"targets": [
-  {
-    "host": igw1,
-    "target": iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk,
-  }
-]
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.portals">
-   <title>Portals</title>
-   <para>
-    Replace the address with a valid network address of the gateway host.
-   </para>
-<screen>
-"portals": [
-    {
-        "name": "portal1",
-        "addresses": [ 172.16.1.16 ]
-    }
-]
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.auth">
-   <title>Auth</title>
-   <para>
-    The authentication is set to
-    <emphasis role="strong">tpg+identified</emphasis>. All initiators will
-    use the same credentials to connect to this target. Replace the
-    <emphasis>host</emphasis> with the hostname of the gateway. Set the
-    desired <emphasis>userid</emphasis> and <emphasis>password</emphasis>
-    for CHAP authentication.
-   </para>
-<screen>
-"auth": [
-    {
-        "host": igw1,
-        "authentication": "tpg+identified", 
-        "tpg": {
-            "userid": common1, 
-            "password": pass1
-        }
-    } 
-]
-</screen>
-   <para>
-    Add comments if you wish using a '#'. Any comments will be stripped when
-    importing the configuration.
-   </para>
-  </sect2>
- </sect1>
- <sect1 xml:id="ceph.iscsi.applying-the-configuration">
-  <title>Applying the configuration</title>
-
-  <para>
-   Import the configuration and then query the configuration from a gateway
-   host.
-  </para>
-
-<screen>lrbd -f ~/simple.json
-lrbd -o</screen>
-
-  <para>
-   The output will be similar to the following:
-  </para>
-
-<screen>
-{
+<screen>{
     "auth": [
         {
-            "host": "igw1", 
-            "authentication": "tpg+identified", 
-            "tpg": {
-                "userid": "common1", 
-                "password": "pass1"
-            }
+            "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol", 
+            "authentication": "none"
         }
     ], 
     "targets": [
         {
-            "host": "igw1", 
-            "target": "iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk"
+            "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol", 
+            "hosts": [
+                {
+                    "host": "iscsi1.example.com", 
+                    "portal": "east"
+                }, 
+                {
+                    "host": "iscsi2.example.com", 
+                    "portal": "west"
+                }
+            ]
         }
     ], 
     "portals": [
         {
-            "name": "portal1", 
+            "name": "east", 
             "addresses": [
-                "172.16.1.16"
+                "192.168.124.104"
+            ]
+        }, 
+        {
+            "name": "west", 
+            "addresses": [
+                "192.168.124.105"
             ]
         }
     ], 
@@ -335,1840 +414,17 @@ lrbd -o</screen>
             "pool": "rbd", 
             "gateways": [
                 {
-                    "host": "igw1", 
+                    "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol", 
                     "tpg": [
                         {
-                            "portal": "portal1", 
-                            "image": "archive", 
-                            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
+                            "image": "testvol"
                         }
                     ]
                 }
             ]
         }
     ]
-}
-</screen>
-
-  <para>
-   Another option to display the configuration is
-  </para>
-
-<screen>lrbd -l</screen>
-
-  <para>
-   In this case, both outputs will be the same. The <option>-o</option>
-   displays all hosts while <option>-l</option> shows only entries relevant
-   to this host. This is most useful when determining whether a
-   configuration is correct for a gateway.
-  </para>
-
-  <para>
-   Inspect the current configuration:
-  </para>
-
-<screen>targetcli ls</screen>
-
-  <para>
-   The output will show nothing configured.
-  </para>
-
-<screen>
-Loaded vhost_scsi kernel module.
-Created '/sys/kernel/config/target/vhost'.
-Loaded iscsi_target_mod kernel module.
-Created '/sys/kernel/config/target/iscsi'.
-Loaded tcm_loop kernel module.
-Created '/sys/kernel/config/target/loopback'.
-Loaded tcm_fc kernel module.
-Created '/sys/kernel/config/target/fc'.
-Loaded ib_srpt kernel module.
-Created '/sys/kernel/config/target/srpt'.
-Loaded tcm_qla2xxx kernel module.
-Created '/sys/kernel/config/target/qla2xxx'.
-o- / ..................................................................... [...]
-  o- backstores .......................................................... [...]
-  | o- fileio ............................................... [0 Storage Object]
-  | o- iblock ............................................... [0 Storage Object]
-  | o- pscsi ................................................ [0 Storage Object]
-  | o- rbd .................................................. [0 Storage Object]
-  | o- rd_mcp ............................................... [0 Storage Object]
-  o- ib_srpt ....................................................... [0 Targets]
-  o- iscsi ......................................................... [0 Targets]
-  o- loopback ...................................................... [0 Targets]
-  o- qla2xxx ....................................................... [0 Targets]
-  o- tcm_fc ........................................................ [0 Targets]
-  o- vhost ......................................................... [0 Targets]
-</screen>
-
-  <para>
-   Verify that the hostname matches the configuration. Note the
-   <emphasis>defaults to</emphasis> value for the <option>-H</option> option
-   below.
-  </para>
-
-<screen>lrbd -h
-usage: lrbd [-h] [-e] [-E editor] [-c name] [--ceph ceph] [-H host] [-o] [-l]
-            [-f file] [-a file] [-u] [-v] [-d] [-I] [-R] [-W] [-C]
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -e, --edit            edit the rbd configuration for iSCSI
-  -E editor, --editor editor
-                        use editor to edit the rbd configuration for iSCSI
-  -c name, --config name
-                        use name for object, defaults to "lrbd.conf"
-  --ceph ceph           specify the ceph configuration file
-  -H host, --host host  specify the hostname, defaults to "igw1"
-  -o, --output          display the configuration
-  -l, --local           display the host configuration                          
-  -f file, --file file  import the configuration from file                      
-  -a file, --add file   add the configuration from file                         
-  -u, --unmap           unmap the rbd images                                    
-  -v, --verbose         print INFO messages                                     
-  -d, --debug           print DEBUG messages                                    
-  -I, --iblock          set the backstore to iblock, defaults to rbd            
-  -R, --rbd             set the backstore to rbd                                
-  -W, --wipe            wipe the configuration objects from all pools           
-  -C, --clear           clear the targetcli configuration    
-</screen>
-
-  <para>
-   Run the <command>lrbd</command> command to apply the saved configuration.
-  </para>
-
-  <para>
-   If the hostname in the configuration does not match the hostname in the
-   help message, run the following command to apply the configuration
-   instead.
-  </para>
-
-<screen>lrbd -H <replaceable>configured_hostname</replaceable></screen>
-
-  <para>
-   The <command>lrbd</command> command outputs each <command>rbd</command>
-   and <command>targetcli</command> command with its output.
-  </para>
-
-<screen>
-targetcli /backstores/rbd create name=archive dev=/dev/rbd/rbd/archive
-Loaded vhost_scsi kernel module.
-Created '/sys/kernel/config/target/vhost'.
-Loaded iscsi_target_mod kernel module.
-Created '/sys/kernel/config/target/iscsi'.
-Loaded tcm_loop kernel module.
-Created '/sys/kernel/config/target/loopback'.
-Loaded tcm_fc kernel module.
-Created '/sys/kernel/config/target/fc'.
-Loaded ib_srpt kernel module.
-Created '/sys/kernel/config/target/srpt'.
-Loaded tcm_qla2xxx kernel module.
-Created '/sys/kernel/config/target/qla2xxx'.
-Created RBD storage object archive using /dev/rbd/rbd/archive.
-targetcli /iscsi create iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk
-Created target iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk.
-Selected TPG Tag 1.
-Created TPG 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk/tpg1/luns create /backstores/rbd/archive
-Selected LUN 0.
-Created LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk/tpg1/portals create 172.16.1.16
-Using default IP port 3260
-Created network portal 172.16.1.16:3260.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk/tpg1/acls create iqn.1996-04.de.suse:01:e6ca28cc9f20
-Created Node ACL for iqn.1996-04.de.suse:01:e6ca28cc9f20
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 create 0 0
-Created Mapped LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 set auth userid=common1 password=pass1
-Parameter password is now 'pass1'.
-Parameter userid is now 'common1'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk/tpg1 set attribute authentication=1 demo_mode_write_protect=0 generate_node_acls=0
-Parameter authentication is now '1'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '0'.
-</screen>
-
-  <para>
-   Inspect the current configuration again.
-  </para>
-
-<screen>targetcli ls</screen>
-
-  <para>
-   The output will look similar to the following:
-  </para>
-
-<screen>
-o- / ..................................................................... [...]
-  o- backstores .......................................................... [...]
-  | o- fileio ............................................... [0 Storage Object]
-  | o- iblock ............................................... [0 Storage Object]
-  | o- pscsi ................................................ [0 Storage Object]
-  | o- rbd .................................................. [1 Storage Object]
-  | | o- archive .............................. [/dev/rbd/rbd/archive activated]
-  | o- rd_mcp ............................................... [0 Storage Object]
-  o- ib_srpt ....................................................... [0 Targets]
-  o- iscsi .......................................................... [1 Target]
-  | o- iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk .......... [1 TPG]
-  |   o- tpg1 ........................................................ [enabled]
-  |     o- acls ........................................................ [1 ACL]
-  |     | o- iqn.1996-04.de.suse:01:e6ca28cc9f20 ................ [1 Mapped LUN]
-  |     |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  |     o- luns ........................................................ [1 LUN]
-  |     | o- lun0 ......................... [rbd/archive (/dev/rbd/rbd/archive)]
-  |     o- portals .................................................. [1 Portal]
-  |       o- 172.16.1.16:3260 .............................. [OK, iser disabled]
-  o- loopback ...................................................... [0 Targets]
-  o- qla2xxx ....................................................... [0 Targets]
-  o- tcm_fc ........................................................ [0 Targets]
-  o- vhost ......................................................... [0 Targets]
-</screen>
-
-  <para>
-   The import, editing or querying can be done on any &ceph; client with
-   lrbd installed. Applying the configuration will only make changes to the
-   current host.
-  </para>
-
-  <para>
-   Host specific configurations can be queried from another host. For
-   example, running the following from host
-   <emphasis role="strong">igw1</emphasis>
-  </para>
-
-  <para>
-<screen>lrbd -H igw2 -l</screen>
-  </para>
-
-  <para>
-   will display the configuration of host
-   <emphasis role="strong">igw2</emphasis>. Applying the configuration of
-   another host is similar. From a host
-   <emphasis role="strong">test1</emphasis>, running
-  </para>
-
-  <para>
-<screen>lrbd -H igw2</screen>
-  </para>
-
-  <para>
-   applies the configuration from host
-   <emphasis role="strong">igw2</emphasis>. This allows investigation from
-   separate hardware or temporary replacement of failed hardware without
-   modifying the configuration.
-  </para>
- </sect1>
- <sect1 xml:id="ceph.iscsi.expanding-the-configuration">
-  <title>Expanding the configuration</title>
-
-  <para>
-   Growing the configuration to match your requirements is straightforward.
-   Add the necessary entries often by copying an existing entry and making
-   simple changes. Be aware that a valid JSON structure needs a comma
-   between elements but not after the last element in a list.
-  </para>
-
-  <para>
-   The following examples reference the simple.json in the previous
-   section.php
-  </para>
-
-  <sect2 xml:id="ceph.iscsi.adding-an-image">
-   <title>Adding an image</title>
-   <para>
-    Create an image within the same pool.
-   </para>
-<screen>rbd -p rbd create data --size=2048</screen>
-   <para>
-    Copy the tpg entry containing image, portal and initiator. Change the
-    image in the new entry, save your changes and apply. An initiator can
-    access two RBD images from the same pool on the same gateway over the
-    same network path.
-   </para>
-<screen>
-{
-    "portal": "portal1",
-    "image": "archive",
-    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-},
-{
-    "portal": "portal1",
-    "image": data,
-    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-}
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.adding-an-initiator">
-   <title>Adding an initiator</title>
-   <para>
-    Nearly identical to the adding an image, but change the initiator in the
-    new entry. Two different initiators can access the same RBD image on the
-    same gateway over the same network path.
-   </para>
-<screen>
-{
-    "portal": "portal1",
-    "image": "archive",
-    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-},
-{
-    "portal": "portal1",
-    "image": "archive",
-    "initiator": iqn.1991-05.com.microsoft:client.example.com
-}
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.adding-a-portal">
-   <title>Adding a portal</title>
-   <para>
-    In the portals section, duplicate the portal entry and change the name
-    and address.
-   </para>
-<screen>
-{
-    "name": "portal1",
-    "addresses": [ "172.16.1.16" ]
-},
-{
-    "name": portal2,
-    "addresses": [ 172.16.2.16 ]
-}
-</screen>
-   <para>
-    Use the new portal name. In this example, each initiator will use a
-    dedicated network interface.
-   </para>
-<screen>
-{
-    "portal": "portal1",
-    "image": "archive",
-    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-},
-{
-    "portal": portal2,
-    "image": "archive",
-    "initiator": "iqn.1991-05.com.microsoft:client.example.com"
-}
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.adding-an-address">
-   <title>Adding an address</title>
-   <para>
-    In the portals section, provide a second address to an existing portal.
-    Any entry using this portal will provide redundancy across two network
-    paths.
-   </para>
-<screen>
-{
-    "name": "portal1",
-    "addresses": [ "172.16.1.16", 172.16.2.16 ]
-}
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.adding-a-tpg">
-   <title>Adding a tpg</title>
-   <para>
-    Copy an existing gateway entry. Maintain the same host and change any or
-    all of portal, image and initiator. This allows isolated paths from
-    initiator to image.
-   </para>
-<screen>
-{
-    "host": "igw1", 
-    "tpg": [
-        {
-            "portal": "portal1",
-            "image": "archive",
-            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-        }
-    ]
-},
-{
-    "host": "igw1", 
-    "tpg": [
-        {
-            "portal": portal2,
-            "image": data,
-            "initiator": iqn.1991-05.com.microsoft:client.example.com
-        }
-    ]
-} 
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.adding-a-gateway">
-   <title>Adding a gateway</title>
-   <para>
-    Similar to adding a tpg, copy an existing gateway entry. Change the host
-    of the new entry to the hostname of your second gateway. Do not use this
-    for redundancy. This configuration is for two gateways with independent
-    images.
-   </para>
-<screen>
-{
-    "host": "igw1", 
-    "tpg": [
-        {
-            "portal": "portal1",
-            "image": "archive",
-            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-        }
-    ]
-},
-{
-    "host": igw2, 
-    "tpg": [
-        {
-            "portal": portal3,
-            "image": data,
-            "initiator": iqn.1991-05.com.microsoft:client.example.com
-        }
-    ]
-} 
-</screen>
-   <para>
-    Add another portal entry for the address of the second gateway.
-   </para>
-<screen>
-{
-    "name": "portal1",
-    "addresses": [ "172.16.1.16" ]
-},
-{
-    "name": portal3,
-    "addresses": [ 172.16.1.17 ]
-}
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.adding-a-pool">
-   <title>Adding a pool</title>
-   <para>
-    Duplicate a pool entry. Update the pool and image. Each image is
-    accessed via the same network path.
-   </para>
-<screen>
-{
-    "pool": "rbd",
-    "gateways": [
-        {
-            "host": "igw1", 
-            "tpg": [
-                {
-                    "portal": "portal1",
-                    "image": "archive",
-                    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-                }
-            ]
-        } 
-    ] 
-},
-{
-    "pool": car,
-    "gateways": [
-        {
-            "host": "igw1", 
-            "tpg": [
-                {
-                    "portal": "portal1",
-                    "image": cement,
-                    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-                }
-            ]
-        } 
-    ] 
-}
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.adding-a-target">
-   <title>Adding a target</title>
-   <para>
-    More than one gateway can advertise the same target providing
-    redundancy. This configuration requires a kernel that supports the
-    <emphasis role="strong">tpg_enabled_sendtargets</emphasis> (formerly
-    discoverable_while_disabled) and a
-    <emphasis role="strong">targetcli</emphasis> that allows portal creation
-    with non-existent addresses.
-   </para>
-   <para>
-    Copy an existing gateway entry. Change the
-    <emphasis role="strong">host</emphasis> keyword to
-    <emphasis role="strong">target</emphasis>. Update the hostname to an iqn
-    value. Consider using <emphasis role="strong">iscsi-name</emphasis> as a
-    template. Change the embedded hostname (e.g. igw1 to any). Remove the
-    portal.
-   </para>
-<screen>
-{
-    "host": "igw1", 
-    "tpg": [
-        {
-            "portal": "portal1",
-            "image": "archive",
-            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-        }
-    ]
-},
-{
-    target: iqn.2003-01.org.linux-iscsi.any.x86:sn.db7fc86c644, 
-    "tpg": [
-        {
-            "image": "data",
-            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-        }
-    ]
-} 
-</screen>
-   <para>
-    Update the targets section. Add the new target with a list of hosts and
-    portals.
-   </para>
-<screen>
-{
-  "host": "igw1",
-  "target": "iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk"
-},
-{
-  hosts: [ 
-      { "host": igw1, "portal": portal1 },
-      { "host": igw2, "portal": portal4 }
-  ],
-  "target": "iqn.2003-01.org.linux-iscsi.any.x86:sn.db7fc86c644"
-}
-</screen>
-   <para>
-    Update the portals section. Add the new portal with the address list
-    from both gateways.
-   </para>
-<screen>
-{
-    "name": "portal1",
-    "addresses": [ "172.16.1.16" ]
-}
-{
-    "name": portal4,
-    "addresses": [ 172.16.4.16 ]
-}
-</screen>
-   <para>
-    When applied, each gateway will have two TPGs for the common target.
-    Note that a TPG is disabled on each gateway and contains the portal of
-    the other gateway.
-   </para>
-  </sect2>
- </sect1>
- <sect1 xml:id="ceph.iscsi.authentication">
-  <title>Authentication</title>
-
-  <para>
-   Iscsi authentication is flexible resulting in many possibilities. The
-   four possible top level settings are no authentication, tpg, acls and
-   tpg+identified.
-  </para>
-
-  <sect2 xml:id="ceph.iscsi.no-authentication">
-   <title>No authentication</title>
-   <para>
-    No authentication means no initiator will require a username and
-    password to access any luns for a specified host or target. No
-    authentication can be set explicitly or implicitly. Specify a value of
-    <emphasis>none</emphasis> for
-    <emphasis role="strong">authentication</emphasis> to be set explicitly.
-    For example,
-   </para>
-<screen>
-{
-    "host": "igw1",
-    "authentication": none
-}
-</screen>
-   <para>
-    Removing the entire auth section from the configuration will use no
-    authentication implicitly.
-   </para>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.tpg-authentication">
-   <title>TPG authentication</title>
-   <para>
-    For common credentials or a shared username/password, set
-    <emphasis role="strong">authentication</emphasis> to
-    <emphasis>tpg</emphasis>. This setting will apply to all initiators for
-    the associated host or target. In this example, the same username and
-    password are used for the redundant target and a target local to igw1.
-   </para>
-<screen>
-{
-  "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant",
-  "authentication": tpg,
-  "tpg": {
-      "userid": "common1",
-      "password": "pass1"
-  }
-},
-{
-    "host": "igw1",
-    "authentication": tpg,
-    "tpg": {
-        "userid": "common1",
-        "password": "pass1"
-    }
-}
-</screen>
-   <para>
-    Redundant configurations will have the same credentials across gateways
-    but are independent of other configurations. In other words, luns
-    configured specifically for a host and multiple redundant configurations
-    can have a unique username and password for each.
-   </para>
-   <para>
-    One caveat to note is that any initiator setting will be ignored when
-    using <emphasis>tpg</emphasis> authentication. Using common credentials
-    does not restrict which initiators may connect. This configuration may
-    be suitable in isolated network environments.
-   </para>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.acl-authentication">
-   <title>ACL authentication</title>
-   <para>
-    For unique credentials for each initiator, set
-    <emphasis role="strong">authentication</emphasis> to
-    <emphasis>acls</emphasis>. Additionally, only defined initiators are
-    allowed to connect.
-   </para>
-<screen>
-{
-    "host": "igw1",
-    "authentication": acls,
-    "acls": [
-        {
-            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20",
-            "userid": "initiator1",
-            "password": "pass1",
-        }
-    ]
-},
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.tpgidentified-authentication">
-   <title>TPG+identified authentication</title>
-   <para>
-    The previous two authentication settings each have a use, but pair two
-    independent features. TPG pairs common credentials with unidentified
-    initiators. Acls pair unique credentials with identified initiators.
-   </para>
-   <para>
-    The last authentication setting pairs common credentials with identified
-    initiators. This can be imitated by choosing acls and repeating the same
-    credentials with each initiator, but the configuration would grow
-    unnecessarily and annoy the maintainers. For this configuration, set
-    <emphasis role="strong">authentication</emphasis> to
-    <emphasis>tpg+identified</emphasis>.
-   </para>
-   <para>
-    This configuration uses the <emphasis>tpg</emphasis> configuration with
-    only the authentication keyword changing.
-   </para>
-<screen>
-{
-  "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant",
-  "authentication": tpg+identified,
-  "tpg": {
-      "userid": "common1",
-      "password": "pass1"
-  }
-},
-{
-    "host": "igw1",
-    "authentication": tpg+identified,
-    "tpg": {
-        "userid": "common1",
-        "password": "pass1"
-    }
-}
-</screen>
-   <para>
-    The list of initiators is gathered from those defined in the pools for
-    the given hosts and targets in the authentication section.
-   </para>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.discovery-and-mutual-authentication">
-   <title>Discovery and Mutual authentication</title>
-   <para>
-    Independent of these four authentication settings is discovery
-    authentication. Discovery authentication requires credentials for
-    browsing.
-   </para>
-   <para>
-    Authentication for tpg, tpg+identified, acls and discovery support
-    mutual authentication. Specifiying the mutual settings requires that the
-    target authenticates against the initiator.
-   </para>
-   <para>
-    Discovery and mutual authentication are optional. These options can be
-    present, but disabled allowing experimentation with a particular
-    configuration. Once decided, disabled entries can be removed without
-    harming the configuration.
-   </para>
-   <para>
-    For several possibilities, please see the examples in
-    <filename>/usr/share/doc/packages/lrbd/samples</filename>. Excerpts from
-    one file can be combined with others to create unique configurations.
-   </para>
-  </sect2>
- </sect1>
- <sect1 xml:id="ceph.iscsi.systemd-service">
-  <title>Systemd service</title>
-
-  <para>
-   The <command>lrbd</command> utility includes a service file. Systemd will
-   run <command>lrbd</command> on boot when the service is enabled. To
-   enable and start the service, run
-  </para>
-
-<screen>sudo systemctl enable lrbd
-sudo systemctl start lrbd</screen>
-
-  <para>
-   The service is a one-shot service. Any changes to the
-   <command>lrbd</command> configuration do not propagate automatically. To
-   apply the changes without clearing the current configuration, run
-  </para>
-
-<screen>sudo systemctl reload lrbd</screen>
-
-  <para>
-   The rationale for this behavior allows administrators to control when the
-   configuration is applied to each gateway.
-  </para>
- </sect1>
- <sect1 xml:id="ceph.iscsi.managing-configurations">
-  <title>Managing configurations</title>
-
-  <para>
-   The configuration may be updated directly with <command>lrbd
-   -e</command>. The entire configuration can be output with <command>lrbd
-   -o &gt; <replaceable>filename</replaceable></command> and maintained
-   under your choice of version control.
-  </para>
-
-  <para>
-   Alternatively, the global configuration can be re-imported after making
-   changes. Running <command>lrbd -f
-   <replaceable>filename</replaceable></command> will replace any
-   configuration stored within &ceph;. The advantage of this method is that
-   the input file may contain comments for complex configurations.
-  </para>
-
-  <para>
-   Lastly, configurations may be added cumulatively. For instance, if two
-   groups within an organization each have independent gateways and clients
-   but wish to share the same &ceph; cluster, multiple configurations can be
-   maintained independently. Each configuration must be valid by itself, but
-   could be divided into separate files by pool or gateway. One file could
-   contain gateways A, B and C while another contains D and E.
-  </para>
-
-  <para>
-   The first configuration is imported as normal with <command>lrbd -f
-   ABC.config</command>. The second configuration is added with
-   <command>lrbd -a DE.config</command>. The pools and authentication
-   sections will be merged. The targets and portals sections are replaced.
-   Depending on the configuration, either remove the targets and portals
-   section from the <emphasis>DE.config</emphasis> or duplicate these
-   sections in both files.
-  </para>
-
-  <para>
-   The above example could also be executed with <command>lrbd -W</command>
-   which wipes the configuration from &ceph; and then executes <command>lrbd
-   -a</command> for each file.
-  </para>
- </sect1>
- <sect1 xml:id="ceph.iscsi.examples">
-  <title>Examples</title>
-
-  <para>
-   The following examples are located in
-   <filename>/usr/share/doc/packages/lrbd/samples</filename>. Some are
-   admittedly contrived, but show combinations that may more closely match
-   your requirements.
-  </para>
-
-  <sect2 xml:id="ceph.iscsi.redundant-gateways">
-   <title>Redundant gateways</title>
-   <para>
-    The requirement is to provide a highly available solution for an
-    application accessing &ceph; storage. In this example, the image
-    <emphasis>city</emphasis> is advertised from two gateways. Each gateway
-    has a single NIC for iSCSI access. The physical hardware could be the
-    following:
-   </para>
-   <figure>
-    <title>Physical Redundant Layout</title>
-    <mediaobject>
-     <imageobject>
-      <imagedata fileref="iscsi-redundant-physical.png" />
-     </imageobject>
-     <textobject><phrase>Physical Redundant
-        Layout</phrase>
-     </textobject>
-    </mediaobject>
-   </figure>
-   <para>
-    The expected configuration would look like the following:
-   </para>
-   <figure>
-    <title>Abstract Redundant Layout</title>
-    <mediaobject>
-     <imageobject>
-      <imagedata fileref="iscsi-redundant-abstract.png" />
-     </imageobject>
-     <textobject><phrase>Abstract Redundant
-        Layout</phrase>
-     </textobject>
-    </mediaobject>
-   </figure>
-   <para>
-    The sample is called
-    <literal>2gateways+no_authentication.json</literal>, which is shown
-    below:
-   </para>
-<screen>
-{
-  "auth": [
-    {
-      "authentication": "none",
-      "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant"
-    }
-  ],
-  "targets": [
-    {
-      "hosts": [
-          { "host": "igw1", "portal": "portal1" },
-          { "host": "igw2", "portal": "portal2" }
-      ],
-      "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant"
-    }
-  ],
-  "portals": [
-      {
-          "name": "portal1",
-          "addresses": [ "172.16.1.16"]
-      },
-      {
-          "name": "portal2",
-          "addresses": [ "172.16.1.17" ]
-      }
-  ],
-  "pools": [
-    {
-      "pool": "rbd",
-      "gateways": [
-        {
-          "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant",
-          "tpg": [
-            {
-              "image": "city"
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-</screen>
-   <para>
-    Running <command>lrbd</command> on the first gateway,
-    <emphasis>igw1</emphasis>, will output the commands and respective
-    outputs:
-   </para>
-<screen>
-modprobe vhost_scsi
-modprobe iscsi_target_mod
-modprobe tcm_loop
-modprobe tcm_fc
-modprobe ib_srpt
-modprobe tcm_qla2xxx
-modprobe target_core_rbd
-targetcli /backstores/rbd create name=city dev=/dev/rbd/rbd/city
-Created '/sys/kernel/config/target/vhost'.
-Created '/sys/kernel/config/target/iscsi'.
-Created '/sys/kernel/config/target/loopback'.
-Created '/sys/kernel/config/target/fc'.
-Created '/sys/kernel/config/target/srpt'.
-Created '/sys/kernel/config/target/qla2xxx'.
-Created RBD storage object city using /dev/rbd/rbd/city.
-targetcli /iscsi create iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant
-Created target iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant.
-Selected TPG Tag 1.
-Created TPG 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant create 2
-Created TPG 2.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant/tpg2 disable
-The TPG has been disabled.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant/tpg1/luns create /backstores/rbd/city
-Selected LUN 0.
-Created LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant/tpg2/luns create /backstores/rbd/city
-Selected LUN 0.
-Created LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant/tpg1/portals create 172.16.1.16
-Using default IP port 3260
-Created network portal 172.16.1.16:3260.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant/tpg2/portals create 172.16.1.17
-Using default IP port 3260
-IP address 172.16.1.17 does not exist on this host.
-Created network portal 172.16.1.17:3260.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant/tpg1 set attribute authentication=0 demo_mode_write_protect=0 generate_node_acls=1
-Parameter authentication is now '0'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '1'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant/tpg2 set attribute authentication=0 demo_mode_write_protect=0 generate_node_acls=1
-Parameter authentication is now '0'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '1'.
-</screen>
-   <para>
-    To inspect the configuration, run
-   </para>
-<screen>targetcli ls</screen>
-   <para>
-    The output will be
-   </para>
-<screen>
-o- / ..................................................................... [...]
-  o- backstores .......................................................... [...]
-  | o- fileio ............................................... [0 Storage Object]
-  | o- iblock ............................................... [0 Storage Object]
-  | o- pscsi ................................................ [0 Storage Object]
-  | o- rbd .................................................. [1 Storage Object]
-  | | o- city .................................... [/dev/rbd/rbd/city activated]
-  | o- rd_mcp ............................................... [0 Storage Object]
-  o- ib_srpt ....................................................... [0 Targets]
-  o- iscsi .......................................................... [1 Target]
-  | o- iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant ............... [2 TPGs]
-  |   o- tpg1 ........................................................ [enabled]
-  |   | o- acls ....................................................... [0 ACLs]
-  |   | o- luns ........................................................ [1 LUN]
-  |   | | o- lun0 ............................... [rbd/city (/dev/rbd/rbd/city)]
-  |   | o- portals .................................................. [1 Portal]
-  |   |   o- 172.16.1.16:3260 .............................. [OK, iser disabled]
-  |   o- tpg2 ....................................................... [disabled]
-  |     o- acls ....................................................... [0 ACLs]
-  |     o- luns ........................................................ [1 LUN]
-  |     | o- lun0 ............................... [rbd/city (/dev/rbd/rbd/city)]
-  |     o- portals .................................................. [1 Portal]
-  |       o- 172.16.1.17:3260 .............................. [OK, iser disabled]
-  o- loopback ...................................................... [0 Targets]
-  o- qla2xxx ....................................................... [0 Targets]
-  o- tcm_fc ........................................................ [0 Targets]
-  o- vhost ......................................................... [0 Targets]
-</screen>
-   <para>
-    Note that tpg2 is disabled since this portal does not exist on gateway
-    <emphasis>igw1</emphasis>. Applying the same configuration on
-    <emphasis>igw2</emphasis> will result in the reverse. Tpg1 will be
-    disabled and tpg2 will be enabled.
-   </para>
-   <para>
-    From the initiator, a discovery of <emphasis>igw1</emphasis> will output
-    the following:
-   </para>
-<screen>
-# iscsiadm -m discovery -t st -p 172.16.1.16
-172.16.1.16:3260,1 iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant
-172.16.1.17:3260,2 iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant
-</screen>
-   <para>
-    A discovery of <emphasis>igw2</emphasis> will give the same results.
-   </para>
-   <para>
-    Once discovered, both gateways can be logged into simultaneously with
-   </para>
-<screen>iscsiadm -m node -L all</screen>
-   <para>
-    And multipath will list both paths as separate devices.
-   </para>
-<screen>
-# multipath -ll
-3600140569accc1f6b1f3853bb38f8deb dm-0 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 8:0:0:0 sdb 8:16 active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 9:0:0:0 sda 8:0  active ready running
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.access-control">
-   <title>Access control</title>
-   <para>
-    Rather than see a trivial example of iSCSI access controls, this example
-    shows access lists on two independent gateways each accessing different
-    images within &ceph; and restricting access to two clients.
-    Additionally, each gateway has redundant network interfaces.
-   </para>
-   <figure>
-    <title>Physical Acls Layout</title>
-    <mediaobject>
-     <imageobject>
-      <imagedata fileref="iscsi-acls-physical.png" />
-     </imageobject>
-     <textobject><phrase>Physical Acls Layout</phrase>
-     </textobject>
-    </mediaobject>
-   </figure>
-   <para>
-    &ceph; is configured for five images across three pools. The pool
-    <emphasis role="strong">rbd</emphasis> contains
-    <emphasis>city</emphasis>, <emphasis>writers</emphasis> and
-    <emphasis>wood</emphasis>, <emphasis role="strong">car</emphasis>
-    contains <emphasis>cement</emphasis> and
-    <emphasis role="strong">whirl</emphasis> contains
-    <emphasis>cheese</emphasis>. The rationale is to simply demonstrate that
-    multiple images per pool and multiple pools work. A typical
-    configuration would be a subset.
-   </para>
-   <para>
-    Each client has an initiator iqn. Each gateway has a target iqn with a
-    single portal of two network interfaces.
-   </para>
-   <figure>
-    <title>Abstract Acls Layout</title>
-    <mediaobject>
-     <imageobject>
-      <imagedata fileref="iscsi-acls-abstract.png" />
-     </imageobject>
-     <textobject><phrase>Abstract Acls Layout</phrase>
-     </textobject>
-    </mediaobject>
-   </figure>
-   <para>
-    The sample is <filename>acls.json</filename> and is shown below:
-   </para>
-<screen>
-{
-    "targets": [
-      {
-        "host": "igw1",
-        "target": "iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141"
-      },
-      {
-        "host": "igw2",
-        "target": "iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579"
-      }
-    ],
-    "auth": [
-        {
-            "host": "igw1", 
-            "authentication": "acls", 
-            "acls": [
-                {
-                    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20",
-                    "userid": "initiator1", 
-                    "password": "pass1"
-                }
-            ]
-        }, 
-        {
-            "host": "igw2", 
-            "authentication": "acls", 
-            "acls": [
-                {
-                    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20",
-                    "userid": "initiator1", 
-                    "password": "pass1"
-                },
-                {
-                    "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f24", 
-                    "userid": "initiator2", 
-                    "password": "pass5"
-                } 
-            ] 
-        }
-    ], 
-    "portals": [
-        {
-            "name": "portal1",
-            "addresses": [ "172.16.1.16", "172.16.2.16" ]
-        },
-        {
-            "name": "portal2",
-            "addresses": [ "172.16.1.17", "172.16.2.17" ]
-        }
-    ],
-    "pools": [
-        {
-            "pool": "rbd",
-            "gateways": [
-                {
-                    "host": "igw1", 
-                    "tpg": [
-                        {
-                            "portal": "portal1",
-                            "image": "city",
-                            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20"
-                        }
-                    ]
-                }, 
-                {
-                    "host": "igw2", 
-                    "tpg": [
-                        {
-                            "portal": "portal2",
-                            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20", 
-                            "image": "writers"
-                        }, 
-                        {
-                            "portal": "portal2",
-                            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f24", 
-                            "image": "writers"
-                        }, 
-                        {
-                            "portal": "portal2",
-                            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f24", 
-                            "image": "wood"
-                        }
-                    ] 
-                }
-            ] 
-        },
-        {
-            "pool": "car",
-            "gateways": [
-                {
-                    "host": "igw1", 
-                    "tpg": [
-                        {
-                            "portal": "portal1",
-                            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20",
-                            "image": "cement"
-                        }
-                    ]
-                } 
-            ] 
-        },
-        {
-            "pool": "whirl",
-            "gateways": [
-                {
-                    "host": "igw2",
-                    "tpg": [
-                        {
-                            "portal": "portal2",
-                            "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20",
-                            "image": "cheese"
-                        }
-                    ]
-                }
-            ]
-        }
-    ]
-}
-</screen>
-   <para>
-    Unlike the previous example where both gateways are configured
-    essentially identically, these gateways are independent. Running
-    <command>lrbd</command> on <emphasis>igw1</emphasis> results in the
-    following
-   </para>
-<screen>
-modprobe vhost_scsi
-modprobe iscsi_target_mod
-modprobe tcm_loop
-modprobe tcm_fc
-modprobe ib_srpt
-modprobe tcm_qla2xxx
-modprobe target_core_rbd
-targetcli /backstores/rbd create name=city dev=/dev/rbd/rbd/city
-Created '/sys/kernel/config/target/vhost'.
-Created '/sys/kernel/config/target/iscsi'.
-Created '/sys/kernel/config/target/loopback'.
-Created '/sys/kernel/config/target/fc'.
-Created '/sys/kernel/config/target/srpt'.
-Created '/sys/kernel/config/target/qla2xxx'.
-Created RBD storage object city using /dev/rbd/rbd/city.
-targetcli /backstores/rbd create name=cement dev=/dev/rbd/car/cement
-Created RBD storage object cement using /dev/rbd/car/cement.
-targetcli /iscsi create iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141
-Created target iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141.
-Selected TPG Tag 1.
-Created TPG 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/luns create /backstores/rbd/cement
-Selected LUN 0.
-Created LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/luns create /backstores/rbd/city
-Selected LUN 1.
-Created LUN 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/portals create 172.16.1.16
-Using default IP port 3260
-Created network portal 172.16.1.16:3260.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/portals create 172.16.2.16
-Using default IP port 3260
-Created network portal 172.16.2.16:3260.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/portals create 172.16.1.16
-Using default IP port 3260
-This NetworkPortal already exists in configFS.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/portals create 172.16.2.16
-Using default IP port 3260
-This NetworkPortal already exists in configFS.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/acls create iqn.1996-04.de.suse:01:e6ca28cc9f20
-Created Node ACL for iqn.1996-04.de.suse:01:e6ca28cc9f20
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 create 1 1
-Created Mapped LUN 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 create 0 0
-Created Mapped LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 set auth userid=initiator1 password=pass1
-Parameter password is now 'pass1'.
-Parameter userid is now 'initiator1'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1 set attribute authentication=1 demo_mode_write_protect=0 generate_node_acls=0
-Parameter authentication is now '1'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '0'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 set auth userid=initiator1 password=pass1
-Parameter password is now 'pass1'.
-Parameter userid is now 'initiator1'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141/tpg1 set attribute authentication=1 demo_mode_write_protect=0 generate_node_acls=0
-Parameter authentication is now '1'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '0'.
-</screen>
-   <para>
-    While running <command>lrbd</command> on <emphasis>igw2</emphasis>
-    outputs
-   </para>
-<screen>
-modprobe vhost_scsi
-modprobe iscsi_target_mod
-modprobe tcm_loop
-modprobe tcm_fc
-modprobe ib_srpt
-modprobe tcm_qla2xxx
-modprobe target_core_rbd
-targetcli /backstores/rbd create name=mental dev=/dev/rbd/whirl/mental
-Created '/sys/kernel/config/target/vhost'.
-Created '/sys/kernel/config/target/iscsi'.
-Created '/sys/kernel/config/target/loopback'.
-Created '/sys/kernel/config/target/fc'.
-Created '/sys/kernel/config/target/srpt'.
-Created '/sys/kernel/config/target/qla2xxx'.
-Created RBD storage object mental using /dev/rbd/whirl/mental.
-targetcli /backstores/rbd create name=writers dev=/dev/rbd/rbd/writers
-Created RBD storage object writers using /dev/rbd/rbd/writers.
-targetcli /backstores/rbd create name=wood dev=/dev/rbd/rbd/wood
-Created RBD storage object wood using /dev/rbd/rbd/wood.
-targetcli /iscsi create iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579
-Created target iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579.
-Selected TPG Tag 1.
-Created TPG 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/luns create /backstores/rbd/wood
-Selected LUN 0.
-Created LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/luns create /backstores/rbd/writers
-Selected LUN 1.
-Created LUN 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/luns create /backstores/rbd/mental
-Selected LUN 2.
-Created LUN 2.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/portals create 172.16.1.17
-Using default IP port 3260
-Created network portal 172.16.1.17:3260.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/portals create 172.16.2.17
-Using default IP port 3260
-Created network portal 172.16.2.17:3260.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/portals create 172.16.1.17
-Using default IP port 3260
-This NetworkPortal already exists in configFS.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/portals create 172.16.2.17
-Using default IP port 3260
-This NetworkPortal already exists in configFS.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/portals create 172.16.1.17
-Using default IP port 3260
-This NetworkPortal already exists in configFS.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/portals create 172.16.2.17
-Using default IP port 3260
-This NetworkPortal already exists in configFS.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls create iqn.1996-04.de.suse:01:e6ca28cc9f24
-Created Node ACL for iqn.1996-04.de.suse:01:e6ca28cc9f24
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls create iqn.1996-04.de.suse:01:e6ca28cc9f20
-Created Node ACL for iqn.1996-04.de.suse:01:e6ca28cc9f20
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 create 1 1
-Created Mapped LUN 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f24 create 1 1
-Created Mapped LUN 1.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f24 create 0 0
-Created Mapped LUN 0.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 create 2 2
-Created Mapped LUN 2.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 set auth userid=initiator1 password=pass1
-Parameter password is now 'pass1'.
-Parameter userid is now 'initiator1'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f24 set auth userid=initiator2 password=pass5
-Parameter password is now 'pass5'.
-Parameter userid is now 'initiator2'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1 set attribute authentication=1 demo_mode_write_protect=0 generate_node_acls=0
-Parameter authentication is now '1'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '0'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 set auth userid=initiator1 password=pass1
-Parameter password is now 'pass1'.
-Parameter userid is now 'initiator1'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f24 set auth userid=initiator2 password=pass5
-Parameter password is now 'pass5'.
-Parameter userid is now 'initiator2'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1 set attribute authentication=1 demo_mode_write_protect=0 generate_node_acls=0
-Parameter authentication is now '1'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '0'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f20 set auth userid=initiator1 password=pass1
-Parameter password is now 'pass1'.
-Parameter userid is now 'initiator1'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1/acls/iqn.1996-04.de.suse:01:e6ca28cc9f24 set auth userid=initiator2 password=pass5
-Parameter password is now 'pass5'.
-Parameter userid is now 'initiator2'.
-targetcli /iscsi/iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579/tpg1 set attribute authentication=1 demo_mode_write_protect=0 generate_node_acls=0
-Parameter authentication is now '1'.
-Parameter demo_mode_write_protect is now '0'.
-Parameter generate_node_acls is now '0'.
-</screen>
-   <para>
-    The first gateway will share the two images, <emphasis>cement</emphasis>
-    and <emphasis>city</emphasis> with only one initiator. This initiator
-    can connect to either image over either interface, but must login with
-    the credentials specified.
-   </para>
-<screen>
-o- / ..................................................................... [...]
-  o- backstores .......................................................... [...]
-  | o- fileio ............................................... [0 Storage Object]
-  | o- iblock ............................................... [0 Storage Object]
-  | o- pscsi ................................................ [0 Storage Object]
-  | o- rbd ................................................. [2 Storage Objects]
-  | | o- cement ................................ [/dev/rbd/car/cement activated]
-  | | o- city .................................... [/dev/rbd/rbd/city activated]
-  | o- rd_mcp ............................................... [0 Storage Object]
-  o- ib_srpt ....................................................... [0 Targets]
-  o- iscsi .......................................................... [1 Target]
-  | o- iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141 ............ [1 TPG]
-  |   o- tpg1 ........................................................ [enabled]
-  |     o- acls ........................................................ [1 ACL]
-  |     | o- iqn.1996-04.de.suse:01:e6ca28cc9f20 ............... [2 Mapped LUNs]
-  |     |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  |     |   o- mapped_lun1 ......................................... [lun1 (rw)]
-  |     o- luns ....................................................... [2 LUNs]
-  |     | o- lun0 ........................... [rbd/cement (/dev/rbd/car/cement)]
-  |     | o- lun1 ............................... [rbd/city (/dev/rbd/rbd/city)]
-  |     o- portals ................................................. [2 Portals]
-  |       o- 172.16.1.16:3260 .............................. [OK, iser disabled]
-  |       o- 172.16.2.16:3260 .............................. [OK, iser disabled]
-  o- loopback ...................................................... [0 Targets]
-  o- qla2xxx ....................................................... [0 Targets]
-  o- tcm_fc ........................................................ [0 Targets]
-  o- vhost ......................................................... [0 Targets]
-</screen>
-   <para>
-    The second gateway shares three images - <emphasis>cheese</emphasis>,
-    <emphasis>wood</emphasis> and <emphasis>writers</emphasis>. The first
-    initiator can access <emphasis>writers</emphasis> and
-    <emphasis>cheese</emphasis>, but not <emphasis>wood</emphasis>. The
-    second initiator can access <emphasis>wood</emphasis> and
-    <emphasis>writers</emphasis>, but not <emphasis>cheese</emphasis>.
-   </para>
-   <para>
-    Note that although <emphasis>writers</emphasis> is accessible by both
-    initiators, two independently acting applications can still corrupt the
-    data. Consider the example of mounting a filesystem (e.g. ext4, xfs) to
-    two different servers and writing both simultaneously. Corruption will
-    ensue.
-   </para>
-   <para>
-    However, an administrator may have an application requiring a cold spare
-    where this solution may be suitable.
-   </para>
-<screen>
-o- / ..................................................................... [...]
-  o- backstores .......................................................... [...]
-  | o- fileio ............................................... [0 Storage Object]
-  | o- iblock ............................................... [0 Storage Object]
-  | o- pscsi ................................................ [0 Storage Object]
-  | o- rbd ................................................. [3 Storage Objects]
-  | | o- cheese .............................. [/dev/rbd/whirl/cheese activated]
-  | | o- wood .................................... [/dev/rbd/rbd/wood activated]
-  | | o- writers .............................. [/dev/rbd/rbd/writers activated]
-  | o- rd_mcp ............................................... [0 Storage Object]
-  o- ib_srpt ....................................................... [0 Targets]
-  o- iscsi .......................................................... [1 Target]
-  | o- iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579 ............ [1 TPG]
-  |   o- tpg1 ........................................................ [enabled]
-  |     o- acls ....................................................... [2 ACLs]
-  |     | o- iqn.1996-04.de.suse:01:e6ca28cc9f20 ............... [2 Mapped LUNs]
-  |     | | o- mapped_lun1 ......................................... [lun1 (rw)]
-  |     | | o- mapped_lun2 ......................................... [lun2 (rw)]
-  |     | o- iqn.1996-04.de.suse:01:e6ca28cc9f24 ............... [2 Mapped LUNs]
-  |     |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  |     |   o- mapped_lun1 ......................................... [lun1 (rw)]
-  |     o- luns ....................................................... [3 LUNs]
-  |     | o- lun0 ............................... [rbd/wood (/dev/rbd/rbd/wood)]
-  |     | o- lun1 ......................... [rbd/writers (/dev/rbd/rbd/writers)]
-  |     | o- lun2 ......................... [rbd/cheese (/dev/rbd/whirl/cheese)]
-  |     o- portals ................................................. [2 Portals]
-  |       o- 172.16.1.17:3260 .............................. [OK, iser disabled]
-  |       o- 172.16.2.17:3260 .............................. [OK, iser disabled]
-  o- loopback ...................................................... [0 Targets]
-  o- qla2xxx ....................................................... [0 Targets]
-  o- tcm_fc ........................................................ [0 Targets]
-  o- vhost ......................................................... [0 Targets]
-</screen>
-   <para>
-    From the first initiator, a discovery of <emphasis>igw1</emphasis> will
-    output the following:
-   </para>
-<screen>
-# iscsiadm -m discovery -t st -p 172.16.1.16
-172.16.1.16:3260,1 iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141
-172.16.2.16:3260,1 iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141
-</screen>
-   <para>
-    Before logging in, the credentials must be configured.
-   </para>
-<screen>
-# iscsiadm -m node -o update --name=node.session.auth.username --value=initiator1
-# iscsiadm -m node -o update --name=node.session.auth.password --value=pass1
-# iscsiadm -m node -o update --name=node.session.auth.authmethod --value=CHAP
-# iscsiadm -m node -L all
-</screen>
-   <para>
-    These values can be verified with
-   </para>
-<screen>iscsiadm -m node -o show</screen>
-   <para>
-    Next, login from the first initiator to the <emphasis>igw1</emphasis>
-    with
-   </para>
-<screen>iscsiadm -m node -L all</screen>
-   <para>
-    If the login fails, consider running <command>journalctl -f</command> on
-    <emphasis>igw1</emphasis> to help diagnose the issue.
-   </para>
-   <para>
-    Once the login is successful, four devices will be available.
-   </para>
-<screen>
-# multipath -ll
-360014052d4012252b4e4f69849df36eb dm-1 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 7:0:0:0 sdb 8:16 active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 6:0:0:0 sda 8:0  active ready running
-360014050c2b99be7c3c421f8ef1d34df dm-0 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 6:0:0:1 sdc 8:32 active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 7:0:0:1 sdd 8:48 active ready running
-</screen>
-   <para>
-    Now the first initiator can log into <emphasis>igw2</emphasis> as well.
-    After running a discovery,
-   </para>
-   <para>
-<screen>iscsiadm -m discovery -t st -p 172.16.1.17</screen>
-   </para>
-   <para>
-    both paths for each gateway will be displayed from
-   </para>
-<screen>
-# iscsiadm -m node
-172.16.1.16:3260,1 iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141
-172.16.2.16:3260,1 iqn.2003-01.org.linux-iscsi.igw1.x86:sn.1a2b6ae09141
-172.16.2.17:3260,1 iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579
-172.16.1.17:3260,1 iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579
-</screen>
-   <para>
-    Initialize the credentials if necessary and login.
-   </para>
-<screen>
-# iscsiadm -m node -o update --name=node.session.auth.username --value=initiator1
-# iscsiadm -m node -o update --name=node.session.auth.password --value=pass1
-# iscsiadm -m node -o update --name=node.session.auth.authmethod --value=CHAP
-# iscsiadm -m node -L all
-</screen>
-   <para>
-    The last command will complain that two sessions are already active. The
-    devices for <emphasis>igw2</emphasis> have been added. Verify with
-   </para>
-<screen>
-# multipath -ll
-360014052d4012252b4e4f69849df36eb dm-1 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 7:0:0:0  sdb 8:16  active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 6:0:0:0  sda 8:0   active ready running
-360014050c2b99be7c3c421f8ef1d34df dm-0 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 6:0:0:1  sdc 8:32  active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 7:0:0:1  sdd 8:48  active ready running
-360014054267d0d72a5447d3bc42c50f9 dm-2 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 10:0:0:1 sde 8:64  active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 11:0:0:1 sdg 8:96  active ready running
-36001405f2fc087d51114b909e0cfcfd7 dm-3 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 10:0:0:2 sdf 8:80  active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 11:0:0:2 sdh 8:112 active ready running
-</screen>
-   <para>
-    The second initiator can log into <emphasis>igw2</emphasis> following
-    the same steps as the first initiator.
-   </para>
-<screen>
-# iscsiadm -m discovery -t st -p 172.16.1.17
-172.16.1.17:3260,1 iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579
-172.16.2.17:3260,1 iqn.2003-01.org.linux-iscsi.igw2.x86:sn.b611a553e579
-</screen>
-   <para>
-    Note the different username and password.
-   </para>
-<screen>
-# iscsiadm -m node -o update --name=node.session.auth.username --value=initiator2
-# iscsiadm -m node -o update --name=node.session.auth.password --value=pass5
-# iscsiadm -m node -o update --name=node.session.auth.authmethod --value=CHAP
-# iscsiadm -m node -L all
-</screen>
-   <para>
-    The devices added on the second initiator are
-   </para>
-<screen>
-# multipath -ll
-3600140576c55e60dd7d4ae2982bce328 dm-1 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 13:0:0:0 sdb 8:16 active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 12:0:0:0 sda 8:0  active ready running
-36001405f39addb925d44472951de78da dm-0 SUSE,RBD
-size=1.0G features='0' hwhandler='0' wp=rw
-|-+- policy='service-time 0' prio=1 status=active
-| `- 12:0:0:1 sdc 8:32 active ready running
-`-+- policy='service-time 0' prio=1 status=enabled
-  `- 13:0:0:1 sdd 8:48 active ready running
-</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph.iscsi.redundant-gateways-with-isolated-paths">
-   <title>Redundant gateways with isolated paths</title>
-   <para>
-    A potentially useful configuration concerns different requirements for
-    images. Imagine customizing network buffers or having greater bandwidth
-    for one network interface but not another.
-   </para>
-   <para>
-    The requirement is to dedicate one network interface for the image
-    <emphasis>city</emphasis> and the other network interface to
-    <emphasis>wood</emphasis>. The administrator wishes to have the image
-    <emphasis>archive</emphasis> accessible from one gateway for
-    experimentation. Additionally, the images <emphasis>city</emphasis> and
-    <emphasis>wood</emphasis> must be restricted to their respective
-    initiators, but <emphasis>archive</emphasis> is not.
-   </para>
-   <para>
-    The physical layout is identical to the previous example.
-   </para>
-   <figure>
-    <title>Physical Isolated Layout</title>
-    <mediaobject>
-     <imageobject>
-      <imagedata fileref="iscsi-acls-physical.png" />
-     </imageobject>
-     <textobject><phrase>Physical Isolated
-        Layout</phrase>
-     </textobject>
-    </mediaobject>
-   </figure>
-   <para>
-    The organization is different. Gateway <emphasis>igw1</emphasis> has
-    three targets and gateway <emphasis>igw2</emphasis> has two. Each
-    network interface is associated with a portal.
-   </para>
-   <figure>
-    <title>Abstract Isolated Layout</title>
-    <mediaobject>
-     <imageobject>
-      <imagedata fileref="iscsi-isolated-abstract.png" />
-     </imageobject>
-     <textobject><phrase>Abstract Isolated
-        Layout</phrase>
-     </textobject>
-    </mediaobject>
-   </figure>
-   <para>
-    The configuration sample is
-    <filename>plain+2gateways+2portals+2images+isolated+combined.json</filename>
-    and shown here.
-   </para>
-<screen>
-{
-  "auth": [
-        {
-          "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant",
-          "authentication": "acls", 
-          "acls": [ 
-            {
-              "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20",
-              "userid": "common1", 
-              "password": "pass1"
-            }
-          ]
-        },
-        {
-          "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant-too",
-          "authentication": "acls", 
-          "acls": [ 
-            {
-              "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f24",
-              "userid": "common2", 
-              "password": "pass2"
-            }
-          ]
-        },
-        {
-            "host": "igw1", 
-            "authentication": "tpg", 
-            "tpg": {
-                "userid": "common1", 
-                "password": "pass1"
-            }
-        } 
-  ], 
-  "targets": [
-      {
-        "hosts": [
-            { "host": "igw1", "portal": "portal1" },
-            { "host": "igw2", "portal": "portal2" }
-        ],
-        "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant"
-      },
-      {
-        "hosts": [
-            { "host": "igw1", "portal": "portal3" },
-            { "host": "igw2", "portal": "portal4" }
-        ],
-        "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant-too"
-      },
-      {
-        "host": "igw1",
-        "target": "iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk"
-      }
-  ], 
-  "portals": [
-      {
-          "name": "portal1",
-          "addresses": [ "172.16.1.16" ]
-      },
-      {
-          "name": "portal2",
-          "addresses": [ "172.16.1.17"  ]
-      },
-      {
-          "name": "portal3",
-          "addresses": [ "172.16.2.16" ]
-      },
-      {
-          "name": "portal4",
-          "addresses": [ "172.16.2.17" ]
-      }
-  ],
-  "pools": [
-    {
-      "pool": "rbd",
-      "gateways": [
-        {
-          "host": "igw1", 
-          "tpg": [
-            {
-              "image": "archive",
-              "portal": "portal1"
-            }
-          ]
-        }, 
-        {
-          "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant",
-          "tpg": [
-            {
-              "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f20",
-              "image": "city"
-            }
-          ] 
-        }, 
-        {
-          "target": "iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant-too",
-          "tpg": [
-            {
-              "initiator": "iqn.1996-04.de.suse:01:e6ca28cc9f24",
-              "image": "wood"
-            }
-          ] 
-        } 
-      ] 
-    } 
-  ]
-}
-</screen>
-   <para>
-    The output of the <command>lrbd</command> commands is similar on both
-    gateways. Since neither demonstrates anything unique from the previous
-    examples, these are omitted. Inspecting both gateways will show the
-    differences from the first example.
-   </para>
-   <para>
-    On <emphasis>igw1</emphasis>, run <literal># targetcli ls</literal>
-   </para>
-<screen>
-o- / ..................................................................... [...]
-  o- backstores .......................................................... [...]
-  | o- fileio ............................................... [0 Storage Object]
-  | o- iblock ............................................... [0 Storage Object]
-  | o- pscsi ................................................ [0 Storage Object]
-  | o- rbd ................................................. [3 Storage Objects]
-  | | o- archive .............................. [/dev/rbd/rbd/archive activated]
-  | | o- city .................................... [/dev/rbd/rbd/city activated]
-  | | o- wood .................................... [/dev/rbd/rbd/wood activated]
-  | o- rd_mcp ............................................... [0 Storage Object]
-  o- ib_srpt ....................................................... [0 Targets]
-  o- iscsi ......................................................... [3 Targets]
-  | o- iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk .......... [1 TPG]
-  | | o- tpg1 ........................................................ [enabled]
-  | |   o- acls ....................................................... [0 ACLs]
-  | |   o- luns ........................................................ [1 LUN]
-  | |   | o- lun0 ......................... [rbd/archive (/dev/rbd/rbd/archive)]
-  | |   o- portals .................................................. [1 Portal]
-  | |     o- 172.16.1.16:3260 .............................. [OK, iser disabled]
-  | o- iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant ............... [2 TPGs]
-  | | o- tpg1 ........................................................ [enabled]
-  | | | o- acls ........................................................ [1 ACL]
-  | | | | o- iqn.1996-04.de.suse:01:e6ca28cc9f20 ................ [1 Mapped LUN]
-  | | | |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  | | | o- luns ........................................................ [1 LUN]
-  | | | | o- lun0 ............................... [rbd/city (/dev/rbd/rbd/city)]
-  | | | o- portals .................................................. [1 Portal]
-  | | |   o- 172.16.1.16:3260 .............................. [OK, iser disabled]
-  | | o- tpg2 ....................................................... [disabled]
-  | |   o- acls ........................................................ [1 ACL]
-  | |   | o- iqn.1996-04.de.suse:01:e6ca28cc9f20 ................ [1 Mapped LUN]
-  | |   |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  | |   o- luns ........................................................ [1 LUN]
-  | |   | o- lun0 ............................... [rbd/city (/dev/rbd/rbd/city)]
-  | |   o- portals .................................................. [1 Portal]
-  | |     o- 172.16.1.17:3260 .............................. [OK, iser disabled]
-  | o- iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant-too ........... [2 TPGs]
-  |   o- tpg1 ........................................................ [enabled]
-  |   | o- acls ........................................................ [1 ACL]
-  |   | | o- iqn.1996-04.de.suse:01:e6ca28cc9f24 ................ [1 Mapped LUN]
-  |   | |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  |   | o- luns ........................................................ [1 LUN]
-  |   | | o- lun0 ............................... [rbd/wood (/dev/rbd/rbd/wood)]
-  |   | o- portals .................................................. [1 Portal]
-  |   |   o- 172.16.2.16:3260 .............................. [OK, iser disabled]
-  |   o- tpg2 ....................................................... [disabled]
-  |     o- acls ........................................................ [1 ACL]
-  |     | o- iqn.1996-04.de.suse:01:e6ca28cc9f24 ................ [1 Mapped LUN]
-  |     |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  |     o- luns ........................................................ [1 LUN]
-  |     | o- lun0 ............................... [rbd/wood (/dev/rbd/rbd/wood)]
-  |     o- portals .................................................. [1 Portal]
-  |       o- 172.16.2.17:3260 .............................. [OK, iser disabled]
-  o- loopback ...................................................... [0 Targets]
-  o- qla2xxx ....................................................... [0 Targets]
-  o- tcm_fc ........................................................ [0 Targets]
-  o- vhost ......................................................... [0 Targets]
-</screen>
-   <para>
-    Note the non-redundant target shares the archive image. Both redundant
-    targets have two TPGs each. The first is enabled and the second
-    disabled.
-   </para>
-   <para>
-    The configuration for <emphasis>igw2</emphasis> shows
-   </para>
-<screen>
-o- / ..................................................................... [...]
-  o- backstores .......................................................... [...]
-  | o- fileio ............................................... [0 Storage Object]
-  | o- iblock ............................................... [0 Storage Object]
-  | o- pscsi ................................................ [0 Storage Object]
-  | o- rbd ................................................. [2 Storage Objects]
-  | | o- city .................................... [/dev/rbd/rbd/city activated]
-  | | o- wood .................................... [/dev/rbd/rbd/wood activated]
-  | o- rd_mcp ............................................... [0 Storage Object]
-  o- ib_srpt ....................................................... [0 Targets]
-  o- iscsi ......................................................... [2 Targets]
-  | o- iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant ............... [2 TPGs]
-  | | o- tpg1 ....................................................... [disabled]
-  | | | o- acls ........................................................ [1 ACL]
-  | | | | o- iqn.1996-04.de.suse:01:e6ca28cc9f20 ................ [1 Mapped LUN]
-  | | | |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  | | | o- luns ........................................................ [1 LUN]
-  | | | | o- lun0 ............................... [rbd/city (/dev/rbd/rbd/city)]
-  | | | o- portals .................................................. [1 Portal]
-  | | |   o- 172.16.1.16:3260 .............................. [OK, iser disabled]
-  | | o- tpg2 ........................................................ [enabled]
-  | |   o- acls ........................................................ [1 ACL]
-  | |   | o- iqn.1996-04.de.suse:01:e6ca28cc9f20 ................ [1 Mapped LUN]
-  | |   |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  | |   o- luns ........................................................ [1 LUN]
-  | |   | o- lun0 ............................... [rbd/city (/dev/rbd/rbd/city)]
-  | |   o- portals .................................................. [1 Portal]
-  | |     o- 172.16.1.17:3260 .............................. [OK, iser disabled]
-  | o- iqn.2003-01.org.linux-iscsi.igw.x86:sn.redundant-too ........... [2 TPGs]
-  |   o- tpg1 ....................................................... [disabled]
-  |   | o- acls ........................................................ [1 ACL]
-  |   | | o- iqn.1996-04.de.suse:01:e6ca28cc9f24 ................ [1 Mapped LUN]
-  |   | |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  |   | o- luns ........................................................ [1 LUN]
-  |   | | o- lun0 ............................... [rbd/wood (/dev/rbd/rbd/wood)]
-  |   | o- portals .................................................. [1 Portal]
-  |   |   o- 172.16.2.16:3260 .............................. [OK, iser disabled]
-  |   o- tpg2 ........................................................ [enabled]
-  |     o- acls ........................................................ [1 ACL]
-  |     | o- iqn.1996-04.de.suse:01:e6ca28cc9f24 ................ [1 Mapped LUN]
-  |     |   o- mapped_lun0 ......................................... [lun0 (rw)]
-  |     o- luns ........................................................ [1 LUN]
-  |     | o- lun0 ............................... [rbd/wood (/dev/rbd/rbd/wood)]
-  |     o- portals .................................................. [1 Portal]
-  |       o- 172.16.2.17:3260 .............................. [OK, iser disabled]
-  o- loopback ...................................................... [0 Targets]
-  o- qla2xxx ....................................................... [0 Targets]
-  o- tcm_fc ........................................................ [0 Targets]
-  o- vhost ......................................................... [0 Targets]
-</screen>
-   <para>
-    Only the redundant targets are present. For each target, tpg1 is
-    disabled and tpg2 is enabled. Essentially, the reverse of the first
-    gateway.
-   </para>
-   <para>
-    Discovery and authentication is the same as the previous example. Both
-    redundant targets are restricted to their respective initiators. The
-    exception is the <emphasis>archive</emphasis> image may be accessed by
-    any initiator with the correct credentials.
-   </para>
+}</screen>
   </sect2>
  </sect1>
 </chapter>
