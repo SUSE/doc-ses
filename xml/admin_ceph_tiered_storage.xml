@@ -36,6 +36,26 @@
   to the backing storage tier. So the cache tier and the backing storage tier
   are completely transparent to &ceph; clients.
  </para>
+ <tip>
+  <title>When to Use Cache Tiering</title>
+  <para>
+   It is a good idea to use cache tiering in the following cases:
+  </para>
+  <itemizedlist>
+   <listitem>
+    <para>
+     You want to provide a RADOS block device, &rgw;, or &cephfs; support to
+     access erasure encoded pools.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     You have a limited number of high performance storage, and a
+     <emphasis>very</emphasis> large collection of low performance storage.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </tip>
  <sect1 xml:id="sec.ceph.tiered.cachemodes">
   <title>Cache Modes</title>
 
@@ -83,54 +103,43 @@
   <sect2 xml:id="sec.ceph.tiered.caution">
    <title>A Word of Caution</title>
    <para>
-    Cache tiering will <emphasis>degrade</emphasis> performance for most
-    workloads. Users should use extreme caution before using this feature.
+    Cache tiering may <emphasis>degrade</emphasis> the cluster performance for
+    specific workloads. The following points show some of its aspects you need
+    to consider:
    </para>
    <itemizedlist>
     <listitem>
      <para>
       <emphasis>Workload dependent</emphasis>: Whether a cache will improve
-      performance is highly dependent on the workload. Because there is a cost
-      associated with moving objects into or out of the cache, it can only be
-      effective when there is a large skew in the access pattern in the data
-      set, such that most of the requests touch a small number of objects. The
+      performance is dependent on the workload. Because there is a cost
+      associated with moving objects into or out of the cache, it can be more
+      effective when most of the requests touch a small number of objects. The
       cache pool should be large enough to capture the working set for your
       workload to avoid thrashing.
      </para>
     </listitem>
     <listitem>
      <para>
-      <emphasis>Difficult to benchmark</emphasis>: Most benchmarks that users
-      run to measure performance will show terrible performance with cache
-      tiering, in part because very few of them skew requests toward a small
-      set of objects, it can take a long time for the cache to 'warm up', and
-      because the warm-up cost can be high.
+      <emphasis>Difficult to benchmark</emphasis>: Most performance benchmarks
+      may show low performance with cache tiering. The reason is that they
+      request a big set of objects, and it takes a long time for the cache to
+      'warm up'.
      </para>
     </listitem>
     <listitem>
      <para>
-      <emphasis>Usually slower</emphasis>: For workloads that are not cache
-      tiering-friendly, performance is often slower than a normal RADOS pool
-      without cache tiering enabled.
+      <emphasis>Usually slower</emphasis>: For workloads that are not suitable
+      for cache tiering, performance is often slower than a normal replicated
+      pool without cache tiering enabled.
      </para>
     </listitem>
     <listitem>
      <para>
       <emphasis><systemitem>librados</systemitem> object
-      enumeration</emphasis>: The librados-level object enumeration API is not
-      meant to be coherent in the presence of the case. If your application is
-      using <systemitem>librados</systemitem> directly and relies on object
-      enumeration, cache tiering will probably not work as expected. (This is
-      not a problem for &rgw;, RBD, or &cephfs;.)
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <emphasis>Complexity:</emphasis> Enabling cache tiering means that a lot
-      of additional machinery and complexity within the RADOS cluster is being
-      used. This increases the probability that you will encounter a bug in the
-      system that other users have not yet encountered and will put your
-      deployment at a higher level of risk.
+      enumeration</emphasis>: If your application is using
+      <systemitem>librados</systemitem> directly and relies on object
+      enumeration, cache tiering may not work as expected. (This is not a
+      problem for &rgw;, RBD, or &cephfs;.)
      </para>
     </listitem>
    </itemizedlist>
@@ -153,23 +162,21 @@
       <para>
        <emphasis>RBD with replicated cache and erasure-coded base</emphasis>:
        This is a common request, but usually does not perform well. Even
-       reasonably skewed workloads still send some small writes to cold
-       objects, and because small writes are not yet supported by the
-       erasure-coded pool, entire (usually 4 MB) objects must be migrated into
-       the cache in order to satisfy a small (often 4 KB) write. Only a handful
-       of users have successfully deployed this configuration, and it only
-       works for them because their data is extremely cold (backups) and they
-       are not in any way sensitive to performance.
+       workloads with many requests to a small set of objects still send some
+       small writes to cold objects, and because small writes are not yet
+       supported by the erasure-coded pool, entire (usually 4 MB) objects must
+       be migrated into the cache in order to satisfy a small (often 4 KB)
+       write.
       </para>
      </listitem>
      <listitem>
       <para>
        <emphasis>RBD with replicated cache and base</emphasis>: RBD with a
        replicated base tier does better than when the base is erasure coded,
-       but it is still highly dependent on the amount of skew in the workload,
-       and very difficult to validate. The user will need to have a good
-       understanding of their workload and will need to tune the cache tiering
-       parameters carefully.
+       but it is still highly dependent on the character and amount of requests
+       in the workload. The user will need to have a good understanding of
+       their workload and will need to tune the cache tiering parameters
+       carefully.
       </para>
      </listitem>
     </itemizedlist>
@@ -212,12 +219,11 @@
   </sect2>
  </sect1>
  <sect1 xml:id="ses.tiered.storage">
-  <title>Setting Up Tiered Storage</title>
+  <title>Setting Up an Example Tiered Storage</title>
 
   <para>
-   For <quote>hot-storage</quote> (= cache pool) create OSDs with fast disks.
-   Then associate a ceph storage pool with them. Here is a procedure how to do
-   this.
+   This section illustrates how to set up a fast SSD cache tier (hot-storage)
+   in front of a standard HDD (cold-storage).
   </para>
 
   <tip>
@@ -227,32 +233,34 @@
     &ceph; node.
    </para>
    <para>
-    In the production environment, the cluster setup includes more root and
-    rule entries for the hot storage, and also mixed nodes with both SSDs and
-    SATA disks.
+    In the production environment, the cluster setup typically includes more
+    root and rule entries for the hot storage, and also mixed nodes with both
+    SSDs and SATA disks.
    </para>
   </tip>
 
   <procedure>
    <step>
     <para>
-     Prepare a host machine with fast drives (SSDs).
+     Prepare a host machine with fast drives, such as SSDs. This cluster node
+     will act as a fast cache tier.
     </para>
    </step>
    <step>
     <para>
-     Turn the machine into a ceph node. Install the software and configure the
-     host machine as described in
-     <xref linkend="ceph.install.ceph-deploy.eachnode"/>. Let's assume that its
-     name is <replaceable>node-4</replaceable>.
+     Turn the machine into a &ceph; node. Install the software and configure
+     the host machine as described in
+     <xref linkend="ceph.install.ceph-deploy.eachnode"/>. Let us assume that
+     its name is <replaceable>node-4</replaceable>.
     </para>
    </step>
    <step>
     <para>
-     To create four OSDs, call <command>ceph-deploy</command> commands on the
-     administration node as follows, replacing
-     <replaceable>node-4</replaceable> with the actual node and device with the
-     actual device name:
+     You need to create 4 OSDs nodes. For this purpose run
+     <command>ceph-deploy</command> from the admin server (refer to
+     <xref linkend="ceph.install.ceph-deploy.cephdeploy"/>). Remember to
+     replace <replaceable>node-4</replaceable> with the actual node name and
+     device with the actual device name:
     </para>
 <screen>&prompt.cephuser;for d in a b c d; do
   ceph-deploy osd create node-4:device${d}
@@ -276,10 +284,9 @@ host node-4 {
    <step>
     <para>
      Edit the CRUSH map for the hot-storage pool mapped to the OSDs backed by
-     the fast solid-state drives (SSDs). Define a second hierarchy with a root
-     node for the SSDs (as <quote>root ssd</quote>). Additionally, change the
-     weight and a CRUSH rule for the SSDs. For more information on CRUSH map,
-     see
+     the fast SSD drives. Define a second hierarchy with a root node for the
+     SSDs (as <quote>root ssd</quote>). Additionally, change the weight and a
+     CRUSH rule for the SSDs. For more information on CRUSH map, see
      <link xlink:href="http://docs.ceph.com/docs/master/rados/operations/crush-map/"/>.
     </para>
     <para>
@@ -315,7 +322,7 @@ host node-4 {
         item osd.8 weight 1.000
         item osd.9 weight 1.000
 }
-root ssd {
+root ssd {    # newly added root for the SSD hot-storage
         id -6
         alg straw
         hash 0
