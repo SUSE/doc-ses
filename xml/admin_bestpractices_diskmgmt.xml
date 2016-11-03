@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="storage.bp.disk">
+ <title>Disk Management</title>
+ <para/>
+ <sect1 xml:id="storage.bp.disk.add">
+  <title>Adding Disks</title>
+
+  <important>
+   <itemizedlist mark="bullet" spacing="normal">
+    <listitem>
+     <para>
+      This can be done on a live cluster without downtime.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      This will cause increased replication traffic between servers.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Doing this operation repeatedly before the last operation has completed
+      replication can save the cluster overall rebuild time.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </important>
+
+  <para>
+   To add a disk (<filename>/dev/sdd</filename> in our example) to a &ceph;
+   cluster, follow these steps:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Create a partition <literal>sdd1</literal> on the disk:
+    </para>
+<screen>sudo parted /dev/sdd1 mkpart primary 0.0 -1s</screen>
+   </step>
+   <step>
+    <para>
+     Format the partition with XFS file system:
+    </para>
+<screen>sudo mkfs.xfs -f /dev/sdd1</screen>
+   </step>
+   <step>
+    <para>
+     Find out the UUID (Universally Unique Identifier) of the disk:
+    </para>
+<screen>ls -l /dev/disk/by-uuid | grep sdd1
+ [...] 04bb24f1-d631-47ff-a2ee-22d94ad4f80c -&gt; ../../sdd1</screen>
+   </step>
+   <step>
+    <para>
+     Add the corresponding line to <filename>/etc/fstab</filename> for the
+     example disk <literal>osd.12</literal>:
+    </para>
+<screen>[...]
+ UUID=04bb24f1-d631-47ff-a2ee-22d94ad4f80c /mnt/osd.12 xfs \
+ defaults,errors=remount-ro 0 1
+ [...]</screen>
+   </step>
+   <step>
+    <para>
+     Mount the disk:
+    </para>
+<screen>sudo mount /mnt/osd.12</screen>
+   </step>
+   <step>
+    <para>
+     Add the new disk to <filename>/etc/ceph/ceph.conf</filename> and copy the
+     updated configuration file to all other nodes in the cluster.
+    </para>
+   </step>
+   <step>
+    <para>
+     Create the OSD:
+    </para>
+<screen>ceph osd create 04bb24f1-d631-47ff-a2ee-22d94ad4f80c</screen>
+   </step>
+   <step>
+    <para>
+     Make sure that the new OSD is accepted into the cluster:
+    </para>
+<screen>sudo mkdir /srv/ceph/04bb24f1-d631-47ff-a2ee-22d94ad4f80c
+ ceph-osd -i 12 --mkfs --mkkey
+ ceph auth add osd.12 osd 'allow *' mon 'allow rwx' -i /etc/ceph/keyring.osd.12</screen>
+   </step>
+   <step>
+    <para>
+     Start the newly added OSD:
+    </para>
+<screen>sudo systemctl start ceph-osd@12.service</screen>
+   </step>
+   <step>
+    <para>
+     Add it to the cluster and allow replication based on &crushmap;:
+    </para>
+<screen>ceph osd crush set 12 osd.12 1.0 \
+ pool=<replaceable>pool_name</replaceable> rack=<replaceable>rack_name</replaceable> host=<replaceable>host_name</replaceable>-osd</screen>
+   </step>
+   <step>
+    <para>
+     Check that the new OSD is in the right place within the cluster:
+    </para>
+<screen>ceph osd tree</screen>
+   </step>
+  </procedure>
+
+  <tip>
+   <para>
+    The process of preparing/adding a disk can be simplified with the
+    <command>ceph-disk</command> command. See
+    <link xlink:href="http://ceph.com/docs/master/man/8/ceph-disk/"/> for more
+    information on <command>ceph-disk</command>.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage.bp.disk.del">
+  <title>Deleting disks</title>
+
+  <important>
+   <itemizedlist mark="bullet" spacing="normal">
+    <listitem>
+     <para>
+      This can be done on a live cluster without downtime.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      This will cause increased replication traffic between servers.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Be sure not to remove too many disks from your cluster to be able to keep
+      the replication rules. See <xref linkend="datamgm.rules"/> for more
+      information.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </important>
+
+  <para>
+   To delete a disk (for example <literal>osd.12</literal>) from a &ceph;
+   cluster, follow these steps:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Make sure you have the right disk:
+    </para>
+<screen>ceph osd tree</screen>
+   </step>
+   <step>
+    <para>
+     If the disk is a member of a pool and/or active:
+    </para>
+    <substeps performance="required">
+     <step>
+      <para>
+       <emphasis>Drain</emphasis> the OSD by setting its weight to zero:
+      </para>
+<screen>ceph osd crush reweight osd.12 0</screen>
+      <para>
+       Then wait for all the placement groups to be moved away to other OSDs
+       with <command>ceph -w</command>. Optionally, you can check if the OSD is
+       emptying with <command>df -h</command>.
+      </para>
+     </step>
+     <step>
+      <para>
+       Mark the disk out:
+      </para>
+<screen>ceph osd out 12</screen>
+     </step>
+     <step>
+      <para>
+       Stop the related OSD service:
+      </para>
+<screen>sudo systemctl stop ceph-osd@12.service</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     Remove the disk from &crushmap;:
+    </para>
+<screen>ceph osd crush remove osd.12</screen>
+   </step>
+   <step>
+    <para>
+     Remove authentication information for the disk:
+    </para>
+<screen>ceph auth del osd.12</screen>
+   </step>
+   <step>
+    <para>
+     Remove the disk from the cluster:
+    </para>
+<screen>ceph osd rm 12</screen>
+   </step>
+   <step>
+    <para>
+     Wipe the disk to remove all the data:
+    </para>
+<screen>sudo sgdisk --zap-all -- <replaceable>disk_device_name</replaceable>
+sudo sgdisk --clear --mbrtogpt -- <replaceable>disk_device_name</replaceable></screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="bp.osd_on_exisitng_partitions">
+  <title>How to Use Existing Partitions for OSDs Including OSD Journals</title>
+
+  <important>
+   <para>
+    This section describes an advanced topic that only storage experts and
+    developers should examine. It is mostly needed when using non-standard OSD
+    journal sizes. If the OSD partition's size is less than 10GB, its initial
+    weight is rounded to 0 and because no data are therefore placed on it, you
+    should increase its weight. We take no responsibility for overfilled
+    journals.
+   </para>
+  </important>
+
+  <para>
+   If you need to use existing disk partitions as an OSD node, the OSD journal
+   and data partitions need to be in a GPT partition table.
+  </para>
+
+  <para>
+   You need to set the correct partition types to the OSD partitions so that
+   <systemitem>udev</systemitem> recognizes them correctly and sets their
+   ownership to <literal>ceph:ceph</literal>.
+  </para>
+
+  <para>
+   For example, to set the partition type for the journal partition
+   <filename>/dev/vdb1</filename> and data partition
+   <filename>/dev/vdb2</filename>, run the following:
+  </para>
+
+<screen>sudo sgdisk --typecode=1:45b0969e-9b03-4f30-b4c6-b4b80ceff106 /dev/vdb
+sudo sgdisk --typecode=2:4fbd7e29-9d25-41b8-afd0-062c0ceff05d /dev/vdb</screen>
+
+  <tip>
+   <para>
+    The &ceph; partition table types are listed in
+    <filename>/usr/lib/udev/rules.d/95-ceph-osd.rules</filename>:
+   </para>
+<screen>cat /usr/lib/udev/rules.d/95-ceph-osd.rules
+# OSD_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+
+# JOURNAL_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+[...]</screen>
+  </tip>
+ </sect1>
+</chapter>
