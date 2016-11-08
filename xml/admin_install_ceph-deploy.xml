@@ -1,0 +1,498 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="ceph.install.ceph-deploy">
+ <title>Deploying with <command>ceph-deploy</command></title>
+ <para>
+  <command>ceph-deploy</command> is a command line utility to simplify the way you
+  deploy &ceph; cluster in small scale setups.
+ </para>
+ <sect1 xml:id="ceph.install.ceph-deploy.layout">
+  <title>&ceph; Layout</title>
+
+  <para>
+   For testing purposes, a minimal &ceph; cluster can be made to run on a
+   single node. However, in a production setup we recommend using at least four
+   nodes: one admin node and three cluster nodes, each running one monitor
+   daemon and some number of object storage daemons (OSDs).
+  </para>
+
+  <figure>
+   <title>Minimal &ceph; Setup</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="ceph_minimal.png" width="60%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="ceph_minimal.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <tip>
+   <para>
+    Although &ceph; nodes can be virtual machines, real hardware is strongly
+    recommended for the production environment.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="ceph.install.ceph-deploy.network">
+  <title>Network Recommendations</title>
+
+  <para>
+   The network environment where you intend to run &ceph; should ideally be a
+   bonded set of at least two network interfaces that is logically split into a
+   public part and trusted internal part using VLANs. The bonding mode is
+   recommended to be 802.3ad when possible to provide maximum bandwidth and
+   resiliency.
+  </para>
+
+  <para>
+   The public VLAN serves for providing the service to the customers, the
+   internal part provides for the authenticated &ceph; network communication.
+   The main reason is that although &ceph; authentication and protection
+   against attacks once secret keys are in place, the messages used to
+   configure these keys may be transferred open and are vulnerable.
+  </para>
+
+  <tip>
+   <title>Nodes Configured via DHCP</title>
+   <para>
+    If your storage nodes are configured via DHCP, the default timeouts may not
+    be sufficient for the network to be configured correctly before the various
+    &ceph; daemons start. If this happens, the &ceph; MONs and OSDs will not
+    start correctly (running <command>systemctl status ceph\*</command> will
+    result in "unable to bind" errors), and Calamari may be unable to display
+    graphs. To avoid this issue, we recommend increasing the DHCP client
+    timeout to at least 30 seconds on each node in your storage cluster. This
+    can be done by changing the following settings on each node:
+   </para>
+   <para>
+    In <filename>/etc/sysconfig/network/dhcp</filename> set
+   </para>
+<screen>DHCLIENT_WAIT_AT_BOOT="30"</screen>
+   <para>
+    In <filename>/etc/sysconfig/network/config</filename> set
+   </para>
+<screen>WAIT_FOR_INTERFACES="60"</screen>
+  </tip>
+ </sect1>
+ <sect1 xml:id="ceph.install.ceph-deploy.eachnode">
+  <title>Preparing Each &ceph; Node</title>
+
+  <para>
+   Before deploying the &ceph; cluster, apply the following steps for each
+   &ceph; node as &rootuser;:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Install &sle; 12 SP2 and add the &storage; extension.
+    </para>
+    <figure>
+     <title>&storage; Extension Selection</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="install_extension.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="install_extension.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     On the <guimenu>Installation Settings</guimenu> screen, click
+     <guimenu>Software</guimenu>. On the <guimenu>Software Selection and System
+     Tasks</guimenu> screen, there are several tasks related to &storage;. For
+     OSDs, monitors, or the admin server, be sure to choose &storage; server
+     packages and confirm with <guimenu>OK</guimenu>.
+    </para>
+    <figure>
+     <title>&storage; Related Installation Tasks</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="install_soft_sel.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="install_soft_sel.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     For more information on the extension installation, see
+     <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_deployment/data/cha_add-ons.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Check the firewall status
+    </para>
+<screen>sudo /sbin/SuSEfirewall2 status</screen>
+    <para>
+     and if it is on, either turn it off with
+    </para>
+<screen>sudo /sbin/SuSEfirewall2 off</screen>
+    <para>
+     or, if you want to keep it on, enable the appropriate set of ports. You
+     can find detailed information in
+     <xref linkend="storage.bp.net.firewall"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Make sure that network settings are correct: each &ceph; node needs to
+     route to all other &ceph; nodes, and each &ceph; node needs to resolve all
+     other &ceph; nodes by their short host names (without the domain suffix).
+     If these two conditions are not met, &ceph; fails.
+    </para>
+    <tip>
+     <title>Calamari Node</title>
+     <para>
+      If you plan to deploy the Calamari monitoring and management environment
+      (refer to <xref linkend="ceph.install.calamari"/> for more information),
+      each &ceph; node needs to reach the Calamari node as well.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Install and set up NTP&mdash;the time synchronization tool. We strongly
+     recommend using NTP within the &ceph; cluster. The reason is that &ceph;
+     daemons pass critical messages to each other, which must be processed
+     before daemons reach a timeout threshold. If the clocks in &ceph; monitors
+     are not synchronized, it can lead to a number of anomalies, such as
+     daemons ignoring received messages.
+    </para>
+    <para>
+     Even though clock drift may still be noticeable with NTP, it is not yet
+     harmful.
+    </para>
+    <para>
+     To install NTP, run the following:
+    </para>
+<screen>sudo zypper in ntp yast2-ntp-client</screen>
+    <para>
+     To configure NTP, go to <menuchoice><guimenu>&yast;</guimenu>
+     <guimenu>Network Services</guimenu> <guimenu>NTP
+     Configuration</guimenu></menuchoice>. Make sure to enable the NTP service
+     (<command>systemctl enable ntpd.service &amp;&amp; systemctl start
+     ntpd.service</command>). Find more detailed information on NTP in the
+     <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/cha_netz_xntp.html">
+     SLES Administration Guide</link>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Install SSH server. &ceph; uses SSH to log in to all cluster nodes. Make
+     sure SSH is installed (<command>zypper in openssh</command>) and enabled
+     (<command>systemctl enable sshd.service &amp;&amp; systemctl start
+     sshd.service</command>).
+    </para>
+   </step>
+   <step>
+    <para>
+     Add a &cephuser; user account, and set password for it. The admin node
+     will log in to &ceph; nodes as this particular &cephuser; user .
+    </para>
+<screen>sudo useradd -m &cephuser.plain; &amp;&amp; passwd &cephuser.plain;</screen>
+   </step>
+   <step>
+    <para>
+     The admin node needs to have passwordless SSH access to all &ceph; nodes.
+     When <command>ceph-deploy</command> logs in to a &ceph; node as a
+     &cephuser; user, this user must have passwordless <command>sudo</command>
+     privileges.
+    </para>
+    <para>
+     Edit the <filename>/etc/sudoers</filename> file (with
+     <command>visudo</command>) and add the following line to add the
+     <command>sudo</command> command for the &cephuser; user:
+    </para>
+<screen>&cephuser.plain; ALL = (root) NOPASSWD:ALL</screen>
+    <tip>
+     <title>Disable <literal>requiretty</literal></title>
+     <para>
+      You may receive an error while trying to execute
+      <command>ceph-deploy</command> commands. If <literal>requiretty</literal>
+      is set by default, disable it by executing <command>sudo visudo</command>
+      and locate the <literal>Defaults requiretty</literal> setting. Change it
+      to<literal> Defaults:&cephuser.plain; !requiretty</literal> to ensure
+      that <command>ceph-deploy</command> can connect using the &cephuser; user
+      and execute commands with <command>sudo</command>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     On the admin node, become the &cephuser; user, and enable passwordless SSH
+     access to all other &ceph; nodes:
+    </para>
+<screen>su - &cephuser.plain;
+&prompt.cephuser;ssh-keygen</screen>
+    <para>
+     You will be asked several questions. Leave the values at their defaults,
+     and the passphrase empty.
+    </para>
+    <para>
+     Copy the key to each &ceph; node:
+    </para>
+<screen>ssh-copy-id &cephuser.plain;@<replaceable>node1</replaceable>
+ssh-copy-id &cephuser.plain;@<replaceable>node2</replaceable>
+ssh-copy-id &cephuser.plain;@<replaceable>node3</replaceable></screen>
+    <tip>
+     <title>Running <command>ceph-deploy</command> from a Different User Account Than &cephuser;</title>
+     <para>
+      It is possible to run the <command>ceph-deploy</command> command even if
+      you are logged in as a different user than &cephuser;. For this purpose,
+      you need to set up an SSH alias in your
+      <filename>~/.ssh/config</filename> file:
+     </para>
+<screen>[...]
+Host ceph-node1
+  Hostname ceph-node1
+  User &cephuser.plain;</screen>
+     <para>
+      After this change, <command>ssh ceph-node1</command> automatically uses
+      the &cephuser; user to log in.
+     </para>
+    </tip>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="ceph.install.ceph-deploy.purge">
+  <title>Cleaning Previous &ceph; Environment</title>
+
+  <para>
+   If at any point during the &ceph; deployment you run into trouble and need
+   to start over, or you want to make sure that any previous &ceph;
+   configuration is removed, execute the following commands as &cephuser; user
+   to purge the previous &ceph; configuration.
+  </para>
+
+  <warning>
+   <para>
+    Be aware that <emphasis>purging</emphasis> previous &ceph; installation
+    destroys stored data and access settings.
+   </para>
+  </warning>
+
+<screen>&prompt.cephuser;ceph-deploy purge <replaceable>node1</replaceable> <replaceable>node2</replaceable> <replaceable>node3</replaceable>
+&prompt.cephuser;ceph-deploy purgedata <replaceable>node1</replaceable> <replaceable>node2</replaceable> <replaceable>node3</replaceable>
+&prompt.cephuser;ceph-deploy forgetkeys</screen>
+ </sect1>
+ <sect1 xml:id="ceph.install.ceph-deploy.cephdeploy">
+  <title>Running <command>ceph-deploy</command></title>
+
+  <para>
+   After you prepared each &ceph; node as described in
+   <xref linkend="ceph.install.ceph-deploy.eachnode"/>, you are ready to deploy
+   &ceph; from the admin node with <command>ceph-deploy</command>. Note that
+   <command>ceph-deploy</command> will not successfully install an OSD on disks
+   that have been previously used, unless you first 'zap' them. Be aware that
+   'zapping' erases the entire disk content:
+  </para>
+
+<screen>&prompt.cephuser;ceph-deploy disk zap <replaceable>node:vdb</replaceable></screen>
+
+  <procedure>
+   <step>
+    <para>
+     Install <command>ceph</command> and <command>ceph-deploy</command>:
+    </para>
+<screen>sudo zypper in ceph ceph-deploy</screen>
+   </step>
+   <step>
+    <para>
+     Disable IPv6. Open <filename>/etc/sysctl.conf</filename>, edit the
+     following lines, and reboot the admin node:
+    </para>
+<screen>net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1</screen>
+   </step>
+   <step>
+    <para>
+     Because it is not recommended to run <command>ceph-deploy</command> as
+     &rootuser;, become the &cephuser; user:
+    </para>
+<screen>su - &cephuser.plain;</screen>
+   </step>
+   <step>
+    <para>
+     Run <command>ceph-deploy</command> to install &ceph; on each node:
+    </para>
+<screen>&prompt.cephuser;ceph-deploy install <replaceable>node1</replaceable> <replaceable>node2</replaceable> <replaceable>node3</replaceable></screen>
+    <tip>
+     <para>
+      <command>ceph-deploy</command> creates important files in the directory
+      where you run it from. It is best to run <command>ceph-deploy</command>
+      in an empty directory.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Set up the monitor nodes. Create keys and local configuration. The keys
+     are used to authenticate and protect the communication between &ceph;
+     nodes.
+    </para>
+<screen>&prompt.cephuser;ceph-deploy new <replaceable>node1</replaceable> <replaceable>node2</replaceable> <replaceable>node3</replaceable></screen>
+    <para>
+     During this step, <command>ceph-deploy</command> creates local
+     configuration files. It is recommended to inspect the configuration files
+     in the current directory.
+    </para>
+    <tip>
+     <title>Monitor Nodes on Different Subnets</title>
+     <para>
+      If the monitor nodes are not in the same subnet, you need to modify the
+      <filename>ceph.conf</filename> in the current directory. For example, if
+      the nodes have IP addresses
+     </para>
+<screen>10.121.9.186
+10.121.10.186
+10.121.11.186</screen>
+     <para>
+      add the following line to the global section of
+      <filename>ceph.conf</filename>:
+     </para>
+<screen>public network = 10.121.0.0/16</screen>
+     <para>
+      Since you are likely to experience problems with IPv6 networking,
+      consider modifying the IPv6 mon_host settings, as in the following
+      example:
+     </para>
+<screen>mon_host = [2620:...10:121:9:186,2620:...10:121:10:186,2620:...10:121:11:186]</screen>
+     <para>
+      into its IPv4 equivalent:
+     </para>
+<screen>mon_host = 10.121.9.186, 10.121.10.186, 10.121.11.186</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Create the initial monitor service on already created monitor nodes:
+    </para>
+<screen>&prompt.cephuser;ceph-deploy mon create-initial</screen>
+   </step>
+   <step>
+    <para>
+     Any node from which you need to run &ceph; command line tools needs a copy
+     of the admin keyring. To copy the admin keyring to a node or set of nodes,
+     run
+    </para>
+<screen>&prompt.cephuser;ceph-deploy admin <replaceable>node1</replaceable> <replaceable>node2</replaceable> <replaceable>node3</replaceable></screen>
+    <important>
+     <para>
+      Because the <literal>client.admin</literal>'s keyring file is readable by
+      &rootuser; only, you need to use <command>sudo</command> when running the
+      <command>ceph</command> command.
+     </para>
+    </important>
+   </step>
+   <step>
+    <para>
+     Check the firewall status
+    </para>
+<screen>sudo /sbin/SuSEfirewall2 status</screen>
+    <para>
+     and if it is off, check its configuration and turn it on with
+    </para>
+<screen>sudo /sbin/SuSEfirewall2 on</screen>
+    <para>
+     You can find detailed information in
+     <xref linkend="storage.bp.net.firewall"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Create OSD daemons. Although you can use a directory as a storage, we
+     recommend to create a separate disk dedicated to a &ceph; node. To find
+     out the name of the disk device, run
+    </para>
+<screen>cat /proc/partitions
+major minor  #blocks  name
+
+ 254        0   12582912 vda
+ 254        1    1532928 vda1
+ 254        2   11048960 vda2
+  11        0    2831360 sr0
+ 254       16    4194304 vdb</screen>
+    <para>
+     In our case the <systemitem>vdb</systemitem> disk has no partitions, so it
+     is most likely our newly created disk.
+    </para>
+    <para>
+     Now set up the disk for &ceph;:
+    </para>
+<screen>&prompt.cephuser;ceph-deploy osd prepare <replaceable>node:vdb</replaceable></screen>
+    <tip>
+     <title>Using Existing Partitions</title>
+     <para>
+      If you need to create OSDs on already existing partitions, you need to
+      set their GUIDs correctly. See
+      <xref linkend="bp.osd_on_exisitng_partitions"/> for more details.
+     </para>
+    </tip>
+    <tip>
+     <para>
+      If the disk was already used before, add the <option>--zap</option>
+      option.
+     </para>
+<screen>&prompt.cephuser;ceph-deploy osd prepare --zap <replaceable>node:vdb</replaceable></screen>
+     <para>
+      Be aware that 'zapping' erases the entire disk content.
+     </para>
+    </tip>
+    <note>
+<!-- bnc#912479 -->
+     <title>Default File System for OSDs</title>
+     <para>
+      The default and only supported file system for OSDs is
+      <literal>xfs</literal>.
+     </para>
+    </note>
+    <para>
+     Optionally, activate the OSD:
+    </para>
+<screen>&prompt.cephuser;ceph-deploy osd activate <replaceable>node:vdb1</replaceable></screen>
+    <tip>
+     <para>
+      To join the functionality of <command>ceph-deploy osd prepare</command>
+      and <command>ceph-deploy osd activate</command>, use <command>ceph-deploy
+      osd create</command>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     To test the status of the cluster, run
+    </para>
+<screen>sudo ceph -k ceph.client.admin.keyring health</screen>
+   </step>
+  </procedure>
+
+  <tip>
+   <title>Non-default Cluster Name</title>
+   <para>
+    If you need to install the cluster with <command>ceph-deploy</command>
+    using a name other than the default <literal>cluster</literal> name, you
+    need to initially specify it with <option>--cluster</option>, and then
+    specify it in each <command>ceph-deploy</command> command related to that
+    cluster:
+   </para>
+<screen>ceph-deploy --cluster my_cluster new [...]
+ceph-deploy --ceph-conf my_cluster.conf mon create-initial
+ceph-deploy --ceph-conf my_cluster.conf osd prepare [...]
+ceph-deploy --ceph-conf my_cluster.conf osd activate [...]</screen>
+   <para>
+    Note that using a name other than default cluster name is not supported by
+    SUSE.
+   </para>
+  </tip>
+ </sect1>
+</chapter>
