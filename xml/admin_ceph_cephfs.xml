@@ -29,6 +29,16 @@
   To use &cephfs;, you need to have a running &ceph; storage cluster, and at
   least one running <emphasis>&ceph; metadata server</emphasis>.
  </para>
+ <warning>
+  <para>
+   &cephfs; file layout changes can be performed as documented in
+   <link
+    xlink:href="http://docs.ceph.com/docs/jewel/cephfs/file-layouts/"/>.
+   However, a data pool must not be added to an existing &cephfs; file system
+   (via <command>ceph mds add_data_pool</command>) while the file system is
+   mounted by any clients.
+  </para>
+ </warning>
  <sect1 xml:id="ceph.cephfs.mds">
   <title>&ceph; Metadata Server</title>
 
@@ -221,6 +231,171 @@ ceph osd pool create cephfs_metadata <replaceable>pg_num</replaceable></screen>
     <filename>/etc/fstab</filename>:
    </para>
 <screen>mon1:6790,mon2:/subdir /mnt/cephfs ceph name=admin,secretfile=/etc/ceph/secret.key,noatime 0 2</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.cephfs.failover">
+  <title>Managing Failover</title>
+
+  <para>
+   If an MDS daemon stops communicating with the monitor, the monitor will wait
+   <option>mds_beacon_grace</option> seconds (default 15 seconds) before
+   marking the daemon as <emphasis>laggy</emphasis>. You can configure one or
+   more 'standby' daemons that can will take over during the MDS daemon
+   failover.
+  </para>
+
+  <sect2 xml:id="ceph.cephfs.failover.standby">
+   <title>Configuring Standby Daemons</title>
+   <para>
+    There are several configuration settings that control how a daemon will
+    behave while in standby. You can specify them in the
+    <filename>ceph.conf</filename> on the host where the MDS daemon runs. The
+    daemon loads these settings when it starts, and sends them to the monitor.
+   </para>
+   <para>
+    By default, if none of these settings are used, all MDS daemons which do
+    not hold a rank will be used as 'standbys' for any rank.
+   </para>
+   <para>
+    The settings which associate a standby daemon with a particular name or
+    rank do not guarantee that the daemon will only be used for that rank. They
+    mean that when several standbys are available, the associated standby
+    daemon will be used. If a rank is failed, and a standby is available, it
+    will be used even if it is associated with a different rank or named
+    daemon.
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>mds_standby_replay</term>
+     <listitem>
+      <para>
+       If set to true, then the standby daemon will continuously read the
+       metadata journal an up rank. This will give it a warm metadata cache,
+       and speed up the process of failing over if the daemon serving the rank
+       fails.
+      </para>
+      <para>
+       An up rank may only have one standby replay daemon assigned to it. If
+       two daemons are both set to be standby replay then one of them will
+       arbitrarily win, and the other will become a normal non-replay standby.
+      </para>
+      <para>
+       Once a daemon has entered the standby replay state, it will only be used
+       as a standby for the rank that it is following. If another rank fails,
+       this standby replay daemon will not be used as a replacement, even if no
+       other standbys are available.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds_standby_for_name</term>
+     <listitem>
+      <para>
+       Set this to make the standby daemon only take over a failed rank if the
+       last daemon to hold it matches this name.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds_standby_for_rank</term>
+     <listitem>
+      <para>
+       Set this to make the standby daemon only take over the specified rank.
+       If another rank fails, this daemon will not be used to replace it.
+      </para>
+      <para>
+       Use in conjunction with<option>mds_standby_for_fscid</option> to be
+       specific about which file system's rank you are targeting in case of
+       multiple file systems.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds_standby_for_fscid</term>
+     <listitem>
+      <para>
+       If <option>mds_standby_for_rank</option> is set, this is simply a
+       qualifier to say which file system's rank is referred to.
+      </para>
+      <para>
+       If <option>mds_standby_for_rank</option> is not set, then setting FSCID
+       will cause this daemon to target any rank in the specified FSCID. Use
+       this if you have a daemon that you want to use for any rank, but only
+       within a particular file system.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mon_force_standby_active</term>
+     <listitem>
+      <para>
+       This setting is used on monitor hosts. It defaults to true.
+      </para>
+      <para>
+       If it is false, then daemons configured with
+       <option>standby_replay=true</option> will only become active if the
+       rank/name that they have been configured to follow fails. On the other
+       hand, if this setting is true, then a daemon configured with
+       <option>standby_replay=true</option> may be assigned some other rank.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ceph.cephfs.failover.examples">
+   <title>Examples</title>
+   <para>
+    Several example <filename>ceph.conf</filename> configurations follow. You
+    can either copy a <filename>ceph.conf</filename> with the configuration of
+    all daemons to all your servers, or you can have a different file on each
+    server that contains just that server's daemons configuration.
+   </para>
+   <sect3>
+    <title>Simple Pair</title>
+    <para>
+     Two MDS daemons 'a' and 'b' acting as a pair. Whichever one is not
+     currently assigned a rank will be the standby replay follower of the
+     other.
+    </para>
+<screen>[mds.a]
+mds standby replay = true
+mds standby for rank = 0
+
+[mds.b]
+mds standby replay = true
+mds standby for rank = 0</screen>
+   </sect3>
+   <sect3>
+    <title>Floating Standby</title>
+    <para>
+     Three MDS daemons 'a', 'b' and 'c', in a file system that has
+     <option>max_mds</option> set to 2.
+    </para>
+    <para>
+     For this setup, no explicit configuration is required. Whichever daemon is
+     not assigned a rank will go into 'standby' and take over for whichever
+     other daemon fails.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Two MDS Clusters</title>
+    <para>
+     To two file systems, there are four MDS daemons. Two act as a pair for one
+     file system while the other two act as a pair for the other file system.
+    </para>
+<screen>[mds.a]
+mds standby for fscid = 1
+
+[mds.b]
+mds standby for fscid = 1
+
+[mds.c]
+mds standby for fscid = 2
+
+[mds.d]
+mds standby for fscid = 2</screen>
+   </sect3>
   </sect2>
  </sect1>
 </chapter>
