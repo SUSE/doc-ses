@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="storage.troubleshooting">
+ <title>Troubleshooting</title>
+ <para>
+ 	This chapter describes several issues that you may face when you operate a &ceph; cluster.
+ 	</para>
+ 	<sect1 xml:id="storage.bp.cluster_mntc.rados_striping">
+  <title>Sending Large Objects with <command>rados</command> Fails with Full OSD</title>
+
+  <para>
+   <command>rados</command> is a command line utility to manage RADOS object
+   storage. For more information, see <command>man 8 rados</command>.
+  </para>
+
+  <para>
+   If you send a large object to a &ceph; cluster with the
+   <command>rados</command> utility, such as
+  </para>
+
+<screen>rados -p mypool put myobject /file/to/send</screen>
+
+  <para>
+   it can fill up all the related OSD space and cause serious trouble to the
+   cluster performance. RADOS has a 'striper' API that enables applications to
+   stripe large objects over multiple OSDs. If you turn the striping feature on
+   with the <option>--striper</option> option, you can prevent the OSD from
+   filling up.
+  </para>
+
+<screen>rados --striper -p mypool put myobject /file/to/send</screen>
+ </sect1>
+ 
+ <sect1 xml:id="ceph.xfs.corruption">
+ 	<title>Corrupted XFS Filesystem</title>
+ 	<para>
+ 	In rare circumstances like kernel bug or broken/misconfigured hardware, the underlying file system (XFS) in which an OSD stores its data might be damaged and unmountable.
+ 	</para>
+ 	<para>
+ 	If you are sure there is no problem with your hardware and the system is configured properly, raise a bug against the XFS subsytem of the &sls; kernel and mark the particular OSD as down:
+ 	</para>
+ 	<screen>ceph osd down <replaceable>OSD identification</replaceable></screen>
+ 	<warning>
+ 	<title>Do Not Format or Otherwise Modify the Damaged Device</title>
+ 	<para>
+ 	Even though using <command>xfs_repair</command> to fix the problem in the filesystem may seem reasonable, do not use it as the command modifies the file system. The OSD may start but its functioning may be influenced. 
+ 	</para>
+ 	</warning>
+ 	<para>
+ 	Now zap the underlying disk and recreate the OSD by running:
+ 	</para>
+ 	<screen>ceph-disk prepare --zap $OSD_DISK_DEVICE $OSD_JOURNAL_DEVICE"</screen>
+ 	<para>for example:</para>
+ 	<screen>ceph-disk prepare --zap /dev/sdb /dev/sdd2</screen>
+ </sect1>
+ 
+ <sect1 xml:id="storage.bp.recover.toomanypgs">
+  <title>'Too Many PGs per OSD' Status Message</title>
+
+  <para>
+   If you receive a <literal>Too Many PGs per OSD</literal> message after
+   running <command>ceph status</command>, it means that the
+   <option>mon_pg_warn_max_per_osd</option> value (300 by default) was
+   exceeded. This value is compared to the number of PGs per OSD ratio. This
+   means that the cluster setup is not optimal.
+  </para>
+
+  <para>
+   As the number of PGs cannot be reduced after the pool is created, the only
+   solution is to add OSDs to the cluster so that the ratio of PGs per OSD
+   becomes lower.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage.bp.recover.stalecalamari">
+  <title>Calamari Has a Stale Cluster</title>
+
+  <para>
+   The Calamari back-end supports operating multiple clusters, while its
+   front-end does not yet. This means that if you point Calamari at one
+   cluster, then destroy that cluster and create a new one, and then point the
+   same Calamari instance at the new cluster, it will still remember the old
+   cluster and possibly/probably try to display the old cluster state by
+   default.
+  </para>
+
+  <para>
+   To make Calamari 'forget' the old cluster, run:
+  </para>
+
+<screen>sudo systemctl stop cthulhu.service
+sudo calamari-ctl clear --yes-i-am-sure
+sudo calamari-ctl initialize</screen>
+
+  <para>
+   This will make Calamari forget all the old clusters it knows about. It will,
+   however, not clear out the salt minion keys from the master. This is fine if
+   you are reusing the same nodes for the new cluster.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage.bp.recover.stuckinactive">
+  <title>'<emphasis>nn</emphasis> pg stuck inactive' Status Message</title>
+
+  <para>
+   If you receive a <literal>stuck inactive</literal> status message after
+   running <command>ceph status</command>, it means that &ceph; does not know
+   where to replicate the stored data to fulfill the replication rules. It can
+   happen shortly after the initial &ceph; setup and fix itself automatically.
+   In other cases, this may require a manual interaction, such as bringing up a
+   broken OSD, or adding a new OSD to the cluster. In very rare cases, reducing
+   the replication level may help.
+  </para>
+
+  <para>
+   If the placement groups are stuck perpetually, you need to check the output
+   of <command>ceph osd tree</command>. The output should look tree-structured,
+   similar to the example in <xref linkend="storage.bp.recover.osddown"/>.
+  </para>
+
+  <para>
+   If the output of <command>ceph osd tree</command> is rather flat as in the
+   following example
+  </para>
+
+<screen>ceph osd tree
+ID WEIGHT TYPE NAME    UP/DOWN REWEIGHT PRIMARY-AFFINITY
+-1      0 root default
+ 0      0 osd.0             up  1.00000          1.00000
+ 1      0 osd.1             up  1.00000          1.00000
+ 2      0 osd.2             up  1.00000          1.00000</screen>
+
+  <para>
+   you should check that the related CRUSH map has a tree structure. If it is
+   also flat, or with no hosts as in the above example, it may mean that host
+   name resolution is not working correctly across the cluster.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage.bp.recover.osdweight">
+  <title>OSD Weight is 0</title>
+
+  <para>
+   When OSD starts, it is assigned a weight. The higher the weight, the bigger
+   the chance that the cluster writes data to the OSD. The weight is either
+   specified in a cluster &crushmap;, or calculated by the OSDs' start-up
+   script.
+  </para>
+
+  <para>
+   In some cases, the calculated value for OSDs' weight may be rounded down to
+   zero. It means that the OSD is not scheduled to store data, and no data is
+   written to it. The reason is usually that the disk is too small (smaller
+   than 15GB) and should be replaced with a bigger one.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage.bp.recover.osddown">
+  <title>OSD is Down</title>
+
+  <para>
+   OSD daemon is either running, or stopped/down. There are 3 general reasons
+   why an OSD is down:
+  </para>
+
+  <itemizedlist mark="bullet" spacing="normal">
+   <listitem>
+    <para>
+     Hard disk failure.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     The OSD crashed.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     The server crashed.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   You can see the detailed status of OSDs by running
+  </para>
+
+<screen>ceph osd tree
+# id  weight  type name up/down reweight
+ -1    0.02998  root default
+ -2    0.009995   host doc-ceph1
+ 0     0.009995      osd.0 up  1
+ -3    0.009995   host doc-ceph2
+ 1     0.009995      osd.1 up  1
+ -4    0.009995   host doc-ceph3
+ 2     0.009995      osd.2 down  1</screen>
+
+  <para>
+   The example listing shows that the <literal>osd.2</literal> is down. Then
+   you may check if the disk where the OSD is located is mounted:
+  </para>
+
+<screen>lsblk -f
+ [...]
+ vdb
+ ├─vdb1               /var/lib/ceph/osd/ceph-2
+ └─vdb2</screen>
+
+  <para>
+   You can track the reason why the OSD is down by inspecting its log file
+   <filename>/var/log/ceph/ceph-osd.2.log</filename>. After you find and fix
+   the reason why the OSD is not running, start it with
+  </para>
+
+<screen>sudo systemctl start ceph-osd@2.service</screen>
+
+  <para>
+   Do not forget to replace <literal>2</literal> with the actual number of your
+   stopped OSD.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage.bp.recover.clockskew">
+  <title>Fixing Clock Skew Warnings</title>
+
+  <para>
+   The time information in all cluster nodes must be synchronized. If a node's
+   time is not fully synchronized, you may get clock skew warnings when
+   checking the state of the cluster.
+  </para>
+
+  <para>
+   Time synchronization is managed with NTP (see
+   <link xlink:href="http://en.wikipedia.org/wiki/Network_Time_Protocol"/>).
+   Set each node to synchronize its time with one or more NTP servers,
+   preferably to the same group of NTP servers. If the time skew still occurs
+   on a node, follow these steps to fix it:
+  </para>
+
+<screen>systemctl stop ntpd.service
+systemctl stop ceph-mon.target
+systemctl start ntpd.service
+systemctl start ceph-mon.target</screen>
+
+  <para>
+   You can then query the NTP peers and check the time offset with
+   <command>sudo ntpq -p</command>.
+  </para>
+
+  <para>
+   The &ceph; monitors need to have their clocks synchronized to within 0.05
+   seconds of each other. In a typical
+   <systemitem class="daemon">ntpd</systemitem> configuration with remote NTP
+   servers, it may be impossible for
+   <systemitem class="daemon">ntpd</systemitem> to reliably maintain this
+   degree of accuracy. In such cases, the &ceph; developers recommend running
+   an NTP server in the local network.
+  </para>
+ </sect1>
+ </chapter>
