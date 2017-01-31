@@ -180,5 +180,347 @@
    OSD service on the relevant &ceph; node.
   </para>
  </sect1>
+ <sect1 xml:id="bp.osd_on_exisitng_partitions">
+  <title>How to Use Existing Partitions for OSDs Including OSD Journals</title>
+
+  <important>
+   <para>
+    This section describes an advanced topic that only storage experts and
+    developers should examine. It is mostly needed when using non-standard OSD
+    journal sizes. If the OSD partition's size is less than 10GB, its initial
+    weight is rounded to 0 and because no data are therefore placed on it, you
+    should increase its weight. We take no responsibility for overfilled
+    journals.
+   </para>
+  </important>
+
+  <para>
+   If you need to use existing disk partitions as an OSD node, the OSD journal
+   and data partitions need to be in a GPT partition table.
+  </para>
+
+  <para>
+   You need to set the correct partition types to the OSD partitions so that
+   <systemitem>udev</systemitem> recognizes them correctly and sets their
+   ownership to <literal>ceph:ceph</literal>.
+  </para>
+
+  <para>
+   For example, to set the partition type for the journal partition
+   <filename>/dev/vdb1</filename> and data partition
+   <filename>/dev/vdb2</filename>, run the following:
+  </para>
+
+<screen>sudo sgdisk --typecode=1:45b0969e-9b03-4f30-b4c6-b4b80ceff106 /dev/vdb
+sudo sgdisk --typecode=2:4fbd7e29-9d25-41b8-afd0-062c0ceff05d /dev/vdb</screen>
+
+  <tip>
+   <para>
+    The &ceph; partition table types are listed in
+    <filename>/usr/lib/udev/rules.d/95-ceph-osd.rules</filename>:
+   </para>
+<screen>cat /usr/lib/udev/rules.d/95-ceph-osd.rules
+# OSD_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+
+# JOURNAL_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+[...]</screen>
+  </tip>
+ </sect1>
+ 
+ <sect1 xml:id="storage.admin.integration">
+  <title>Integration with Virtualization Software</title>
+  <sect2 xml:id="storage.bp.integration.kvm">
+  <title>Storing &kvm; Disks in &ceph; Cluster</title>
+
+  <para>
+   You can create a disk image for &kvm;-driven virtual machine, store it in a
+   &ceph; pool, optionally convert the content of an existing image to it, and
+   then run the virtual machine with <command>qemu-kvm</command> making use of
+   the disk image stored in the cluster. For more detailed information, see
+   <xref linkend="cha.ceph.kvm"/>.
+  </para>
+ </sect2>
+ <sect2 xml:id="storage.bp.integration.libvirt">
+  <title>Storing &libvirt; Disks in &ceph; Cluster</title>
+
+  <para>
+   Similar to &kvm; (see <xref linkend="storage.bp.integration.kvm"/>), you can
+   use &ceph; to store virtual machines driven by &libvirt;. The advantage is
+   that you can run any &libvirt;-supported virtualization solution, such as
+   &kvm;, &xen;, or LXC. For more information, see
+   <xref linkend="cha.ceph.libvirt"/>.
+  </para>
+ </sect2>
+ <sect2 xml:id="storage.bp.integration.xen">
+  <title>Storing &xen; Disks in &ceph; Cluster</title>
+
+  <para>
+   One way to use &ceph; for storing &xen; disks is to make use of &libvirt; as
+   described in <xref linkend="cha.ceph.libvirt"/>.
+  </para>
+
+  <para>
+   Another option is to make &xen; talk to the <systemitem>rbd</systemitem>
+   block device driver directly:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     If you have no disk image prepared for &xen;, create a new one:
+    </para>
+<screen>rbd create myimage --size 8000 --pool mypool</screen>
+   </step>
+   <step>
+    <para>
+     List images in the pool <literal>mypool</literal> and check if your new
+     image is there:
+    </para>
+<screen>rbd list mypool</screen>
+   </step>
+   <step>
+    <para>
+     Create a new block device by mapping the <literal>myimage</literal> image
+     to the <systemitem>rbd</systemitem> kernel module:
+    </para>
+<screen>sudo rbd map --pool mypool myimage</screen>
+    <tip>
+     <title>User Name and Authentication</title>
+     <para>
+      To specify a user name, use <option>--id
+      <replaceable>user-name</replaceable></option>. Moreover, if you use
+      <systemitem>cephx</systemitem> authentication, you must also specify a
+      secret. It may come from a keyring or a file containing the secret:
+     </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyring
+ /path/to/keyring</screen>
+     <para>
+      or
+     </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     List all mapped devices:
+    </para>
+<screen>rbd showmapped
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+   </step>
+   <step>
+    <para>
+     Now you can configure &xen; to use this device as a disk for running a
+     virtual machine. You can for example add the following line to the
+     <command>xl</command>-style domain configuration file:
+    </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+   </step>
+  </procedure>
+ </sect2>
+ 
+ <sect2 xml:id="storage.bp.integration.mount_rbd">
+  <title>Mounting and Unmounting an RBD Image</title>
+
+  <para>
+   Images stored inside a &ceph; cluster pool can be mapped to a block device.
+   You can then format such device, mount it to be able to exchange files, and
+   unmount it when done.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Make sure your &ceph; cluster includes a pool with the disk image you want
+     to mount. Assume the pool is called <literal>mypool</literal> and the
+     image is <literal>myimage</literal>.
+    </para>
+<screen>rbd list mypool</screen>
+   </step>
+   <step>
+    <para>
+     Map the image to a new block device.
+    </para>
+<screen>sudo rbd map --pool mypool myimage</screen>
+    <tip>
+     <title>User Name and Authentication</title>
+     <para>
+      To specify a user name, use <option>--id
+      <replaceable>user-name</replaceable></option>. Moreover, if you use
+      <systemitem>cephx</systemitem> authentication, you must also specify a
+      secret. It may come from a keyring or a file containing the secret:
+     </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyring
+ /path/to/keyring</screen>
+     <para>
+      or
+     </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     List all mapped devices:
+    </para>
+<screen>rbd showmapped
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    <para>
+     The device we want to work on is <filename>/dev/rbd0</filename>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Make an XFS file system on the <filename>/dev/rbd0</filename> device.
+    </para>
+<screen>sudo mkfs.xfs /dev/rbd0
+ log stripe unit (4194304 bytes) is too large (maximum is 256KiB)
+ log stripe unit adjusted to 32KiB
+ meta-data=/dev/rbd0              isize=256    agcount=9, agsize=261120 blks
+          =                       sectsz=512   attr=2, projid32bit=1
+          =                       crc=0        finobt=0
+ data     =                       bsize=4096   blocks=2097152, imaxpct=25
+          =                       sunit=1024   swidth=1024 blks
+ naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+ log      =internal log           bsize=4096   blocks=2560, version=2
+          =                       sectsz=512   sunit=8 blks, lazy-count=1
+ realtime =none                   extsz=4096   blocks=0, rtextents=0</screen>
+   </step>
+   <step>
+    <para>
+     Mount the device and check it is correctly mounted. Replace
+     <filename>/mnt</filename> with your mount point.
+    </para>
+<screen>sudo mount /dev/rbd0 /mnt
+ mount | grep rbd0
+ /dev/rbd0 on /mnt type xfs (rw,relatime,attr2,inode64,sunit=8192,...</screen>
+    <para>
+     Now you can move data from/to the device as if it was a local directory.
+    </para>
+    <tip>
+     <title>Increasing the Size of RBD Device</title>
+     <para>
+      If you find that the size of the RBD device is no longer enough, you can
+      easily increase it.
+     </para>
+     <orderedlist spacing="normal">
+      <listitem>
+       <para>
+        Increase the size of the RBD image, for example up to 10GB.
+       </para>
+<screen>rbd resize --size 10000  mypool/myimage
+ Resizing image: 100% complete...done.</screen>
+      </listitem>
+      <listitem>
+       <para>
+        Grow the file system to fill up the new size of the device.
+       </para>
+<screen>sudo xfs_growfs /mnt
+ [...]
+ data blocks changed from 2097152 to 2560000</screen>
+      </listitem>
+     </orderedlist>
+    </tip>
+   </step>
+   <step>
+    <para>
+     After you finish accessing the device, you can unmount it.
+    </para>
+<screen>sudo unmount /mnt</screen>
+   </step>
+  </procedure>
+ </sect2>
+ </sect1>
+ 
+ <sect1 xml:id="storage.bp.net.firewall">
+  <title>Firewall Settings for &ceph;</title>
+
+  <para>
+   We recommend protecting the network cluster communication with SUSE
+   Firewall. You can edit its configuration by selecting
+   <menuchoice><guimenu>&yast;</guimenu><guimenu>Security and
+   Users</guimenu><guimenu>Firewall</guimenu><guimenu>Allowed
+   Services</guimenu></menuchoice>.
+  </para>
+
+  <para>
+   For Calamari, enable the "HTTP Server", "Carbon" and "SaltStack" services
+   (ports 80, 2003, 2004, 4505 and 4506).
+  </para>
+
+  <para>
+   For &ceph; monitor nodes, enable the "Ceph MON" service (port 6789).
+  </para>
+
+  <para>
+   For &ceph; OSD (or MDS) nodes, enable the "Ceph OSD/MDS" service (ports
+   6800-7300).
+  </para>
+ </sect1>
+ 
+ <sect1 xml:id="storage.bp.net.private">
+  <title>Adding a Private Network to a Running Cluster</title>
+
+  <para>
+   If you do not specify a cluster network during &ceph; deployment, it assumes
+   a single public network environment. While &ceph; operates fine with a
+   public network, its performance and security improves when you set a second
+   private cluster network.
+  </para>
+
+  <para>
+   A general recommendation for a &ceph; cluster is to have two networks: a
+   public (front-side) and cluster (back-side) one. To support two networks,
+   each &ceph; node needs to have at least two network cards.
+  </para>
+
+  <para>
+   You need to apply the following changes to each &ceph; node. It is
+   comfortable for a small cluster, but can be very time demanding if you have
+   a cluster consisting of hundreds or thousands of nodes.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Stop &ceph; related services on each cluster node.
+    </para>
+    <para>
+     Replace <literal>10.0.0.0/24</literal> with the IP address and netmask of
+     the cluster network. You can specify more comma-delimited subnets. If you
+     need to specifically assign static IP addresses or override
+     <option>cluster network</option> settings, you can do so with the optional
+     <option>cluster addr</option>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Check that the private cluster network works as expected on the OS level.
+    </para>
+   </step>
+   <step>
+    <para>
+     Start &ceph; related services on each cluster node.
+    </para>
+<screen>sudo rcceph start</screen>
+   </step>
+  </procedure>
+ </sect1>
 
 </chapter>
