@@ -4,10 +4,105 @@
   <!ENTITY % entities SYSTEM "entity-decl.ent">
     %entities;
 ]>
-<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="storage.bp.recover">
- <title>Recovery</title>
- <para/>
- <!-- The whole chapter has been moved to the admin guide to the Troubleshooting chapter -->
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="storage.troubleshooting">
+ <title>Troubleshooting</title>
+ <para>
+  This chapter describes several issues that you may face when you operate a
+  &ceph; cluster.
+ </para>
+ <sect1 xml:id="storage.bp.report_bug">
+  <title>Reporting Software Problems</title>
+
+  <para>
+   If you come across a problem when running &storage; related to some of its
+   components, such as &ceph;, &rgw;, or Calamari, report the problem to SUSE
+   Technical Support. The recommended way is with the
+   <command>supportconfig</command> utility.
+  </para>
+
+  <tip>
+   <para>
+    Because <command>supportconfig</command> is modular software, make sure
+    that the <systemitem>supportutils-plugin-ses</systemitem> package is
+    installed.
+   </para>
+<screen>rpm -q supportutils-plugin-ses</screen>
+   <para>
+    If it is missing on the &ceph; server, install it with
+   </para>
+<screen>zypper ref &amp;&amp; zypper in supportutils-plugin-ses</screen>
+  </tip>
+
+  <para>
+   Although you can use <command>supportconfig</command> on the command line,
+   we recommend using the related &yast; module. Find more information about
+   <command>supportconfig</command> in
+   <link xlink:href="https://www.suse.com/documentation/sles-12/singlehtml/book_sle_admin/book_sle_admin.html#sec.admsupport.supportconfig"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage.bp.cluster_mntc.rados_striping">
+  <title>Sending Large Objects with <command>rados</command> Fails with Full OSD</title>
+
+  <para>
+   <command>rados</command> is a command line utility to manage RADOS object
+   storage. For more information, see <command>man 8 rados</command>.
+  </para>
+
+  <para>
+   If you send a large object to a &ceph; cluster with the
+   <command>rados</command> utility, such as
+  </para>
+
+<screen>rados -p mypool put myobject /file/to/send</screen>
+
+  <para>
+   it can fill up all the related OSD space and cause serious trouble to the
+   cluster performance. RADOS has a 'striper' API that enables applications to
+   stripe large objects over multiple OSDs. If you turn the striping feature on
+   with the <option>--striper</option> option, you can prevent the OSD from
+   filling up.
+  </para>
+
+<screen>rados --striper -p mypool put myobject /file/to/send</screen>
+ </sect1>
+ <sect1 xml:id="ceph.xfs.corruption">
+  <title>Corrupted XFS Filesystem</title>
+
+  <para>
+   In rare circumstances like kernel bug or broken/misconfigured hardware, the
+   underlying file system (XFS) in which an OSD stores its data might be
+   damaged and unmountable.
+  </para>
+
+  <para>
+   If you are sure there is no problem with your hardware and the system is
+   configured properly, raise a bug against the XFS subsytem of the &sls;
+   kernel and mark the particular OSD as down:
+  </para>
+
+<screen>ceph osd down <replaceable>OSD identification</replaceable></screen>
+
+  <warning>
+   <title>Do Not Format or Otherwise Modify the Damaged Device</title>
+   <para>
+    Even though using <command>xfs_repair</command> to fix the problem in the
+    filesystem may seem reasonable, do not use it as the command modifies the
+    file system. The OSD may start but its functioning may be influenced.
+   </para>
+  </warning>
+
+  <para>
+   Now zap the underlying disk and recreate the OSD by running:
+  </para>
+
+<screen>ceph-disk prepare --zap $OSD_DISK_DEVICE $OSD_JOURNAL_DEVICE"</screen>
+
+  <para>
+   for example:
+  </para>
+
+<screen>ceph-disk prepare --zap /dev/sdb /dev/sdd2</screen>
+ </sect1>
  <sect1 xml:id="storage.bp.recover.toomanypgs">
   <title>'Too Many PGs per OSD' Status Message</title>
 
@@ -169,6 +264,38 @@ ID WEIGHT TYPE NAME    UP/DOWN REWEIGHT PRIMARY-AFFINITY
    stopped OSD.
   </para>
  </sect1>
+ <sect1 xml:id="storage.bp.performance.slowosd">
+  <title>Finding Slow OSDs</title>
+
+  <para>
+   When tuning the cluster performance, it is very important to identify slow
+   storage/OSDs within the cluster. The reason is that if the data is written
+   to the slow(est) disk, the complete write operation slows down as it always
+   waits until it is finished on all the related disks.
+  </para>
+
+  <para>
+   It is not trivial to locate the storage bottleneck. You need to examine each
+   and every OSD to find out the ones slowing down the write process. To do a
+   benchmark on a single OSD, run:
+  </para>
+
+<screen role="ceph_tell_osd_bench"><command>ceph tell</command> <replaceable>osd_id</replaceable> bench</screen>
+
+  <para>
+   For example:
+  </para>
+
+<screen>&prompt.cephuser;ceph tell osd.0 bench
+ { "bytes_written": 1073741824,
+   "blocksize": 4194304,
+   "bytes_per_sec": "19377779.000000"}</screen>
+
+  <para>
+   Then you need to run this command on each OSD and compare the
+   <literal>bytes_per_sec</literal> value to get the slow(est) OSDs.
+  </para>
+ </sect1>
  <sect1 xml:id="storage.bp.recover.clockskew">
   <title>Fixing Clock Skew Warnings</title>
 
@@ -205,5 +332,62 @@ systemctl start ceph-mon.target</screen>
    degree of accuracy. In such cases, the &ceph; developers recommend running
    an NTP server in the local network.
   </para>
+ </sect1>
+ <sect1 xml:id="storage.bp.performance.net_issues">
+  <title>Poor Cluster Performance Caused by Network Problems</title>
+
+  <para>
+   There are more reasons why the cluster performance may become weak. One of
+   them can be network problems. In such case, you may notice the cluster
+   reaching quorum, OSD and monitor nodes going offline, data transfers taking
+   a long time, or a lot of reconnect attempts.
+  </para>
+
+  <para>
+   To check whether cluster performance is degraded by network problems,
+   inspect the &ceph; log files under the <filename>/var/log/ceph</filename>
+   directory.
+  </para>
+
+  <para>
+   To fix network issues on the cluster, focus on the following points:
+  </para>
+
+  <itemizedlist mark="bullet" spacing="normal">
+   <listitem>
+    <para>
+     Basic network diagnostics. Try to ping between cluster nodes and pay
+     attention to data loss and response times.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Network performance benchmark. Use tools such as Netperf to measure the
+     performance of your network.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Check firewall settings on cluster nodes. Make sure they do not block
+     ports/protocols required by &ceph; operation. See
+     <xref linkend="storage.bp.net.firewall"/> for more information on firewall
+     settings.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Check the networking hardware, such as network cards, cables, or switches,
+     for proper operation.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <tip>
+   <title>Separate Network</title>
+   <para>
+    To ensure fast and safe network communication between cluster nodes, set up
+    a separate network used exclusively by the cluster OSD and monitor nodes.
+   </para>
+  </tip>
  </sect1>
 </chapter>
