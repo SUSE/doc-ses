@@ -191,6 +191,113 @@
    </varlistentry>
   </variablelist>
  </sect1>
+ <sect1 xml:id="ses.tiered.hitset">
+  <title>Hit Set</title>
+  <sect2 xml:id="ses.tiered.hitset.overview">
+   <title>Overview</title>
+   <para>
+    <emphasis>Hit set</emphasis> parameters allow for tuning of
+    <emphasis>cache pools</emphasis>. Hit sets in &ceph; usually are
+    bloom filters and provide a memory efficient way of tracking objects
+    that are already in the cache pool.
+   </para>
+   <para>
+    The hit set is a is bit array that is used to store the result of
+    a set of hashing functions applied on object names. Initially all bits
+    are set to <literal>0</literal>. When an object is added to the hit set, 
+    its name is hashed and the result is mapped on different positions in
+    the hit set where the value of the bit is then set to <literal>1</literal>.
+   </para>
+   <para>
+    To find out whether an object exists in the cache, the object name
+    is again hashed. If any bit is <literal>0</literal>
+    the object is surely not in the cache and has to be retrieved from
+    cold storage.
+    <remark role="fixme">How is the modification date retrieved in read mode?</remark>
+   </para>
+   <para>
+    It is possible that the results of different objects are stored in the
+    same location of the hit set. By chance all bits can be <literal>1</literal>
+    without the object being in the cache. Therefore the hit set working
+    with a bloom filter can only tell whether an object is definitely not
+    in the cache an needs to be retrieved from cold storage.
+   </para>
+   <para>
+    A cache pool can have more than one hit set which track file access
+    over time. The setting <literal>hit_set_count</literal> defines how
+    many hit sets are used, while <literal>hit_set_period</literal> defines
+    for how long each hit set is used. After the period has expired, the
+    next hit set is used. If the number of hit sets is exhausted, the
+    memory from the oldest hit set is freed and a new hit set is created.
+    The values of <literal>hit_set_count</literal> and <literal>hit_set_period</literal>
+    multiplied with each other define the overall time frame in which the
+    access to objects is tracked.
+   </para>
+   <figure xml:id="ses.tiered.hitset.overview.bloom">
+    <title>Bloom Filter with 3 Stored Objects</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Compared to the number of hashed objects a hit set based on a bloom
+    filter is very memory efficient. Less then 10 bits are required to
+    reduce the false positive probability below 1%. The false positive
+    probability can be defined with <literal>hit_set_fpp</literal>.
+    Based on the number of objects in a placement group and the false
+    positive probability &ceph; automatically calculates the size of the
+    hit set. 
+   </para>
+   <para>
+    The required storage on the cache pool can be limited with
+    <literal>min_write_recency_for_promote</literal> and 
+    <literal>min_read_recency_for_promote</literal>. If the value is set
+    to <literal>0</literal>, all objects are promoted to the cache pool
+    as soon as they are read/written and persists until they are evicted. Any
+    value greater than <literal>0</literal> defines the number of hit sets
+    ordered by age that are searched for the object. If the object
+    is found in a hit set it will be promoted to the cache pool.
+   </para>
+  </sect2>
+  <sect2 xml:id="ses.tiered.hitset.examples">
+   <title>Examples</title>
+   <sect3 xml:id="ses.tiered.hitset.examples.memory">
+    <title>Large Cache Pool and Small Memory</title>
+    <para>
+     If lots of storage and only a small amount of RAM is available, all
+     objects can be promoted to the cache pool as soon as they are accessed.
+     The hit set is kept small. A set of example configuration values:
+    </para>
+    <screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses.tiered.hitset.examples.storage">
+    <title>Small Cache Pool and Large Memory</title>
+    <para>
+     If a small amount of storage but comparably large amount of
+     memory is available, the cache tier can be configured to promote
+     a limited number of objects into the cache pool. 12 hit sets of which
+     each is used over a period of 14400 seconds provide tracking for
+     a total of 48 hours. If an object has been accessed in the last 8
+     hours it is promoted to the cache pool. The set of example
+     configuration values then is:
+     <screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
  <sect1 xml:id="ses.tiered.storage">
   <title>Setting Up an Example Tiered Storage</title>
 
@@ -377,9 +484,11 @@ rule ssd {
    <sect3>
     <title>Target Size and Type</title>
     <para>
-     &ceph;'s production cache tiers use a Bloom Filter for the
-     <remark role="fixme">Explain Bloom Filter.</remark>
-     <option>hit_set_type</option>:
+     The following steps describe how to configure a <emphasis>cache pool</emphasis>
+     with the values provided in <xref linkend="ses.tiered.hitset.examples.storage" />
+    </para>
+    <para>
+     &ceph;'s production cache tiers use a Bloom Filter for the <option>hit_set_type</option>:
     </para>
 <screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_type bloom</screen>
     <para>
