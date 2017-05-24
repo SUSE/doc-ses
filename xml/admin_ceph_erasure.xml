@@ -19,10 +19,13 @@
   </dm:docmanager>
  </info>
  <para>
-  A &ceph; pool is associated to a type to sustain the loss of an OSD (that is
-  a disk since most of the time there is one OSD per disk). The default choice
-  when creating a pool is replicated, meaning every object is copied on
-  multiple disks. The Erasure Code pool type can be used instead to save space.
+  &ceph; provides an alternative to the normal replication of data in pools,
+  called <emphasis>erasure</emphasis> or <emphasis>erasure coded</emphasis>
+  pool. Erasure pools do not provide all functionalities of
+  <emphasis>replicated</emphasis> pools, but require less
+  raw storage. A default erasure pool capable of storing 1 TB of data
+  requires 1,5 TB of raw storage. This compares favorably to a replicated
+  pool which needs 2 TB of raw storage for the same amount of data.
  </para>
  <para>
   For background information on Erasure Code, see
@@ -35,30 +38,67 @@
    more details.
   </para>
  </note>
- <sect1>
+ <note>
+  <para>
+   Ensure that the CRUSH rules for <emphasis>erasure pools</emphasis>
+   use <literal>indep</literal> for <literal>step</literal>.
+   For details see <xref linkend="datamgm.rules.step.mode" />.
+  </para>
+ </note>
+ <sect1 xml:id="cha.ceph.erasure.default-profile">
   <title>Creating a Sample Erasure Coded Pool</title>
 
   <para>
    The simplest erasure coded pool is equivalent to RAID5 and requires at least
-   three hosts:
+   three hosts. This procedure describes how to create a pool for testing
+   purposes.
   </para>
-
-<screen><prompt role="user">&gt; </prompt>ceph osd pool create ecpool 12 12 erasure
-pool 'ecpool' created
-<prompt role="user">&gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
-<prompt role="user">&gt; </prompt>rados --pool ecpool get NYAN -
+  <procedure>
+   <step>
+    <para>
+     The command <command>ceph osd pool create</command> is used to create
+     a pool with type <emphasis>erasure</emphasis>. The <literal>12</literal>
+     stands for the number of placement groups. With default parameters, the
+     pool is able to handle the failure of one OSD.
+    </para>
+<screen>&prompt.root;ceph osd pool create ecpool 12 12 erasure
+pool 'ecpool' created</screen>
+   </step>
+   <step>
+    <para>
+     The string <literal>ABCDEFGHI</literal> is written into an object called
+     <literal>NYAN</literal>.
+    </para>
+<screen>&prompt.cephuser;echo ABCDEFGHI | rados --pool ecpool put NYAN -</screen>
+   </step>
+   <step>
+    <para>
+     For testing purposes OSDs can now be disabled, for example by disconnecting
+     them from the network.
+    </para>
+   </step>
+   <step>
+    <para>
+     To test whether the pool can handle the failure of devices, the content
+     of the file can be accessed with the <command>rados</command> command.
+    </para>
+<screen>&prompt.root;rados --pool ecpool get NYAN -
 ABCDEFGHI</screen>
-
-  <para>
-   The <literal>12</literal> in the <command>pool create</command> command
-   stands for the number of placement groups.
-  </para>
+   </step>
+  </procedure>
  </sect1>
- <sect1>
+ <sect1 xml:id="cha.ceph.erasure.erasure-profiles">
   <title>Erasure Code Profiles</title>
-
+  <para>When the <command>ceph osd pool create</command> command is invoked
+   to create an <emphasis>erasure pool</emphasis>, the default profile is
+   used, unless another profile is specified. Profiles basically define the
+   redundancy of data. This is done by setting two parameters, arbitrarily
+   named <literal>k</literal> and <literal>m</literal>. k and m define
+   on how many OSDs a <literal>chunk</literal> of data is stored and how
+   many of those OSDs are allowed to fail without loosing data.
+  </para>
   <para>
-   Some terminology hints:
+   Definitions required for erasure pool profiles:
   </para>
 
   <variablelist>
@@ -93,15 +133,33 @@ ABCDEFGHI</screen>
      </para>
     </listitem>
    </varlistentry>
+   <varlistentry>
+    <term>ruleset-failure-domain</term>
+    <listitem>
+     <para>
+      defines to which devices the chunks are distributed. A bucket type has
+      to be set as value. For all bucket types, see <xref linkend="datamgm.buckets" />.
+      If the failure domain is <literal>rack</literal>, the chunks will be
+      stored on different racks to increase the resilience in case of rack
+      failures.
+     </para>
+    </listitem>
+   </varlistentry>
   </variablelist>
 
   <para>
-   The default erasure code profile sustains the loss of a single OSD. It is
-   equivalent to a replicated pool of size two but requires 1.5TB instead of
-   2TB to store 1TB of data. The default profile can be displayed with:
+   With the default erasure code profile used in
+   <xref linkend="cha.ceph.erasure.default-profile"/>, you will not lose cluster
+   data if a single OSD fails. Therefore, to store 1 TB of data
+   it needs another 0.5 TB of raw storage. That means 1.5 TB of raw storage
+   are required for 1 TB of data. This is equivalent to a common RAID 5
+   configuration. For comparison: a replicated pool needs 2 TB of raw
+   storage to store 1 TB of data.
+  </para>
+  <para>The settings of the default profile can be displayed with:
   </para>
 
-<screen><prompt role="user">&gt; </prompt>ceph osd erasure-code-profile get default
+<screen>&prompt.root;ceph osd erasure-code-profile get default
 directory=.libs
 k=2
 m=1
@@ -111,7 +169,7 @@ technique=reed_sol_van</screen>
 
   <para>
    Choosing the right profile is important because it cannot be modified after
-   the pool is created: a new pool with a different profile needs to be created
+   the pool is created. A new pool with a different profile needs to be created
    and all objects from the previous pool moved to the new.
   </para>
 
@@ -120,16 +178,22 @@ technique=reed_sol_van</screen>
    <literal>m</literal> and <literal>ruleset-failure-domain</literal> because
    they define the storage overhead and the data durability. For example, if
    the desired architecture must sustain the loss of two racks with a storage
-   overhead of 40% overhead, the following profile can be defined:
+   overhead of 66% overhead, the following profile can be defined:
   </para>
 
-<screen><prompt role="user">&gt; </prompt>ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
+<screen>&prompt.root;ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
    k=3 \
    m=2 \
-   ruleset-failure-domain=rack
-<prompt role="user">&gt; </prompt>ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
-<prompt role="user">&gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
-<prompt role="user">&gt; </prompt>rados --pool ecpool get NYAN -
+   ruleset-failure-domain=rack</screen>
+
+  <para>
+   The example <xref linkend="cha.ceph.erasure.default-profile"/>
+   can be repeated with this new profile:
+  </para>
+
+<screen>&prompt.root;ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
+&prompt.cephuser;echo ABCDEFGHI | rados --pool ecpool put NYAN -
+&prompt.root;rados --pool ecpool get NYAN -
 ABCDEFGHI</screen>
 
   <para>
@@ -167,15 +231,17 @@ ABCDEFGHI</screen>
   </para>
 
   <para>
-   For example, if the <quote>hot-storage</quote> pool is made of fast storage:
+   For example, if the <quote>hot-storage</quote> pool is made of fast storage,
+   the <quote>ecpool</quote> created in <xref linkend="cha.ceph.erasure.erasure-profiles" />
+   can be sped up with:
   </para>
 
-<screen><prompt role="user">&gt; </prompt>ceph osd tier add ecpool hot-storage
-<prompt role="user">&gt; </prompt>ceph osd tier cache-mode hot-storage writeback
-<prompt role="user">&gt; </prompt>ceph osd tier set-overlay ecpool hot-storage</screen>
+<screen>&prompt.root;ceph osd tier add ecpool hot-storage
+&prompt.root;ceph osd tier cache-mode hot-storage writeback
+&prompt.root;ceph osd tier set-overlay ecpool hot-storage</screen>
 
   <para>
-   This will place the <quote>hot-storage</quote> pool as tier of ecpool in
+   This will place the <quote>hot-storage</quote> pool as a tier of ecpool in
    write-back mode so that every write and read to the ecpool is actually using
    the hot-storage and benefits from its flexibility and speed.
   </para>
@@ -186,7 +252,7 @@ ABCDEFGHI</screen>
    an erasure coded pool when a replicated pool tier set a cache tier:
   </para>
 
-<screen><prompt role="user">&gt; </prompt>rbd --pool ecpool create --size 10 myvolume</screen>
+<screen>&prompt.root;rbd --pool ecpool create --size 10 myvolume</screen>
 
   <para>
    For more information about cache tiering, see
