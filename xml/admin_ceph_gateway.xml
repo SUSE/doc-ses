@@ -21,7 +21,7 @@
  </info>
  <para>
   This chapter introduces details about administration tasks related to &rgw;,
-  such as checking status of the service, managing accounts, multi-site
+  such as checking status of the service, managing accounts, multisite
   gateways, or LDAP authentication.
  </para>
  <sect1 xml:id="ceph.rgw.operating">
@@ -567,7 +567,7 @@ created = bucket.creation_date,
  <sect1 xml:id="ceph.rgw.fed">
 <!-- https://github.com/theanalyst/ceph/blob/doc/multisite-rgw/doc/radosgw/multisite.rst -->
 
-  <title>Multi-site Object Storage Gateways</title>
+  <title>Multisite Object Storage Gateways</title>
 
   <para>
    You can configure each &rgw; to participate in a federated architecture,
@@ -1462,6 +1462,329 @@ rgw_zone=us-west</screen>
      </screen>
     </step>
    </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.rgw.sync">
+  <title>Sync Modules</title>
+  <para>
+   The <emphasis>multisite</emphasis> functionality of &rgw; introduced in Jewel allowes to
+   create multiple zones and mirror data and metadata between them.
+   <emphasis>Sync Modules</emphasis> are built atop of the multisite
+   framework that allows for forwarding data and metadata to a different
+   external tier. A sync module allows for a set of actions
+   to be performed whenever a change in data occurs (metadata ops like bucket or
+   user creation etc. are also regarded as changes in data). As the rgw multisite
+   changes are eventually consistent at remote sites, changes are propagated
+   asynchronously. This would allow for unlocking use cases such as backing up the
+   object storage to an external cloud cluster or a custom backup solution using
+   tape drives, indexing metadata in Elasticsearch etc.
+  </para>
+
+  <sect2 xml:id="ceph.rgw.sync.zones">
+   <title>Synchronizing Zones</title>
+   <para>
+    A sync module configuration is local to a zone. The sync module determines
+    whether the zone exports data or can only consume data that was modified in
+    another zone. As of luminous the supported sync plug-ins are <literal>elasticsearch</literal>,
+    <literal>rgw</literal>, which is the default sync plug-in that synchronises data between the
+    zones and <literal>log</literal> which is a trivial sync plug-in that logs the metadata
+    operation that happens in the remote zones. The following sections are written with
+    the example of a zone using <literal>elasticsearch</literal> sync module. The process would
+    be similar for configuring any other sync plug-in.
+   </para>
+   <note>
+    <title>Default Sync Plugin</title>
+    <para>
+     <literal>rgw</literal> is the default sync plug-in and there is no need to explicitly
+     configure this.
+    </para>
+   </note>
+   <sect3 xml:id="ceph.rgw.sync.zones.req">
+   <title>Requirements and Assumptions</title>
+   <para>
+    Let us assume a simple multisite configuration as described in <xref linkend="ceph.rgw.fed" />
+    consisting of the 2 zones <literal>us-east</literal> and <literal>us-west</literal>. Now we add
+    a third zone <literal>us-east-es</literal> which is a zone that only processes metadata from
+    the other sites. This zone can be in the same or a different &ceph; cluster than
+    <literal>us-east</literal>. This zone would only consume metadata from other zones and
+    &rgw;s in this zone will not serve any end user requests directly.
+    </para>
+   </sect3>
+   <sect3 xml:id="ceph.rgw.sync.zones.configure">
+    <title>Configuring Sync Modules</title>
+    <procedure>
+     <step>
+      <para>
+       Create the third zone similar to the ones described in
+       <xref linkend="ceph.rgw.fed" />, for example
+      </para>
+      <screen>
+&prompt.root;<command>radosgw-admin</command> zone create --rgw-zonegroup=us --rgw-zone=us-east-es \
+--access-key={system-key} --secret={secret} --endpoints=http://rgw-es:80
+      </screen>
+     </step>
+     <step>
+      <para>
+       A sync module can be configured for this zone via the following
+      </para>
+      <screen>
+&prompt.root;<command>radosgw-admin</command> zone modify --rgw-zone={zone-name} --tier-type={tier-type} \
+--tier-config={set of key=value pairs}
+      </screen>
+     </step>
+     <step>
+      <para>
+       For example in the <literal>elasticsearch</literal> sync module
+      </para>
+      <screen>
+&prompt.root;<command>radosgw-admin</command> zone modify --rgw-zone={zone-name} --tier-type=elasticsearch \
+--tier-config=endpoint=http://localhost:9200,num_shards=10,num_replicas=1
+      </screen>
+      <para>
+       For the various supported tier-config options refer to <xref linkend="ceph.rgw.sync.elastic" />.
+      </para>
+     </step>
+     <step>
+      <para>
+       Finally update the period
+      </para>
+      <screen>
+&prompt.root;<command>radosgw-admin</command> period update --commit
+      </screen>
+     </step>
+     <step>
+      <para>
+       Now start the radosgw in the zone
+      </para>
+      <screen>
+&prompt.root;<command>systemctl</command> start ceph-radosgw@rgw.`hostname -s`
+&prompt.root;<command>systemctl</command> enable ceph-radosgw@rgw.`hostname -s`
+      </screen>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+  <sect2 xml:id="ceph.rgw.sync.elastic">
+   <title>Storing Metadata in Elasticsearch</title>
+   <para>
+    This sync module writes the metadata from other zones to Elasticsearch. As of
+    luminous this is JSON of data fields we currently store in Elasticsearch.
+   </para>
+   <screen>
+{
+  "_index" : "rgw-gold-ee5863d6",
+  "_type" : "object",
+  "_id" : "34137443-8592-48d9-8ca7-160255d52ade.34137.1:object1:null",
+  "_score" : 1.0,
+  "_source" : {
+    "bucket" : "testbucket123",
+    "name" : "object1",
+    "instance" : "null",
+    "versioned_epoch" : 0,
+    "owner" : {
+      "id" : "user1",
+      "display_name" : "user1"
+    },
+    "permissions" : [
+      "user1"
+    ],
+    "meta" : {
+      "size" : 712354,
+      "mtime" : "2017-05-04T12:54:16.462Z",
+      "etag" : "7ac66c0f148de9519b8bd264312c4d64"
+    }
+  }
+}
+   </screen>
+   <sect3 xml:id="ceph.rgw.sync.elastic.config">
+    <title>Elasticsearch Tier Type Configuration Parameters</title>
+    <variablelist>
+     <varlistentry>
+      <term>endpoint</term>
+      <listitem>
+       <para>
+        Specifies the Elasticsearch server endpoint to access.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>num_shards</term>
+      <listitem>
+       <para>
+        <emphasis>(integer)</emphasis>
+        The number of shards that Elasticsearch will be configured with on
+        data sync initialization. Note that this cannot be changed after init.
+        Any change here requires rebuild of the Elasticsearch index and reinit
+        of the data sync process.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>num_replicas</term>
+      <listitem>
+       <para>
+        <emphasis>(integer)</emphasis>
+        The number of the replicas that Elasticsearch will be configured with
+        on data sync initialization.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>explicit_custom_meta</term>
+      <listitem>
+       <para>
+        <emphasis>(true | false)</emphasis>
+        Specifies whether all user custom metadata will be indexed, or whether
+        user will need to configure (at the bucket level) what custome
+        metadata entries should be indexed. This is false by default
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>index_buckets_list</term>
+      <listitem>
+       <para>
+        <emphasis>(comma separated list of strings)</emphasis>
+        If empty, all buckets will be indexed. Otherwise, only buckets
+        specified here will be indexed. It is possible to provide bucket
+        prefixes (e.g., foo*), or bucket suffixes (e.g., *bar).
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>approved_owners_list</term>
+      <listitem>
+       <para>
+        <emphasis>(comma separated list of strings)</emphasis>
+        If empty, buckets of all owners will be indexed (subject to other
+        restrictions), otherwise, only buckets owned by specified owners will
+        be indexed. Suffixes and prefixes can also be provided.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>override_index_path</term>
+      <listitem>
+       <para>
+        <emphasis>(string)</emphasis>
+        if not empty, this string will be used as the elasticsearch index
+        path. Otherwise the index path will be determined and generated on
+        sync initialization.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="ceph.rgw.sync.elastic.query">
+    <title>Metadata Queries</title>
+    <para>
+     Since the Elasticsearch cluster now stores object metadata, it is important that
+     the Elasticsearch endpoint is not exposed to the public and only accessible to
+     the cluster administrators. For exposing metadata queries to the end user itself
+     this poses a problem since we'd want the user to only query their metadata and
+     not of any other users, this would require the Elasticsearch cluster to
+     authenticate users in a way similar to RGW does which poses a problem.
+    </para>
+    <para>
+     As of Luminous RGW in the metadata master zone can now service end user
+     requests. This allows for not exposing the Elasticsearch endpoint in public and
+     also solves the authentication and authorization problem since RGW itself can
+     authenticate the end user requests. For this purpose RGW introduces a new query
+     in the bucket APIs that can service Elasticsearch requests. All these requests
+     must be sent to the metadata master zone.
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Get an Elasticsearch Query</term>
+      <listitem>
+       <screen>
+GET /<replaceable>BUCKET</replaceable>?query={query-expr}
+       </screen>
+       <para>
+        request params:
+       </para>
+        <itemizedlist>
+         <listitem>
+          <para>
+           max-keys: max number of entries to return
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           marker: pagination marker
+          </para>
+         </listitem>
+        </itemizedlist>
+       <screen>
+expression := [(]&lt;arg&gt; &lt;op&gt; &lt;value&gt; [)][&lt;and|or&gt; ...]
+       </screen>
+       <para>
+         op is one of the following: &lt;, &lt;=, ==, &gt;=, &gt;
+       </para>
+       <para>
+         For example:
+       </para>
+       <screen>
+GET /?query=name==foo
+       </screen>
+       <para>
+        Will return all the indexed keys that user has read permission to, and
+        are named 'foo'. The output will be a list of keys in XML that is similar
+        to the S3 list buckets response.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Configure custom metadata fields</term>
+      <listitem>
+       <para>
+        Define which custom metadata entries should be indexed (under the
+        specified bucket), and what are the types of these keys. If explicit
+        custom metadata indexing is configured, this is needed so that rgw
+        will index the specified custom metadata values. Otherwise it is
+        needed in cases where the indexed metadata keys are of a type other
+        than string.
+       </para>
+       <screen>
+POST /<replaceable>BUCKET</replaceable>?mdsearch
+x-amz-meta-search: &lt;key &#91;&#59; type&#93;&gt; &#91;, ...&#93;
+       </screen>
+       <para>
+        Multiple metadata fields must be comma seperated, a type can be forced for a
+        field with a `;`. The currently allowed types are string(default), integer and
+        date eg. if you want to index a custom object metadata x-amz-meta-year as int,
+        x-amz-meta-date as type date and x-amz-meta-title as string, you'd do
+       </para>
+       <screen>
+POST /mybooks?mdsearch
+x-amz-meta-search: x-amz-meta-year;int, x-amz-meta-release-date;date, x-amz-meta-title;string
+       </screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Delete custom metadata configuration</term>
+      <listitem>
+       <para>
+        Delete custom metadata bucket configuration.
+       </para>
+       <screen>
+DELETE /<replaceable>BUCKET</replaceable>?mdsearch
+       </screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Get custom metadata configuration</term>
+      <listitem>
+       <para>
+        Retrieve custom metadata bucket configuration.
+       </para>
+       <screen>
+GET /<replaceable>BUCKET</replaceable>?mdsearch
+       </screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
   </sect2>
  </sect1>
  <sect1 xml:id="ceph.rgw.ldap">
