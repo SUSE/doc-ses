@@ -35,7 +35,7 @@
  <sect1 xml:id="sec.ses.cifs.example">
   <title>Example Installation</title>
   <para>
-   Exporting &cephfs; is not a technology preview and not supported. To enable
+   Exporting &cephfs; is a technology preview and not supported. To enable
    CIFS, you have to manually install Samba on one cluster node and configure it.
    Failover functionality can be provided with CTDB and the &sle; &hasi;.
   </para>
@@ -58,10 +58,9 @@ ceph:config_file = /etc/ceph/ceph.conf</screen>
  <sect1 xml:id="sec.ses.cifs.ha">
   <title>High Availability Active-Passive Configuration</title>
   <para>
-   This section provides an example of how to set up a two-ode active-passive
-   configuration of &ganesha; servers. The setup requires the &sle; &hasi;.
-   The 2 nodes are called &si.earth;
-   and &si.mars;.
+   This section provides an example of how to set up a two-node active-passive
+   configuration of Samba servers. The setup requires the &sle; &hasi;.
+   The 2 nodes are called &si.earth; and &si.mars;.
   </para>
   <para>
    For details about &sle; &hasi;, see
@@ -78,8 +77,8 @@ ceph:config_file = /etc/ceph/ceph.conf</screen>
    to connect to the service independent of which physical node it is running on.
    <systemitem class="ipaddress">192.168.1.10</systemitem> is used for cluster
    administration with Hawk2 and <systemitem class="ipaddress">192.168.2.1</systemitem>
-   is used exclusively for the NFS exports. This makes it easier
-   to apply security restrictions later.
+   is used exclusively for the CIFS exports. This makes it easier to apply
+   security restrictions later.
   </para>
   <para>
    The following procedure describes the example installation. More details
@@ -89,44 +88,80 @@ ceph:config_file = /etc/ceph/ceph.conf</screen>
   <procedure xml:id="proc.sec.ses.cifs.ha">
    <step>
     <para>
-     Prepare the &ganesha; nodes on the &smaster;:
+     Prepare the nodes used to host the Samba service:
     </para>
     <substeps>
      <step>
       <para>
-       Run &deepsea; stages 0 and 1 on the &smaster;.
+       Make sure the following packages are installed on &si.earth; and &si.mars;
+       before you proceed: <package>ctdb</package>,
+       <package>tdb-tools</package>, and <package>samba</package>
+       (needed for smb and nmb resources). 
       </para>
-      <screen>
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.0
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.1
-      </screen>
+<screen>&prompt.root;<command>zypper</command> in ctdb tdb-tools samba</screen>
      </step>
      <step>
       <para>
-       Assign the nodes &si.earth; and
-       &si.mars; the <literal>role-ganesha</literal>
-       in the <filename>/srv/pillar/ceph/proposals/policy.cfg</filename>:
+       Make sure the services <literal>ctdb</literal>, <literal>smb</literal>,
+       and <literal>nmb</literal> are disabled: 
       </para>
-      <screen>
-role-ganesha/cluster/earth*.sls
-role-ganesha/cluster/mars*.sls
-      </screen>
+<screen>&prompt.root;<command>systemctl</command> disable ctdb
+&prompt.root;<command>systemctl</command> disable smb
+&prompt.root;<command>systemctl</command> disable nmb</screen>
      </step>
      <step>
       <para>
-       Run &deepsea; stages 3 and 4 on the &smaster;.
+       Open port <literal>4379</literal> of your firewall on all nodes. This
+       is needed for CTDB to communicate with other cluster nodes.
       </para>
-      <screen>
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.3
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.4
-      </screen>
      </step>
     </substeps>
    </step>
    <step>
     <para>
-     Register the &sle; &hasi; on &si.earth;
-     and &si.mars;.
+     Create a directory for the CTDB lock on the shared file system:
+    </para>
+<screen>&prompt.root;<command>mkdir</command> -p /srv/samba/</screen>
+   </step>
+   <step>
+    <para>
+     In <filename>/etc/ctdb/nodes</filename> insert all nodes which contain
+     all private IP addresses of each node in the cluster:
+    </para>
+<screen>&subnetI;.1
+&subnetI;.2</screen>
+   </step>
+   <step>
+    <para>
+     Configure Samba. Add the following lines in the
+     <literal>[global]</literal> section of
+     <filename>/etc/samba/smb.conf</filename> on &si.earth; and &si.mars;.
+     Use the host name of your choice in place of "CTDB-SERVER" (all nodes
+     in the cluster will appear as one big node with this name, effectively):
+    </para>
+<screen>[global]
+    # ...
+    # settings applicable for all CTDB deployments
+    netbios name = CTDB-SERVER
+    clustering = yes
+    idmap config * : backend = tdb2
+    passdb backend = tdbsam
+    ctdbd socket = /var/lib/ctdb/ctdb.socket
+    # settings necessary for CTDB on OCFS2
+    fileid:algorithm = fsid
+    vfs objects = fileid
+    # ...</screen>
+    <para>
+     Alternatively, <command>csync2</command> can be used to synchronize
+     config files. For details, see
+     <link xlink:href=
+     "https://www.suse.com/documentation/sle-ha-12/singlehtml/book_sleha/book_sleha.html#pro.ha.installation.setup.csync2.start"
+     />.
+    </para>
+   </step>
+   <step>
+    <para>
+     Register the &sle; &hasi; on &si.earth; and &si.mars;.
     </para>
     <screen>
 &prompt.root;<command>SUSEConnect</command> -r <replaceable>ACTIVATION_CODE</replaceable> -e <replaceable>E_MAIL</replaceable>
@@ -170,97 +205,94 @@ role-ganesha/cluster/mars*.sls
    </step>
    <step>
     <para>
-     On both nodes, disable the automatic start of the &ganesha; service at boot time:
-    </para>
-    <screen>
-&prompt.root;<command>systemctl</command> disable nfs-ganesha
-    </screen>
-   </step>
-   <step>
-    <para>
      Start the <command>crm</command> shell on &si.earth;:
     </para>
     <screen>
 &prompt.earth;<command>crm</command> configure
     </screen>
+   </step>
+   <step>
     <para>
-     The next commands are executed in the crm shell.
+     Execute the following commands to configure the the CTDB resource:
+    </para>
+<!--taroth 2012-02-07: fixed bnc#745334, default timeout for start/stop-->
+<screen>&prompt.earth;<command>crm</command> configure
+&prompt.crm.conf;<command>primitive</command> ctdb ocf:heartbeat:CTDB params \
+    ctdb_manages_winbind="false" \ 
+    ctdb_manages_samba="false" \
+    ctdb_recovery_lock="/srv/samba/ctdb.lock" \
+    ctdb_socket="/var/lib/ctdb/ctdb.socket" \ 
+      op monitor interval="10" timeout="20" \
+      op start interval="0" timeout="90" \
+      op stop interval="0" timeout="100"
+&prompt.crm.conf;<command>primitive</command> nmb systemd:nmb \
+    op start timeout="60" interval="0" \
+    op stop timeout="60" interval="0" \
+    op monitor interval="60" timeout="60"
+&prompt.crm.conf;<command>primitive</command> smb systemd:smb \
+    op start timeout="60" interval="0" \
+    op stop timeout="60" interval="0" \
+    op monitor interval="60" timeout="60"
+&prompt.crm.conf;<command>group</command> ctdb-group ctdb nmb smb
+&prompt.crm.conf;<command>clone</command> ctdb-clone ctdb-group meta interleave="true"
+&prompt.crm.conf;<command>colocation</command> ctdb-with-cephfs inf: ctdb-clone c-cephfs
+&prompt.crm.conf;<command>order</command> cephfs-then-ctdb inf: c-cephfs ctdb-clone
+&prompt.crm.conf;<command>commit</command></screen>
+   </step>
+   <step>
+    <para>
+     Add a clustered IP address:
+    </para>
+<screen>&prompt.crm.conf;<command>primitive</command> ip ocf:heartbeat:IPaddr2<!-- 
+    --> params ip=192.168.2.1 \
+    unique_clone_address="true" \
+    op monitor interval="60" \
+    meta resource-stickiness="0"
+&prompt.crm.conf;<command>clone</command> ip-clone ip \
+    meta interleave="true" clone-node-max="2" globally-unique="true"
+&prompt.crm.conf;<command>colocation</command> col-with-ctdb 0: ip-clone ctdb-clone
+&prompt.crm.conf;<command>order</command> o-with-ctdb 0: ip-clone ctdb-clone
+&prompt.crm.conf;<command>commit</command></screen>
+    <para>
+     If <literal>unique_clone_address</literal> is set to
+     <literal>true</literal>, the IPaddr2 resource agent adds a clone ID to
+     the specified address, leading to three different IP addresses. These
+     are usually not needed, but help with load balancing. For further
+     information about this topic, see <link xlink:href="https://www.suse.com/documentation/sle-ha-12/book_sleha/data/cha_ha_lb.html"
+     />.
     </para>
    </step>
    <step>
     <para>
-     On &si.earth;, run the crm shell
-     to execute the following commands to configure
-     the resource for &ganesha; daemons as clone of systemd resource type:
+     Commit your change:
     </para>
-    <screen>
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)configure# </prompt>primitive nfs-ganesha-server systemd:nfs-ganesha \
-op monitor interval=30s
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)configure# </prompt>clone nfs-ganesha-clone nfs-ganesha-server meta interleave=true
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)configure# </prompt>commit
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)configure# </prompt>status
-    2 nodes configured 
-    2 resources configured
-
-    Online: [ earth mars ]
-              
-    Full list of resources:
-         Clone Set: nfs-ganesha-clone [nfs-ganesha-server]
-         Started:  [ earth mars ]
-    </screen>
+<screen>&prompt.crm.conf;<command>commit</command></screen>
    </step>
    <step>
     <para>
-     Create a primitive IPAddr2 with the crm shell:
+     Check the result:
     </para>
-    <screen>
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)configure# </prompt>primitive ganesha-ip IPaddr2 \
-params ip=192.168.2.1 cidr_netmask=24 nic=eth0 \
-op monitor interval=10 timeout=20
-
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)# </prompt>status
-Online: [ earth mars  ]
-Full list of resources:
- Clone Set: nfs-ganesha-clone [nfs-ganesha-server]
-     Started: [ earth mars ]
- ganesha-ip    (ocf::heartbeat:IPaddr2):    Started earth
-    </screen>
+<screen>&prompt.earth;<command>crm</command> status
+Clone Set: base-clone [dlm]
+     Started: [ factory-1 ]
+     Stopped: [ factory-0 ]
+Clone Set: c-cephfs [cephfs]
+     Started: [ factory-1 ]
+     Stopped: [ factory-0 ]
+ Clone Set: ctdb-clone [ctdb-group]
+     Started: [ factory-1 ]
+     Started: [ factory-0 ]
+ Clone Set: ip-clone [ip] (unique)
+     ip:0       (ocf:heartbeat:IPaddr2):       Started factory-0
+     ip:1       (ocf:heartbeat:IPaddr2):       Started factory-1</screen>
    </step>
    <step>
     <para>
-     To set up relation between the &ganesha; server and the floating Virtual IP,
-     we use colocation and ordering. 
+     Test from a client machine. On a Linux client, run the following
+     command to see if you can copy files from and to the system:
     </para>
-    <screen>
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)configure# </prompt>colocation ganesha-ip-with-nfs-ganesha-server inf: ganesha-ip nfs-ganesha-clone
-<prompt xmlns='http://docbook.org/ns/docbook'>crm(live)configure# </prompt>order ganesha-ip-after-nfs-ganesha-server Mandatory: nfs-ganesha-clone ganesha-ip
-    </screen>
-   </step>
-   <step>
-    <para>
-     Use the <command>mount</command> command from the client to ensure
-     that cluster setup is complete:
-    </para>
-    <screen>
-&prompt.root;<command>mount</command> -t nfs -v -o nfsvers=4 192.168.2.1:/ /mnt
-    </screen>
+<screen>&prompt.root;<command>smbclient</command> <option>//&subnetII;.222/myshare</option></screen>
    </step>
   </procedure>
-  <sect2 xml:id="sec.ses.cifs.ha.cleanup">
-   <title>Cleanup Resources</title>
-   <para>
-    In event of &ganesha; failure at one of the node, for example &si.earth;,
-    fix the issue and  cleanup the resource. Only when the resource is cleaned
-    up, the resource can fail back to &si.earth; in case &ganesha; fails at
-    &si.mars;.
-   </para>
-   <para>
-    To clean up the resource:
-   </para>
-   <screen>
-&prompt.earth;<command>crm</command> resource cleanup nfs-ganesha-clone earth
-&prompt.earth;<command>crm</command> resource cleanup ganesha-ip earth
-   </screen>
-  </sect2>
  </sect1>
 </chapter>
