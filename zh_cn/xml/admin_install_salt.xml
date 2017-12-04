@@ -1,0 +1,920 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_install_salt.xml" version="5.0" xml:id="ceph.install.saltstack">
+ <title>使用 DeepSea/Salt 部署</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>是</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <note>
+  <title>SUSE Enterprise Storage 5 中已去除 <command>ceph-deploy</command></title>
+  <para>
+   SUSE Enterprise Storage 4 中已弃用 <command>ceph-deploy</command> 群集部署工具。从 SUSE Enterprise Storage 5 开始，随着 DeepSea 的推出，此工具已完全去除。
+  </para>
+ </note>
+ <para>
+  Salt 连同 DeepSea 是一个组件<emphasis>堆栈</emphasis>，可帮助您部署和管理服务器基础架构。Salt 具有很高的可缩放性，速度快，且相对容易运行。在开始使用 Salt 部署群集之前，请阅读以下注意事项：
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    <emphasis>Salt 受控端</emphasis>是由一个称为 Salt 主控端的专用节点控制的节点。Salt 受控端具有角色，例如 Ceph OSD、Ceph 监视器、Ceph 管理器、RADOS 网关、iSCSI 网关或 NFS Ganesha。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Salt 主控端运行自己的 Salt 受控端。运行特权任务（例如，创建、授权密钥以及将密钥复制到受控端）需要 Salt 主控端，这样，远程受控端就永远不需要运行特权任务。请不要在 Salt 主控端上运行 Ceph 相关的服务。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Salt 受控端需要通过网络正确解析 Salt 主控端的主机名。默认情况下，受控端会查找 <systemitem>salt</systemitem> 主机名，但您可以在 <filename>/etc/salt/minion</filename> 文件中指定可通过网络访问的其他任何主机名，具体请参见<xref linkend="ceph.install.stack"/>。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="cha.ceph.install.relnotes">
+  <title>阅读发行说明</title>
+
+  <para>
+   在发行说明中，可以找到有关自 SUSE Enterprise Storage 的上一个版本发行后所进行的更改的其他信息。检查发行说明以了解：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     您的硬件是否有特殊的注意事项。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     所用的任何软件包是否已发生重大更改。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     是否需要对您的安装实施特殊预防措施。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   发行说明还提供未能及时编入手册中的信息。它们还包含有关已知问题的说明。
+  </para>
+
+  <para>
+   安装包 <package>release-notes-ses</package>之后，可在本地的 <filename>/usr/share/doc/release-notes</filename> 目录中或 <link xlink:href="https://www.suse.com/releasenotes/"/> 网页上找到发行说明。
+  </para>
+ </sect1>
+ <sect1 xml:id="deepsea.description">
+  <title>DeepSea 简介</title>
+
+  <para>
+   DeepSea 旨在节省管理员的时间，让他们自信地对 Ceph 群集执行复杂操作。
+  </para>
+
+  <para>
+   Ceph 是一款高度可配置的软件解决方案。它提高了系统管理员的自由度和职责履行能力。
+  </para>
+
+  <para>
+   最低的 Ceph 设置能够很好地满足演示目的，但无法展示 Ceph 在处理大量节点时可体现的卓越功能。
+  </para>
+
+  <para>
+   DeepSea 会收集并储存有关单台服务器的相关数据，例如地址和设备名称。对于诸如 Ceph 的分布式储存系统，可能需要收集并储存数百个这样的项目。收集信息并手动将数据输入到配置管理工具的过程非常耗费精力，并且容易出错。
+  </para>
+
+  <para>
+   准备服务器、收集配置信息以及配置和部署 Ceph 所需执行的步骤大致相同。但是，这种做法无法解决管理独立功能的需求。在日常操作中，必须做到不厌其烦地将硬件添加到给定的功能，以及从容地去除硬件。
+  </para>
+
+  <para>
+   DeepSea 通过以下策略解决了这些需求：DeepSea 可将管理员的多项决策合并到单个文件中。这些决策包括群集指派、角色指派和配置文件指派。此外，DeepSea 会收集各组任务以组成一个简单的目标。每个目标就是一个<emphasis>阶段</emphasis>：
+  </para>
+
+  <itemizedlist xml:id="deepsea.stage.description">
+   <title>DeepSea 阶段说明</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 0</emphasis> — <emphasis role="bold">准备</emphasis>：在此阶段，将应用全部所需的更新，并且可能会重引导您的系统。
+    </para>
+    <important>
+     <title>重引导 Salt 主控端后重新运行阶段 0</title>
+     <para>
+      如果在执行阶段 0 期间，Salt 主控端重引导以装载新内核版本，则您需要再次运行阶段 0，否则受控端不会成为目标。
+     </para>
+    </important>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 1</emphasis> — <emphasis role="bold">发现</emphasis>：在此阶段，将检测群集中的所有硬件，并收集 Ceph 配置所需的信息。有关配置的细节，请参见<xref linkend="deepsea.pillar.salt.configuration"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 2</emphasis> — <emphasis role="bold">配置</emphasis>：您需要以特定的格式准备配置数据。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 3</emphasis> — <emphasis role="bold">部署</emphasis>：创建包含必要 Ceph 服务的基本 Ceph 群集。有关必要服务的列表，请参见<xref linkend="storage.intro.core.nodes"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 4</emphasis> — <emphasis role="bold">服务</emphasis>：可在此阶段安装 Ceph 的其他功能，例如 iSCSI、RADOS 网关和 CephFS。其中每个功能都是可选的。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 5</emphasis> — 去除阶段：此阶段不是必需的，在初始设置期间，通常不需要此阶段。在此阶段，将会去除受控端的角色以及群集配置。如果您需要从群集中去除某个储存节点，则需要运行此阶段。有关细节，请参见<xref linkend="salt.node.removing"/>。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <sect2 xml:id="deepsea.organisation.locations">
+   <title>组织和重要位置</title>
+   <para>
+    Salt 在主控端节点上使用多个标准位置和多个命名约定：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><filename>/srv/pillar</filename>
+     </term>
+     <listitem>
+      <para>
+       该目录储存群集受控端的配置数据。<emphasis>Pillar</emphasis> 是向所有群集受控端提供全局配置值的接口。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/</filename>
+     </term>
+     <listitem>
+      <para>
+       该目录储存 Salt 状态文件（也称为 <emphasis>sls</emphasis> 文件）。状态文件是群集应该所处的状态的带格式说明。有关详细信息，请参见 <link xlink:href="https://docs.saltstack.com/en/latest/topics/tutorials/starting_states.html">Salt 文档</link>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/module/runners</filename>
+     </term>
+     <listitem>
+      <para>
+       该目录储存称作运行程序的 Python 脚本。运行程序在主控端节点上执行。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/_modules</filename>
+     </term>
+     <listitem>
+      <para>
+       该目录储存称作模块的 Python 脚本。这些模块将应用到群集中的所有受控端。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/pillar/ceph</filename>
+     </term>
+     <listitem>
+      <para>
+       该目录由 DeepSea 使用。收集的配置数据储存在此处。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/ceph</filename>
+     </term>
+     <listitem>
+      <para>
+       DeepSea 使用的目录。其中储存了可采用不同格式的 sls 文件，但 sls 文件包含在各子目录中。每个子目录仅包含一种类型的 sls 文件。例如，<filename>/srv/salt/ceph/stage</filename> 包含 <command>salt-run state.orchestrate</command> 执行的编制文件。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.install.stack">
+  <title>群集部署</title>
+
+  <para>
+   群集部署过程包括多个阶段。首先，需要通过配置 Salt 来准备群集的所有节点，然后部署并配置 Ceph。
+  </para>
+
+  <para>
+   下面详细说明了群集准备过程。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     在群集的每个节点上安装并注册 SUSE Linux Enterprise Server 12 SP3 以及 SUSE Enterprise Storage 扩展。
+    </para>
+   </step>
+   <step>
+    <para>
+     在每个节点上配置网络设置，包括正确的 DNS 名称解析。Salt 主控端和所有 Salt 受控端需要根据各自的主机名相互解析。有关配置网络的详细信息，请参见 <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_basicnet_yast.html"/>。有关配置 DNS 服务器的详细信息，请参见 <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/cha_dns.html"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     配置、启用并启动 NTP 时间同步服务器：
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable ntpd.service
+<prompt>root@master # </prompt>systemctl start ntpd.service</screen>
+    <para>
+     在 <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_netz_xntp_yast.html"/> 中可以找到有关设置 NTP 的详细信息。
+    </para>
+   </step>
+   <step>
+    <para>
+     检查 AppArmor 服务是否正在运行，并在每个群集节点上禁用该服务。启动 YaST AppArmor 模块，选择<guimenu>设置</guimenu>，然后取消选择<guimenu>启用 Apparmor</guimenu> 复选框。单击<guimenu>完成</guimenu>进行确认。
+    </para>
+    <para>
+     请注意，在启用 AppArmor 的情况下，SUSE Enterprise Storage 将<emphasis>无法</emphasis>正常工作。
+    </para>
+   </step>
+   <step>
+    <para>
+     在 Salt 主控端节点上安装 <literal>salt-master</literal> 和 <literal>salt-minion</literal> 包：
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master salt-minion</screen>
+    <para>
+     检查 <systemitem>salt-master</systemitem> 服务是否已启用并启动，并根据需要将它启用并启动：
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     检查是否已在防火墙中向所有 Salt 受控端节点开放了 Salt 主控端节点上的端口 4505 和 4506。如果没有，可以使用 <command>yast2 firewall</command> 命令并允许 <guimenu>SaltStack</guimenu> 服务来开放这些端口。
+    </para>
+   </step>
+   <step>
+    <para>
+     在所有受控端节点上安装 <literal>salt-minion</literal> 包。
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+   </step>
+   <step>
+    <para>
+     将所有受控端（包括主受控端）配置为连接到主控端。如果无法通过主机名 <literal>salt</literal> 访问 Salt 主控端，请编辑文件 <filename>/etc/salt/minion</filename>，或创建包含以下内容的新文件 <filename>/etc/salt/minion.d/master.conf</filename>：
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     如果对上述配置文件执行了任何更改，请在所有 Salt 受控端上重启动 Salt 服务：
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     检查所有节点上是否已启用并启动 <systemitem>salt-minion</systemitem> 服务。根据需要启用并启动该服务：
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl enable salt-minion.service
+<prompt>root@minion &gt; </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     在 Salt 主控端上接受所有 Salt 密钥：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     校验是否已接受密钥：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step>
+    <para>
+     在部署 SUSE Enterprise Storage 之前，请确保以前的群集用作 OSD 的所有磁盘均为空且不包含分区。为确保这一点，您需要手动清空所有磁盘。请记得将“X”替换为正确的盘符：
+    </para>
+    <substeps>
+     <step>
+      <para>
+       擦除每个分区的开头部分：
+      </para>
+<screen>for partition in /dev/sdX[0-9]
+do
+  dd if=/dev/zero of=$partition bs=4096 count=1 oflag=direct
+done</screen>
+     </step>
+     <step>
+      <para>
+       擦除分区表：
+      </para>
+<screen>sgdisk -Z --clear -g /dev/sdX</screen>
+     </step>
+     <step>
+      <para>
+       擦除备份分区表：
+      </para>
+<screen>size=`blockdev --getsz /dev/sdX`
+position=$((size/4096 - 33))
+dd if=/dev/zero of=/dev/sdX bs=4096 count=33 seek=$position oflag=direct</screen>
+     </step>
+    </substeps>
+    </step>
+    <step>
+    <para>
+     在 Salt 主控端节点上安装 DeepSea：
+    </para>
+<screen><prompt>root@master # </prompt>zypper in deepsea</screen>
+   </step>
+   <step>
+    <para>
+     检查 Salt 主控端端点上的文件 <filename>/srv/pillar/ceph/master_minion.sls</filename> 是否指向您的 Salt 主控端。如果可以通过其他主机名访问您的 Salt 主控端，请使用储存群集适用的主机名。如果在 <emphasis>ses</emphasis> 域中使用了 Salt 主控端的默认主机名 <emphasis>salt</emphasis>，则该文件如下所示：
+    </para>
+<screen>master_minion: salt.ses</screen>
+   </step>
+  </procedure>
+
+  <para>
+   现在部署并配置 Ceph。除非另有说明，否则必须执行所有步骤。
+  </para>
+
+  <note>
+   <title>Salt 命令约定</title>
+   <para>
+    可通过两种方式运行 <command>salt-run state.orch</command>，一种方式是使用 <literal>stage.&lt;阶段编号&gt;</literal>，另一种方式是使用阶段的名称。这两种表示法会产生相同的效果，至于使用哪个命令，完全取决于您的偏好。
+   </para>
+  </note>
+
+  <important>
+   <title>指定目标</title>
+   <para>
+    语义
+   </para>
+<screen>salt '<replaceable>target-identifier</replaceable>' example.module</screen>
+   <para>
+    用于根据名称将一组受控端指定为目标。在下面的示例中，假设您只想控制与 SUSE Enterprise Storage 部署相关的受控端。因此，我们使用了匹配所有可用受控端的 Salt 的语法：
+   </para>
+<screen><prompt>root@master # </prompt>salt '*' example.module</screen>
+   <para>
+    如果结果与您的部署不对应，请替换“*”目标标识符，以匹配所需的模式。例如：
+   </para>
+<screen><prompt>root@master # </prompt>salt 'datacenter1.storage.example.com.*' example.module</screen>
+  </important>
+
+  <procedure xml:id="ds.depl.stages">
+   <title>运行部署阶段</title>
+   <step xml:id="ds.depl.s1">
+    <para>
+     包含属于当前正在部署的 Ceph 群集的 Salt 受控端。
+    </para>
+    <para>
+     在 Salt 主控端上，编辑 <filename>/srv/pillar/ceph/deepsea_minions.sls</filename>，添加包含 <literal>deepsea_minions:</literal> 选项的行。此配置选项只能在 <filename>deepsea_minions.sls</filename> 中出现一次。请使用编号符号 (<literal>#</literal>) 注释掉其他位置出现的此选项。下面的示例包含所有受控端：
+    </para>
+<screen>deepsea_minions: '*'</screen>
+    <para>
+     或者，可以在想要包含到群集中的所有 Salt 受控端上设置 DeepSea 粒度。例如，要在所有受控端（以“client”开头的受控端除外）上设置 DeepSea 粒度，请运行以下两个命令：
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' grains.append deepsea default
+<prompt>root@master # </prompt>salt 'client*' grains.delval deepsea destructive=True</screen>
+   </step>
+   <step>
+    <para>
+     准备群集。有关更多细节，请参见<xref linkend="deepsea.stage.description"/>。
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.prep</screen>
+    <note>
+     <title>使用 DeepSea CLI 运行或监视阶段</title>
+     <para>
+      使用 DeepSea CLI，可通过在监视模式下运行 DeepSea CLI，或者通过 DeepSea CLI 直接运行阶段，来实时跟踪阶段执行进度。有关细节，请参见<xref linkend="deepsea.cli"/>。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     <emphasis>可选</emphasis>：为 <filename>/var/lib/ceph/</filename> 创建 Btrfs 子卷。只能在执行 DeepSea 的后续阶段之前执行此步骤。要迁移现有目录或了解更多细节，请参见<xref linkend="storage.tips.ceph_btrfs_subvol"/>。
+    </para>
+    <screen><prompt>root@master # </prompt>salt-run state.orch ceph.migrate.subvolume</screen>
+   </step>
+   <step>
+    <para>
+     发现阶段会从所有受控端收集数据并创建配置分段，这些分段储存在 <filename>/srv/pillar/ceph/proposals</filename> 目录中。数据以 YAML 格式储存在 *.sls 或 *.yml 文件中。
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.1</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.discovery</screen>
+   </step>
+   <step>
+    <para>
+     成功完成上述命令后，请在 <filename>/srv/pillar/ceph/proposals</filename> 中创建 <filename>policy.cfg</filename> 文件。有关细节，请参见<xref linkend="policy.configuration"/>。
+    </para>
+    <tip>
+     <para>
+      如果需要更改群集的网络设置，请编辑 <filename>/srv/pillar/ceph/proposals/config/stack/ceph/cluster.yml</filename>，调整以 <literal>cluster_network:</literal> 和 <literal>public_network:</literal> 开头的行。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     配置阶段将会分析 <filename>policy.cfg</filename> 文件，并将包含的文件合并成其最终形式。群集和角色相关的内容放置在 <filename>/srv/pillar/ceph/cluster</filename> 中，而 Ceph 特定的内容放置在 <filename>/srv/pillar/ceph/stack/default</filename> 中。
+    </para>
+    <para>
+     运行以下命令以触发配置阶段：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.configure</screen>
+    <para>
+     配置步骤可能需要花几秒时间。命令完成后，您可以通过运行以下命令，查看指定受控端（例如，名为 <literal>ceph_minion1</literal>、<literal>ceph_minion2</literal> 等的受控端）的pillar 数据：
+    </para>
+<screen><prompt>root@master # </prompt>salt 'ceph_minion*' pillar.items</screen>
+    <note>
+     <title>重写默认值</title>
+     <para>
+      一旦命令完成，您便可查看默认配置并根据需要进行更改。有关细节，请参见<xref linkend="ceph.deploy.ds.custom"/>。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     现在运行部署阶段。在此阶段，将会验证 pillar，并在储存节点上启动监视器和 OSD 守护程序。运行以下命令以启动该阶段：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.deploy
+    </screen>
+    <para>
+     该命令可能需要花几分钟时间。如果该命令失败，则您需要解决问题，然后再次运行前面的阶段。该命令成功后，请运行以下命令来检查状态：
+    </para>
+<screen><prompt>root@master # </prompt>ceph -s</screen>
+   </step>
+   <step>
+    <para>
+     Ceph 群集部署过程的最后一个步骤是<emphasis>服务</emphasis>阶段。在此阶段，您需要会实例化当前支持的所有服务：iSCSI 网关、CephFS、RADOS 网关、openATTIC 和 NFS Ganesha。此阶段将创建所需的池、授权密钥环和启动服务。要启动该阶段，请运行以下命令：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.services</screen>
+    <para>
+     根据具体的设置，该命令可能会运行几分钟时间。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deepsea.cli">
+  <title>DeepSea CLI</title>
+
+  <para>
+   DeepSea 还提供了一个 CLI 工具，供用户监视或运行阶段，同时实时将执行进度可视化。
+  </para>
+
+  <para>
+   支持使用以下两种模式来可视化阶段的执行进度：
+  </para>
+
+  <itemizedlist xml:id="deepsea.cli.modes">
+   <title>DeepSea CLI 模式</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">监视模式</emphasis>：可视化另一个终端会话中发出的 <command>salt-run</command> 命令所触发 DeepSea 阶段的执行进度。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">独立模式</emphasis>：运行 DeepSea 阶段，并在该阶段的构成步骤执行时提供相应的实时可视化效果。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <important>
+   <title>DeepSea CLI 命令</title>
+   <para>
+    只能使用 <systemitem class="username">root</systemitem> 特权在 Salt 主控端节点中运行 DeepSea CLI 命令。
+   </para>
+  </important>
+
+  <sect2 xml:id="deepsea.cli.monitor">
+   <title>DeepSea CLI：监视模式</title>
+   <para>
+    进度监视器提供详细的实时可视化效果，显示在其他终端会话中使用 <command>salt-run state.orch</command> 命令执行阶段期间发生的情况。
+   </para>
+   <para>
+    在运行任何 <command>salt-run state.orch</command> 命令之前，需要启动监视器，使其可以检测到阶段的执行已开始。
+   </para>
+   <para>
+    如果在发出 <command>salt-run state.orch</command> 命令之后再启动监视器，将不会显示执行进度。
+   </para>
+   <para>
+    可运行以下命令来启动监视模式：
+   </para>
+<screen><prompt>root@master # </prompt>deepsea monitor</screen>
+   <para>
+    有关 <command>deepsea monitor</command> 命令的可用命令行选项的详细信息，请查看该命令的手册页：
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-monitor</screen>
+  </sect2>
+
+  <sect2 xml:id="deepsea.cli.standalone">
+   <title>DeepSea CLI：独立模式</title>
+   <para>
+    在独立模式下，可以使用 DeepSea CLI 来运行 DeepSea 阶段，并实时显示其执行进度。
+   </para>
+   <para>
+    从 DeepSea CLI 中运行 DeepSea 阶段的命令的格式如下：
+   </para>
+<screen><prompt>root@master # </prompt>deepsea stage run <replaceable>stage-name</replaceable></screen>
+   <para>
+    其中，<replaceable>stage-name</replaceable> 对应于 Salt 编制状态文件的引用方式。例如，对应于 <filename>/srv/salt/ceph/stage/deploy</filename> 中的目录的<emphasis role="bold">部署</emphasis>阶段以 <emphasis role="bold">ceph.stage.deploy</emphasis> 的形式引用。
+   </para>
+   <para>
+    此命令可代替用于运行 DeepSea 阶段（或任何 DeepSea 编制状态文件）的基于 Salt 的命令。
+   </para>
+   <para>
+    命令 <command>deepsea stage run ceph.stage.0</command> 与 <command>salt-run state.orch ceph.stage.0</command> 的效果相同。
+   </para>
+   <para>
+    有关 <command>deepsea stage run</command> 命令接受的可用命令行选项的详细信息，请查看该命令的手册页：
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-stage run</screen>
+   <para>
+    下图显示了运行<emphasis role="underline">阶段 2</emphasis> 时，DeepSea CLI 的输出示例：
+   </para>
+   <figure>
+    <title>DeepSea CLI 阶段执行进度输出</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="deepsea.cli.run.alias">
+    <title>DeepSea CLI <command>stage run</command> 别名</title>
+    <para>
+     针对 Salt 的高级用户，我们还支持使用别名来运行 DeepSea 阶段。该别名采用运行阶段所用的 Salt 命令（例如 <command>salt-run state.orch <replaceable>阶段名称</replaceable></command>）作为 DeepSea CLI 的命令。
+    </para>
+    <para>
+     示例：
+    </para>
+<screen><prompt>root@master # </prompt>deepsea salt-run state.orch <replaceable>stage-name</replaceable></screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deepsea.pillar.salt.configuration">
+  <title>配置和自定义</title>
+
+  <sect2 xml:id="policy.configuration">
+   <title><filename>policy.cfg</filename> 文件</title>
+   <para>
+    <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> 配置文件用于确定单个群集节点的角色。例如，哪个节点充当 OSD，或哪个节点充当监视器节点。请编辑 <filename>policy.cfg</filename>，以反映所需的群集设置。段落采用任意顺序，但所包含行的内容将重写前面行的内容中匹配的密钥。
+   </para>
+   <tip>
+    <title><filename>policy.cfg</filename> 的示例</title>
+    <para>
+     可以在 <filename>/usr/share/doc/packages/deepsea/examples/</filename> 目录中找到完整策略文件的多个示例。
+    </para>
+   </tip>
+   <sect3 xml:id="policy.cluster.assignment">
+    <title>群集指派</title>
+    <para>
+     在 <emphasis role="bold">cluster</emphasis> 段落选择群集的受控端。可以选择所有受控端，或者将受控端加入黑名单或白名单。下面显示了名为 <emphasis role="bold">ceph</emphasis> 的群集的示例。
+    </para>
+    <para>
+     要包含<emphasis role="bold">所有</emphasis>受控端，请添加以下几行：
+    </para>
+<screen>cluster-ceph/cluster/*.sls</screen>
+    <para>
+     要将特定的受控端加入<emphasis role="bold">白名单</emphasis>，请运行以下命令：
+    </para>
+<screen>cluster-ceph/cluster/abc.domain.sls</screen>
+    <para>
+     要将一组受控端加入白名单，可以使用通配符：
+    </para>
+<screen>cluster-ceph/cluster/mon*.sls</screen>
+    <para>
+     要将受控端加入<emphasis role="bold">黑名单</emphasis>，可将其设置为 <literal>unassigned</literal>：
+    </para>
+<screen>cluster-unassigned/cluster/client*.sls</screen>
+   </sect3>
+   <sect3 xml:id="policy.role.assignment">
+    <title>角色指派</title>
+    <para>
+     在本节中，您需要将角色指派到群集节点。指派遵循以下模式：
+    </para>
+<screen>role-<replaceable>role name</replaceable>/<replaceable>path</replaceable>/<replaceable>included files</replaceable></screen>
+    <para>
+     其中的项目具有以下含义和值：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>role name</replaceable> 为下列任何一项：“master”、“admin”、“mon”、“mgr”、“mds”、 “igw”、“rgw”、“ganesha”或“openattic”。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>path</replaceable> 是 sls 或 yml 文件的相对路径。对于 sls 文件，该路径通常是 <filename>cluster</filename>；而 yml 文件则位于 <filename>stack/default/ceph/minions</filename>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>included files</replaceable> 是 Salt 状态文件或 YAML 配置文件。可以使用外壳通配进行更具体的匹配。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     每个角色的示例如下：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <emphasis>master</emphasis> - 该节点具有所有 Ceph 群集的管理密钥环。目前仅支持一个 Ceph 群集。由于 <emphasis>master</emphasis> 角色是必需的，因此，请始终添加如下所示的行：
+      </para>
+<screen>role-master/cluster/master*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>admin</emphasis> - 该受控端将获得管理密钥环。可按如下方式定义该角色：
+      </para>
+<screen>role-admin/cluster/abc*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mon</emphasis> - 该受控端将向 Ceph 群集提供监视服务。此角色需要所指派受控端的地址，因此，除了包含 sls 文件以外，您还需要包含 <filename>stack</filename> 目录中的文件：
+      </para>
+<screen>role-mon/stack/default/ceph/minions/mon*.yml
+role-mon/cluster/mon*.sls</screen>
+      <para>
+       该示例将监视角色指派给一组受控端。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mgr</emphasis> - 从整个群集收集所有状态信息的 Ceph 管理器守护程序。请将它部署在您打算在其上部署 Ceph 监视器角色的所有受控端上。
+      </para>
+<screen>role-mgr/cluster/mgr*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mds</emphasis> - 该受控端将提供元数据服务来支持 CephFS。
+      </para>
+<screen>role-mds/cluster/mds*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>igw</emphasis> - 该受控端将充当 iSCSI 网关。此角色需要所指派受控端的地址，因此，您还需要包含 <filename>stack</filename> 目录中的文件：
+      </para>
+<screen>role-igw/stack/default/ceph/minions/xyz.domain.yml
+role-igw/cluster/*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>rgw</emphasis> - 该受控端将充当 RADOS 网关：
+      </para>
+<screen>role-rgw/cluster/rgw*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>openattic</emphasis> - 该受控端将充当 openATTIC 服务器：
+      </para>
+<screen>role-openattic/cluster/openattic*.sls</screen>
+      <para>
+       有关详细信息，请参见 <xref linkend="ceph.oa"/>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>ganesha</emphasis> - 该受控端将充当 NFS Ganesha 服务器。“ganesha”角色需要群集中的“rgw”或“mds”角色，否则，验证将于阶段 3 中失败。
+      </para>
+      <para>
+       要成功安装 NFS Ganesha，需要进行额外的配置。如果您要使用 NFS Ganesha，请在执行阶段 2 和 4 之前阅读<xref linkend="cha.as.ganesha"/>。但是，可以稍后再安装 NFS Ganesha。
+      </para>
+      <para>
+       在某些情况下，为 NFS Ganesha 节点定义自定义角色可能很有用。有关细节，请参见<xref linkend="ceph.nfsganesha.customrole"/>。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <note>
+     <title>群集节点的多个角色</title>
+     <para>
+      可将多个角色指派到一个节点。例如，可将 mds 角色指派到监视器节点：
+     </para>
+<screen>role-mds/cluster/mon[1,2]*.sls</screen>
+    </note>
+   </sect3>
+   <sect3 xml:id="policy.common.configuration">
+    <title>通用配置</title>
+    <para>
+     通用配置段落包括<emphasis>发现（阶段 1）</emphasis>期间生成的配置文件。这些配置文件储存 <literal>fsid</literal> 或 <literal>public_network</literal> 等参数。要包含所需的 Ceph 通用配置，请添加以下几行：
+    </para>
+<screen>config/stack/default/global.yml
+config/stack/default/ceph/cluster.yml</screen>
+   </sect3>
+   <sect3 xml:id="policy.profile.assignment">
+    <title>配置文件指派</title>
+    <para>
+     在 Ceph 中，单个储存角色并不足以描述同一硬件中可用的许多磁盘配置。DeepSea 阶段 1 将生成默认的储存配置文件建议。默认情况下，此建议是一个 <literal>bluestore</literal> 配置文件，它会尝试针对给定的硬件设置建议性能最高的配置。例如，外部日记优先于包含对象和元数据的单个磁盘。固态储存优先于旋转型磁盘。与角色一样，配置文件在 <filename>policy.cfg</filename> 中指派。
+    </para>
+    <para>
+     可在 profile-default 目录树中找到默认建议。要包含这种指派，请将以下两行添加到 <filename>policy.cfg</filename>。
+    </para>
+<screen>profile-default/cluster/*.sls
+profile-default/stack/default/ceph/minions/*.yml</screen>
+    <para>
+     您也可以使用建议运行程序，根据喜好创建自定义的储存配置文件。此运行程序提供三个方法：help、peek 和 populate。
+    </para>
+    <para>
+     <command>salt-run proposal.help</command> 列显此运行程序接受的各个自变量的相关帮助文本。
+    </para>
+    <para>
+     <command>salt-run proposal.peek</command> 根据传递的自变量显示生成的建议。
+    </para>
+    <para>
+     <command>salt-run proposal.populate</command> 将建议写入 <filename>/srv/pillar/ceph/proposals</filename> 子目录。传递 <option>name=myprofile</option> 可为储存配置文件命名。这会生成 profile-myprofile 子目录。
+    </para>
+    <para>
+     对于所有的其他自变量，请参见 <command>salt-run proposal.help</command> 的输出。
+    </para>
+    <sect4 xml:id="ds.profile.osd.encrypted">
+     <title>部署加密的 OSD</title>
+     <para>
+      默认情况下，OSD 以未加密的形式部署。如果需要在部署中使用加密的 OSD，请结合 <option>encryption=dmcrypt</option> 自变量使用 <literal>proposal.populate</literal> 运行程序：
+     </para>
+<screen><prompt>root # </prompt>salt-run proposal.populate encryption=dmcrypt</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deepsea.policy.filtering">
+    <title>项目过滤</title>
+    <para>
+     有时，使用 *.sls 通配法无法包含给定目录中的所有文件。<filename>policy.cfg</filename> 文件分析器可识别以下过滤器：
+    </para>
+    <warning>
+     <title>高级方法</title>
+     <para>
+      本节介绍供高级用户使用的过滤方法。如果使用不当，过滤可能会导致问题发生，例如，节点编号改变。
+     </para>
+    </warning>
+    <variablelist>
+     <varlistentry>
+      <term>slice=[start:end]</term>
+      <listitem>
+       <para>
+        使用 slice 过滤器可以仅包含从 <emphasis>start</emphasis> 到 <emphasis>end-1</emphasis> 的项目。请注意，给定目录中的项目将按字母数字顺序排序。下行包含 <filename>role-mon/cluster/</filename> 子目录中的第三到第五个文件：
+       </para>
+<screen>role-mon/cluster/*.sls slice[3:6]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>re=regexp</term>
+      <listitem>
+       <para>
+        使用正则表达式过滤器可以仅包含与给定表达式匹配的项目。例如：
+       </para>
+<screen>role-mon/cluster/mon*.sls re=.*1[135]\.subdomainX\.sls$</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="deepsea.example.policy_cfg">
+    <title><filename>policy.cfg</filename> 文件示例</title>
+    <para>
+     下面是一个基本 <filename>policy.cfg</filename> 文件的示例：
+    </para>
+<screen>## Cluster Assignment
+cluster-ceph/cluster/*.sls <co xml:id="co.policy.1"/>
+
+## Roles
+# ADMIN
+role-master/cluster/examplesesadmin.sls <co xml:id="co.policy.2"/>
+role-admin/cluster/sesclient*.sls <co xml:id="co.policy.3"/>
+
+# MON
+role-mon/stack/default/ceph/minions/ses-example-[123].yml <co xml:id="co.policy.4"/>
+role-mon/cluster/ses-example-[123].sls <co xml:id="co.policy.5"/>
+
+# MGR
+role-mgr/cluster/ses-example-[123].sls <co xml:id="co.policy.mgr"/>
+
+# MDS
+role-mds/cluster/ses-example-4.sls <co xml:id="co.policy.6"/>
+
+# IGW
+role-igw/stack/default/ceph/minions/ses-example-4.yml <co xml:id="co.policy.7"/>
+role-igw/cluster/ses-example-4.sls <co xml:id="co.policy.10"/>
+
+# RGW
+role-rgw/cluster/ses-example-4.sls <co xml:id="co.policy.11"/>
+
+# openATTIC
+role-openattic/cluster/openattic*.sls <co xml:id="co.policy.oa"/>
+
+# COMMON
+config/stack/default/global.yml <co xml:id="co.policy.8"/>
+config/stack/default/ceph/cluster.yml <co xml:id="co.policy.13"/>
+
+## Profiles
+profile-default/cluster/*.sls <co xml:id="co.policy.9"/>
+profile-default/stack/default/ceph/minions/*.yml <co xml:id="co.policy.12"/></screen>
+    <calloutlist>
+     <callout arearefs="co.policy.1">
+      <para>
+       指示在 Ceph 群集中包含所有受控端。如果您不想在 Ceph 群集中包含某些受控端，请使用：
+      </para>
+<screen>cluster-unassigned/cluster/*.sls
+cluster-ceph/cluster/ses-example-*.sls</screen>
+      <para>
+       第一行将所有受控端标记为未指派。第二行覆盖与“ses-example-*.sls”匹配的受控端，并将其指派到 Ceph 群集。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.2">
+      <para>
+       名为“examplesesadmin”的受控端具有“master”角色。顺便指出，这表示该受控端将获得群集的管理密钥。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.3">
+      <para>
+       与“sesclient*”匹配的所有受控端也将获得管理密钥。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.4">
+      <para>
+       确保 DeepSea 知道监视器节点的 IP 地址。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.5">
+      <para>
+       与“ses-example-[123]”匹配的所有受控端（应该是 ses-example-1、ses-example-2 和 ses-example-3 这三个受控端）将设置为 MON 节点。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.mgr">
+      <para>
+       与“ses-example-[123]”匹配的所有受控端（示例中的所有 MON 节点）将设置为 MGR 节点。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.6">
+      <para>
+       受控端“ses-example-4”将具有 MDS 角色。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.7">
+      <para>
+       确保 DeepSea 知道 IGW 节点的 IP 地址。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.10">
+      <para>
+       受控端“ses-example-4”将具有 IGW 角色。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.11">
+      <para>
+       受控端“ses-example-4”将具有 RGW 角色。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.oa">
+      <para>
+       指定要部署 openATTIC 用户界面来管理 Ceph 群集。有关详细信息，请参见<xref linkend="ceph.oa"/>。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.8">
+      <para>
+       表示我们接受 <option>fsid</option> 和 <option>public_network</option> 等通用配置参数的默认值。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.13">
+      <para>
+       表示我们接受 <option>fsid</option> 和 <option>public_network</option> 等通用配置参数的默认值。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.9">
+      <para>
+       告知 DeepSea 要为每个受控端使用默认的硬件配置文件。选择默认的硬件配置文件意味着我们要将所有附加磁盘（根磁盘除外）用作 OSD。
+      </para>
+     </callout>
+     <callout arearefs="co.policy.12">
+      <para>
+       告知 DeepSea 要为每个受控端使用默认的硬件配置文件。选择默认的硬件配置文件意味着我们要将所有附加磁盘（根磁盘除外）用作 OSD。
+      </para>
+     </callout>
+    </calloutlist>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1>
+  <title>自定义 <filename>ceph.conf</filename> 文件</title>
+
+  <para>
+   如果需要将自定义设置放入 <filename>ceph.conf</filename> 配置文件，请参见<xref linkend="ds.custom.cephconf"/>了解更多细节。
+  </para>
+ </sect1>
+</chapter>

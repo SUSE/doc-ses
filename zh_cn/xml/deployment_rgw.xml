@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_rgw.xml" version="5.0" xml:id="cha.ceph.additional.software.installation">
+
+ <title>Ceph RADOS 网关</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>编辑</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Ceph RADOS 网关是构建在 <literal>librgw</literal> 之上的对象储存接口，为应用程序提供用于访问 Ceph 群集的 RESTful 网关。该网关支持两种接口：
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    <emphasis>S3 兼容</emphasis>：通过与 Amazon S3 RESTful API 的某个大型子集兼容的接口提供对象储存功能。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>Swift 兼容</emphasis>：通过与 <phrase role="productname">OpenStack</phrase> Swift API 的某个大型子集兼容的接口提供对象储存功能。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <para>
+  RADOS 网关守护程序使用嵌入式 HTTP 服务器 (CivetWeb) 来与 Ceph 群集交互。由于 RADOS 网关提供与 <phrase role="productname">OpenStack</phrase> Swift 和 Amazon S3 兼容的接口，因此具有自己的用户管理功能。RADOS 网关可将数据储存在用于储存来自 CephFS 客户端或 RADOS 块设备客户端的数据的同一个群集中。S3 和 Swift API 共享一个公用的名称空间，因此，您可以使用其中一个 API 写入数据，使用另一个 API 检索数据。
+ </para>
+ <important>
+  <title>DeepSea 部署的 RADOS 网关</title>
+  <para>
+   从 SUSE Enterprise Storage 5 开始，RADOS 网关作为 DeepSea 角色安装，因此，您不需要手动安装。
+  </para>
+  <para>
+   要在部署群集期间安装 RADOS 网关，请参见<xref linkend="ceph.install.stack"/>。
+  </para>
+  <para>
+   要将包含 RADOS 网关的新节点添加到群集，请参见<xref linkend="salt.adding.services"/>。
+  </para>
+ </important>
+ <sect1 xml:id="rgw.installation">
+  <title>手动安装 RADOS 网关</title>
+
+  <procedure>
+   <step>
+    <para>
+     在未使用端口 80 的节点上安装 RADOS 网关。例如，运行 openATTIC 的节点已在使用端口 80。以下命令会安装所有必需的组件：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo zypper ref &amp;&amp; sudo zypper in ceph-radosgw</screen>
+   </step>
+   <step>
+    <para>
+     如果之前的 RADOS 网关实例中的 Apache 服务器正在运行，请停止该服务器并禁用相关的服务：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo systemctl stop disable apache2.service</screen>
+   </step>
+   <step>
+    <para>
+     编辑 <filename>/etc/ceph/ceph.conf</filename>，添加以下几行：
+    </para>
+<screen>[client.rgw.gateway_host]
+ rgw frontends = "civetweb port=80"</screen>
+    <tip>
+     <para>
+      如果您想将 RADOS 网关/CivetWeb 配置为用于 SSL 加密，请相应地修改该行：
+     </para>
+<screen>rgw frontends = civetweb port=7480s ssl_certificate=<replaceable>path_to_certificate.pem</replaceable></screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     重启动 RADOS 网关服务。
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo systemctl restart ceph-radosgw@rgw.gateway_host</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="ses.rgw.config">
+   <title>RADOS 网关配置</title>
+   <para>
+    配置 RADOS 网关需要执行多个步骤。
+   </para>
+   <sect3>
+    <title>基本配置</title>
+    <para>
+     配置 Ceph RADOS 网关需要一个正常运行的 Ceph 储存群集。Ceph RADOS 网关是 Ceph 储存群集的客户端。作为 Ceph 储存群集客户端，它需要：
+    </para>
+    <itemizedlist mark="bullet" spacing="normal">
+     <listitem>
+      <para>
+       网关实例的主机名，例如 <systemitem>gateway</systemitem>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       具有相应权限和密钥环的储存群集用户名。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       用于储存网关数据的池。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       网关实例的数据目录。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph 配置文件中的实例项。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     每个实例都必须具有用户名和密钥才能与 Ceph 储存群集通讯。在以下步骤中，我们将使用监视器节点创建引导密钥环，然后基于引导密钥环创建 RADOS 网关实例用户密钥环。随后创建客户端用户名和密钥。接下来，我们将密钥添加到 Ceph 储存群集。最后，将密钥环分发到包含网关实例的节点。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       为网关创建密钥环：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool --create-keyring /etc/ceph/ceph.client.rgw.keyring
+<prompt>cephadm &gt; </prompt>sudo chmod +r /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       为每个实例生成 Ceph RADOS 网关用户名和密钥。例如，我们将在 <systemitem>client.radosgw</systemitem> 后面使用名称 <systemitem>gateway</systemitem>：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.client.rgw.keyring \
+  -n client.rgw.gateway --gen-key</screen>
+     </step>
+     <step>
+      <para>
+       将功能添加到密钥：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -n client.rgw.gateway --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       创建可让 Ceph 对象网关访问 Ceph 储存群集的密钥环和密钥之后，请将密钥添加到 Ceph 储存群集。例如：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph -k /etc/ceph/ceph.client.admin.keyring auth add client.rgw.gateway \
+  -i /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       将密钥环分发到包含网关实例的节点：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo scp /etc/ceph/ceph.client.rgw.keyring  ceph@<replaceable>hostname</replaceable>:/home/ceph
+<prompt>cephadm &gt; </prompt>ssh <replaceable>hostname</replaceable>
+<prompt>cephadm &gt; </prompt>sudo mv ceph.client.rgw.keyring /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+    </procedure>
+    <tip>
+     <title>使用引导密钥环</title>
+     <para>
+      一种替代方法是创建 RADOS 网关引导密钥环，然后基于该密钥环创建 RADOS 网关密钥环：
+     </para>
+     <procedure>
+      <step>
+       <para>
+        在某个监视器节点上创建 RADOS 网关引导密钥环：
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph \
+ auth get-or-create client.bootstrap-rgw mon 'allow profile bootstrap-rgw' \
+ --connect-timeout=25 \
+ --cluster=ceph \
+ --name mon. \
+ --keyring=/var/lib/ceph/mon/ceph-<replaceable>node_host</replaceable>/keyring \
+ -o /var/lib/ceph/bootstrap-rgw/keyring</screen>
+      </step>
+      <step>
+       <para>
+        创建 <filename>/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable></filename> 目录，用于储存引导密钥环：
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mkdir \
+/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        基于新建的引导密钥环创建 RADOS 网关密钥环：
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph \
+ auth get-or-create client.rgw.<replaceable>rgw_name</replaceable> osd 'allow rwx' mon 'allow rw' \
+ --connect-timeout=25 \
+ --cluster=ceph \
+ --name client.bootstrap-rgw \
+ --keyring=/var/lib/ceph/bootstrap-rgw/keyring \
+ -o /var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable>/keyring</screen>
+      </step>
+      <step>
+       <para>
+        将 RADOS 网关密钥环复制到 RADOS 网关主机：
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo scp \
+/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable>/keyring \
+<replaceable>rgw_host</replaceable>:/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable>/keyring</screen>
+       <remark role="fixme">Does the scp command fail because it is not executed as remote root but local root?</remark>
+      </step>
+     </procedure>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>创建池（可选）</title>
+    <para>
+     Ceph RADOS 网关需要使用 Ceph 储存群集池来储存特定的网关数据。如果创建的用户具有适当的权限，则网关会自动创建池。但是，请务必在 Ceph 配置文件中为每个池设置适当的默认归置组数量。
+    </para>
+    <para>
+     池名称遵循 <literal>{zone-name}.{pool-name}</literal> 语法。使用默认区域配置网关时，本示例中的默认区域名称为“default”：
+    </para>
+<screen>.rgw.root
+default.rgw.control
+default.rgw.meta
+default.rgw.log
+default.rgw.buckets.index
+default.rgw.buckets.data</screen>
+    <para>
+     要手动创建池，请参见<xref linkend="ceph.pools.operate.add_pool"/>。
+    </para>
+   </sect3>
+   <sect3>
+    <title>将网关配置添加到 Ceph</title>
+    <para>
+     将 Ceph RADOS 网关配置添加到 Ceph 配置文件。Ceph RADOS 网关配置要求您标识 Ceph RADOS 网关实例。然后，指定安装了 Ceph RADOS 网关守护程序的主机名、密钥环（用于 cephx）和日志文件（可选）。例如：
+    </para>
+<screen>[client.rgw.<replaceable>instance-name</replaceable>]
+host = <replaceable>hostname</replaceable>
+keyring = /etc/ceph/ceph.client.rgw.keyring</screen>
+    <tip>
+     <title>RADOS 网关日志文件</title>
+     <para>
+      要覆盖默认的 RADOS 网关日志文件，请包含以下命令：
+     </para>
+<screen>log file = /var/log/radosgw/client.rgw.<replaceable>instance-name</replaceable>.log</screen>
+    </tip>
+    <para>
+     网关实例的 <literal>[client.rgw.*]</literal> 部分指定，Ceph 配置文件的此部分用来配置客户端类型为 Ceph RADOS 网关 (radosgw) 的 Ceph 储存群集客户端。后接实例名称。例如：
+    </para>
+<screen>[client.rgw.gateway]
+host = ceph-gateway
+keyring = /etc/ceph/ceph.client.rgw.keyring</screen>
+    <note>
+     <para>
+      <replaceable>host</replaceable> 必须是您的计算机主机名，不包括域名。
+     </para>
+    </note>
+    <para>
+     然后关闭 <literal>print continue</literal>。如果将其设置为 true，执行 PUT 操作时可能会遇到问题：
+    </para>
+<screen>rgw print continue = false</screen>
+
+    <para>
+     要通过子域 S3 调用使用 Ceph RADOS 网关（例如 <literal>http://bucketname.hostname</literal>），必须在 Ceph 配置文件的 <literal>[client.rgw.gateway]</literal> 段落下面添加 Ceph RADOS 网关 DNS 名称：
+    </para>
+<screen>[client.rgw.gateway]
+...
+rgw dns name = <replaceable>hostname</replaceable></screen>
+    <para>
+     此外，在使用 <literal>http://<replaceable>bucketname</replaceable>.<replaceable>hostname</replaceable></literal> 语法时，应考虑在客户端计算机上安装 Dnsmasq 这样的 DNS 服务器。<filename>dnsmasq.conf</filename> 文件应包含以下设置：
+    </para>
+<screen>address=/<replaceable>hostname</replaceable>/<replaceable>host-ip-address</replaceable>
+listen-address=<replaceable>client-loopback-ip</replaceable></screen>
+    <para>
+     然后，在客户端计算机上添加 <replaceable>client-loopback-ip</replaceable> IP 地址作为第一台 DNS 服务器。
+    </para>
+   </sect3>
+   <sect3>
+    <title>创建数据目录</title>
+    <para>
+     部署脚本无法创建默认的 Ceph RADOS 网关数据目录。如果尚未为 radosgw 守护程序的每个实例创建数据目录，请加以创建。Ceph 配置文件中的 <literal>host</literal> 变量确定哪个主机运行 radosgw 守护程序的每个实例。通常的格式会指定 radosgw 守护程序、群集名称和守护程序 ID。
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mkdir -p /var/lib/ceph/radosgw/<replaceable>cluster</replaceable>-<replaceable>id</replaceable></screen>
+    <para>
+     使用上面的示例 <filename>ceph.conf</filename> 设置执行以下命令：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mkdir -p /var/lib/ceph/radosgw/ceph-radosgw.gateway</screen>
+   </sect3>
+   <sect3>
+    <title>重启动服务并启动网关</title>
+    <para>
+     为了确保所有组件重新装载其配置，建议重启动 Ceph 储存群集服务。然后启动 <systemitem>radosgw</systemitem> 服务。有关详细信息，请参见<xref linkend="cha.ceph.operating"/>和<xref linkend="ceph.rgw.operating"/>。
+    </para>
+    <para>
+     服务启动并运行后，您可以发出匿名的 GET 请求，以检查网关是否返回响应。向域名发出简单的 HTTP 请求应会返回以下响应：
+    </para>
+<screen>&lt;ListAllMyBucketsResult&gt;
+      &lt;Owner&gt;
+              &lt;ID&gt;anonymous&lt;/ID&gt;
+              &lt;DisplayName/&gt;
+      &lt;/Owner&gt;
+      &lt;Buckets/&gt;
+&lt;/ListAllMyBucketsResult&gt;</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tiered_storage.xml" version="5.0" xml:id="cha.ceph.tiered">
+
+ <title>超速缓存分层</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>编辑</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  <emphasis>超速缓存层</emphasis>是在客户端与标准储存之间实施的附加储存层。该层旨在加速访问低速硬盘中储存的池以及纠删码池。
+ </para>
+ <para>
+  通常，超速缓存分层涉及到创建一个配置为充当超速缓存层的相对快速/昂贵储存设备（例如 SSD 驱动器）池，以及一个配置为充当储存层的慢速/便宜设备后备池。
+ </para>
+ <sect1>
+  <title>分层储存的相关术语</title>
+
+  <para>
+   超速缓存分层识别两种类型的池：<emphasis>超速缓存池</emphasis>和<emphasis>储存池</emphasis>。
+  </para>
+
+  <tip>
+   <para>
+    有关池的一般信息，请参见<xref linkend="ceph.pools"/>。
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>储存池</term>
+    <listitem>
+     <para>
+      在 Ceph 储存群集中储存一个对象的多个副本的标准副本池，或纠删码池（请参见<xref linkend="cha.ceph.erasure"/>）。
+     </para>
+     <para>
+      储存池有时称为“后备”储存或“冷”储存。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>超速缓存池</term>
+    <listitem>
+     <para>
+      标准副本池，储存在相对较小但速度较快的储存设备上，在 CRUSH 拓扑图中具有自己的规则集。
+     </para>
+     <para>
+      超速缓存池也称为“热”储存。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.caution">
+  <title>考虑的要点</title>
+
+  <para>
+   超速缓存分层可能会<emphasis>降低</emphasis>特定工作负载的群集性能。以下要点指明了对于超速缓存分层需要考虑的各个方面：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>与工作负载相关</emphasis>：超速缓存能否提高性能取决于工作负载。由于将对象移入或移出超速缓存会产生费用，因此，如果大多数请求只涉及到少量的对象，则使用超速缓存可能更高效。超速缓存池的大小应该足以接收工作负载的工作集，以避免性能波动。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>难以进行基准测试</emphasis>：大多数性能基准测试可能反映使用超速缓存分层时性能会较低。原因在于，这些基准测试请求了大量的对象，而超速缓存的“热身”需要较长时间。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>性能可能下降</emphasis>：对于不适合进行超速缓存分层的工作负载而言，其性能往往比不启用超速缓存分层的普通副本池更低。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis><systemitem>librados</systemitem> 对象枚举</emphasis>：如果应用程序直接使用 <systemitem>librados</systemitem> 并依赖于对象枚举，则超速缓存分层可能无法按预期工作。（对于 RADOS 网关、RBD 或 CephFS 而言，这不是个问题。）
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1>
+  <title>何时使用超速缓存分层</title>
+
+  <para>
+   在以下情况下，请考虑使用超速缓存分层：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     需要通过 RADOS 块设备 (RBD) 访问纠删码池。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     需要通过 iSCSI（因为它沿袭了 RBD 的限制）访问纠删码池。有关 iSCSI 的详细信息，请参见<xref linkend="cha.ceph.iscsi"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     您的高性能储存数量有限，而低性能储存众多，您需要更快地访问储存的数据。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.cachemodes">
+  <title>超速缓存模式</title>
+
+  <para>
+   超速缓存分层代理可处理超速缓存层与后备储存层之间的数据迁移。管理员可以配置如何进行这种迁移。有两个主要方案：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>写回模式</term>
+    <listitem>
+     <para>
+      在写回模式下，Ceph 客户端将数据写入超速缓存层，并从超速缓存层接收 ACK（确认）。一段时间后，写入超速缓存层的数据将迁移到储存层，并从超速缓存层中清除。从概念上讲，超速缓存层叠加在后备储存层的“前面”。当 Ceph 客户端需要驻留在储存层中的数据时，超速缓存分层代理会在读取时将数据迁移到超速缓存层，然后，数据将发送到 Ceph 客户端。因此，在数据变为不活动状态前，Ceph 客户端可以使用超速缓存层执行 I/O。这种做法非常适合可变的数据，例如，编辑的照片或视频，或事务数据。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>只读模式</term>
+    <listitem>
+     <para>
+      在只读模式下，Ceph 客户端将数据直接写入后备层。在读取时，Ceph 将请求的对象从后备层复制到超速缓存层。陈旧的对象将会根据定义的策略从超速缓存层中去除。这种做法非常适合不可变的数据，例如，在社交网络上呈现的图片或视频、DNA 数据或 X 光成像，因为从可能包含过时数据的超速缓存池中读取数据会提供较差的一致性。不要对可变的数据使用只读模式。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="ses.tiered.hitset">
+  <title>命中集</title>
+
+  <sect2 xml:id="ses.tiered.hitset.overview">
+   <title>概述</title>
+   <para>
+    使用<emphasis>命中集</emphasis>参数可以优化<emphasis>超速缓存池</emphasis>。Ceph 中的命中集通常是布隆过滤器，提供内存高效的方式来跟踪已进入超速缓存池的对象。
+   </para>
+   <para>
+    命中集是一个位数组，用于储存针对对象名称应用的一组哈希函数的结果。最初，所有位都设置为 <literal>0</literal>。将对象添加到命中集后，该对象的名称将经过哈希处理，结果将映射在命中集中的不同位置，其中位的值便会设置为 <literal>1</literal>。
+   </para>
+   <para>
+    为了确定某个对象是否存在于超速缓存中，将会再次对对象名称进行哈希处理。如果任一位为 <literal>0</literal>，则表示该对象肯定不在超速缓存中，需要从冷储存中检索它。<remark role="fixme">How is the modification date retrieved in read mode?</remark>
+   </para>
+   <para>
+    不同对象的结果可能会储存在命中集的同一位置。在巧合的情况下，可能所有位都是 <literal>1</literal>，而对象却不在超速缓存中。因此，处理布隆过滤器的命中集只能告知某个对象是否肯定不在超速缓存中，需要从冷储存检索它。
+   </para>
+   <para>
+    一个超速缓存池可以使用多个命中集来跟踪各时间段的文件访问。设置 <literal>hit_set_count</literal> 定义所用的命中集数量，<literal>hit_set_period</literal> 定义每个命中集的持续使用时间。该期限过后，将使用下一个命中集。如果用尽了命中集，将会释放最旧命中集的内存，并创建新的命中集。将 <literal>hit_set_count</literal> 和 <literal>hit_set_period</literal> 的值相乘可定义跟踪对象访问的整个时间范围。
+   </para>
+   <figure xml:id="ses.tiered.hitset.overview.bloom">
+    <title>包含 3 个储存对象的布隆过滤器</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    与哈希处理对象的数量相比，基于布隆过滤器的命中集具有很高的内存效率。只需使用不到 10 个位即可将误报率降低到 1% 以下。可以使用 <literal>hit_set_fpp</literal> 定义误报率。Ceph 可根据归置组中的对象数量及误报率自动计算命中集的大小。
+   </para>
+   <para>
+    可以使用 <literal>min_write_recency_for_promote</literal> 和 <literal>min_read_recency_for_promote</literal> 限制超速缓存池中所需的储存。如果将值设置为 <literal>0</literal>，则所有对象在被读取或写入后，会立即提升到超速缓存池，并且在逐出这些对象之前，一直保持这种模式。使用大于 <literal>0</literal> 的任何值可定义在其中搜索对象的命中集（已按期限排序）的数量。如果在某个命中集中找到了该对象，会将该对象提升到超速缓存池。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ses.tiered.hitset.examples">
+   <title>示例</title>
+   <sect3 xml:id="ses.tiered.hitset.examples.memory">
+    <title>大型超速缓存池和少量内存</title>
+    <para>
+     如果有大量的储存，但只有少量的 RAM 可用，则所有对象在被访问后可立即提升到超速缓存池。命中集保持较小的规模。下面是一组示例配置值：
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses.tiered.hitset.examples.storage">
+    <title>小型超速缓存池和大量内存</title>
+    <para>
+     如果只有少量的储存，但可用的内存量相对较大，则可以将超速缓存层配置为将有限数量的对象提升到超速缓存池。如果有 12 个命中集，并且在 14,400 秒期限内可以使用其中每个命中集，则这些命中集总共可提供 48 小时的跟踪。如果在过去 8 小时内访问了某个对象，该对象将提升到超速缓存池。在这种情况下，一组示例配置值如下：
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ses.tiered.storage">
+  <title>设置示例分层储存</title>
+
+  <para>
+   本节演示如何在标准硬盘（冷储存）的前面设置一个高速 SSD 超速缓存层（热储存）。
+  </para>
+
+  <tip>
+   <para>
+    下面的示例仅供演示，针对驻留在单个 Ceph 节点上的 SSD 部件提供包含一个根和一个规则的设置。
+   </para>
+   <para>
+    在生产环境中，群集设置通常包含热储存以及混合节点（配有 SSD 和 SATA 磁盘）的更多根项和规则项。
+   </para>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     准备一台配有 SSD 等高速驱动器的主机。此群集节点将充当高速超速缓存层。
+    </para>
+   </step>
+   <step>
+    <para>
+     使用 DeepSea 将该计算机转变成 Ceph 节点。根据<xref linkend="salt.adding.nodes"/>中所述安装软件并配置主机计算机。我们假设此节点名为 <replaceable>node-4</replaceable>。此节点需要包含 4 个 OSD 磁盘。
+    </para>
+    <para>
+     这可能会在 CRUSH 拓扑图中生成如下所示的项：
+    </para>
+<screen>[...]
+host node-4 {
+   id -5  # do not change unnecessarily
+   # weight 0.012
+   alg straw
+   hash 0  # rjenkins1
+   item osd.6 weight 0.003
+   item osd.7 weight 0.003
+   item osd.8 weight 0.003
+   item osd.9 weight 0.003
+}
+[...]</screen>
+   </step>
+   <step>
+    <para>
+     编辑热储存池（已映射到基于高速 SSD 驱动器的 OSD）的 CRUSH 拓扑图。使用 SSD 的根节点（命令为“root ssd”）定义另一个层次结构。此外，请更改 SSD 的权重和 CRUSH 规则。有关 CRUSH 拓扑图的详细信息，请参见 <link xlink:href="http://docs.ceph.com/docs/master/rados/operations/crush-map/"/>。
+    </para>
+    <para>
+     使用 <command>getcrushmap</command> 和 <command>crushtool</command> 等命令行工具直接编辑 CRUSH 拓扑图。
+    </para>
+    <substeps performance="required">
+     <step>
+      <para>
+       检索当前拓扑图，并将其保存为 <filename>c.map</filename>：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd getcrushmap -o c.map</screen>
+     </step>
+     <step>
+      <para>
+       反编译 <filename>c.map</filename>，并将其另存为 <filename>c.txt</filename>：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -d c.map -o c.txt</screen>
+     </step>
+     <step>
+      <para>
+       编辑 <filename>c.txt</filename>：
+      </para>
+<screen>[...]
+host node-4 {
+        id -5  # do not change unnecessarily
+        # weight 4.000
+        alg straw
+        hash 0  # rjenkins1
+        item osd.6 weight 1.000
+        item osd.7 weight 1.000
+        item osd.8 weight 1.000
+        item osd.9 weight 1.000
+}
+root ssd {    # newly added root for the SSD hot-storage
+        id -6
+        alg straw
+        hash 0
+        item node-4 weight 4.00
+}
+rule ssd {
+        ruleset 4
+        type replicated
+        min_size 0
+        max_size 4
+        step take ssd
+        step chooseleaf firstn 0 type host
+        step emit
+}
+[...]</screen>
+     </step>
+     <step>
+      <para>
+       编译已编辑的 <filename>c.txt</filename> 文件，并将其另存为 <filename>ssd.map</filename>：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -c c.txt -o ssd.map</screen>
+     </step>
+     <step>
+      <para>
+       最后，安装 <filename>ssd.map</filename> 作为新的 CRUSH 拓扑图：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd setcrushmap -i ssd.map</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     创建用于超速缓存分层的热储存池。对该池使用新的“ssd”规则：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create hot-storage 100 100 replicated ssd</screen>
+   </step>
+   <step>
+    <para>
+     使用默认的“replicated_ruleset”规则创建冷储存池：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+   </step>
+   <step>
+    <para>
+     然后，设置超速缓存层的过程就涉及到将后备储存池关联到超速缓存池，在本例中，需要将冷储存（即储存池）关联到热储存（即超速缓存池）：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier add cold-storage hot-storage</screen>
+   </step>
+   <step>
+    <para>
+     要将超速缓存模式设置为“写回”，请执行以下命令：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier cache-mode hot-storage writeback</screen>
+    <para>
+     有关超速缓存模式的详细信息，请参见<xref linkend="sec.ceph.tiered.cachemodes"/>。
+    </para>
+    <para>
+     写回超速缓存层叠加在后备储存池上，因此需要执行一个附加的步骤：必须将来自储存池的所有客户端流量定向到超速缓存池。例如，要将客户端流量直接定向到超速缓存池，请执行以下命令：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier set-overlay cold-storage hot-storage</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="cache.tier.configure">
+   <title>配置超速缓存层</title>
+   <para>
+    可以使用多个选项来配置超速缓存层。使用以下语法：
+   </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+   <sect3>
+    <title>目标大小和类型</title>
+    <para>
+     以下步骤说明如何使用<xref linkend="ses.tiered.hitset.examples.storage"/>中提供的值配置<emphasis>超速缓存池</emphasis>
+    </para>
+    <para>
+     Ceph 的生产超速缓存层针对 <option>hit_set_type</option> 使用布隆过滤器：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_type bloom</screen>
+    <para>
+     <option>hit_set_count</option> 和 <option>hit_set_period</option> 定义每个命中集应该经历的时间长短，以及要储存多少个这样的命中集。<remark role="fixme">What are the numbers doing? They're without explanation. https://software.intel.com/en-us/blogs/2015/03/03/ceph-cache-tiering-introduction</remark>
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_count 12
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_period 14400
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes 1000000000000</screen>
+    <note>
+     <para>
+      <option>hit_set_count</option> 越大，<systemitem class="process">ceph-osd</systemitem> 进程消耗的 RAM 就越多。
+     </para>
+    </note>
+    <para>
+     <option>min_read_recency_for_promote</option> 定义在处理读取操作时，要在多少个命中集中检查某个对象是否存在。检查结果用于确定是否要以异步方式提升该对象。此参数的值应介于 0 到 <option>hit_set_count</option> 之间。如果设置为 0，则始终提升该对象。如果设置为 1，则检查当前命中集。如果此对象在当前命中集中，则提升此对象。否则，系统将不跟踪设备的安装。如果使用其他值，则检查相应数量的存档命中集。如果在任何最近的 <option>min_read_recency_for_promote</option> 命中集中找到了该对象，则提升该对象。
+    </para>
+    <para>
+     可以针对写入操作设置类似的参数 <option>min_write_recency_for_promote</option>：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_read_recency_for_promote 2
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_write_recency_for_promote 2</screen>
+    <note>
+     <para>
+      期限越长，<option>min_read_recency_for_promote</option> 和 <option>min_write_recency_for_promote</option> 值越大，<systemitem class="process">ceph-osd</systemitem> 守护程序消耗的 RAM 就越多。具体而言，当代理正在清理或逐出超速缓存对象时，所有 <option>hit_set_count</option> 命中集都会装载到 RAM 中。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>超速缓存大小调整</title>
+    <para>
+     超速缓存分层代理执行两项主要功能：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>清理</term>
+      <listitem>
+       <para>
+        代理识别已修改的（脏）对象，并将其转发到储存池进行长期储存。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>逐出</term>
+      <listitem>
+       <para>
+        代理识别未曾修改的（干净）对象，并将其中最近用得最少的对象从超速缓存中逐出。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <sect4 xml:id="cache.tier.config.absizing">
+     <title>绝对大小调整</title>
+     <para>
+      超速缓存分层代理可根据字节总数或对象总数来清理或逐出对象。要指定最大字节数，请执行以下命令：
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+     <para>
+      要指定最大对象数，请执行以下命令：
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+     <note>
+      <para>
+       Ceph 无法自动确定超速缓存池的大小，因此，需要在此处配置绝对大小。否则无法执行清理或逐出。如果您指定了这两种限制，则触发任一阈值后，超速缓存分层代理就会开始清理或逐出。
+      </para>
+     </note>
+     <note>
+      <para>
+       仅当达到 <option>target_max_bytes</option> 或 <option>target_max_objects</option> 时，才会阻止所有客户端请求。
+      </para>
+     </note>
+    </sect4>
+    <sect4 xml:id="cache.tier.config.relsizing">
+     <title>相对大小调整</title>
+     <para>
+      超速缓存分层代理可以根据超速缓存池的相对大小（通过<xref linkend="cache.tier.config.absizing"/>中所述的 <option>target_max_bytes</option> 或 <option>target_max_objects</option> 指定）清理或逐出对象。当超速缓存池包含特定百分比的已修改（脏）对象时，超速缓存分层代理会将这些对象清理到储存池。要设置 <option>cache_target_dirty_ratio</option>，请执行以下命令：
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+     <para>
+      例如，如果将值设置为 0.4，则当已修改（脏）对象的大小达到超速缓存池容量的 40% 时，就会开始清理这些对象。
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+     <para>
+      当脏对象的大小达到容量的特定百分比时，将以更高的速度清理。使用 <option>cache_target_dirty_high_ratio</option>：
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+     <para>
+      当超速缓存池的大小达到其容量的特定百分比时，超速缓存分层代理会逐出对象，以维持可用容量。要设置 <option>cache_target_full_ratio</option>，请执行以下命令：
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+    </sect4>
+   </sect3>
+   <sect3>
+    <title>超速缓存期限</title>
+    <para>
+     您可以指定在超速缓存分层代理将最近已修改的（脏）对象清理到后备储存池之前，这些对象可保留的最短期限：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+    <para>
+     您可以指定在将某个对象逐出超速缓存层之前，该对象可保留的最短期限：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="ceph.tier.gmt_hitset">
+    <title>对命中集使用 GMT</title>
+    <para>
+     超速缓存层设置包含一个称作<emphasis>命中集</emphasis>的布隆过滤器。该过滤器测试某个对象是属于一组热对象还是冷对象。对象将添加到命中集，其名称后面附有时戳。
+    </para>
+    <para>
+     如果将群集计算机放在不同的时区，且时戳派生于本地时间，则命中集中对象的名称可能包括将来或过去的时戳，从而造成误解。在最坏的情况下，对象可能根本不在命中集中。
+    </para>
+    <para>
+     为防止这种问题，在新建的超速缓存层设置中，<option>use_gmt_hitset</option> 默认设为“1”。这样，您便可以在创建命中集的对象名称时，强制 OSD 使用 GMT（格林威治标准时间）时戳。
+    </para>
+    <warning>
+     <title>保留默认值</title>
+     <para>
+      不要更改 <option>use_gmt_hitset</option> 的默认值“1”。如果与此选项相关的错误不是因群集设置造成，切勿手动更改此选项。否则，群集的行为可能变得不可预测。
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

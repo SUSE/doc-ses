@@ -1,0 +1,589 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_cephx.xml" version="5.0" xml:id="cha.storage.cephx">
+ <title>使用 <systemitem class="service">cephx</systemitem> 进行身份验证</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>编辑</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  为了识别客户端并防范中间人攻击，Ceph 提供了 <systemitem class="service">cephx</systemitem> 身份验证系统。在此环境中，<emphasis>客户端</emphasis>表示人类用户（例如 admin 用户）或 Ceph 相关的服务/守护程序（例如 OSD、监视器或 RADOS 网关）。
+ </para>
+ <note>
+  <para>
+   <systemitem class="service">cephx</systemitem> 协议不会处理 TLS/SSL 之类的传输中数据加密。
+  </para>
+ </note>
+ <sect1 xml:id="storage.cephx.arch">
+
+
+  <title>身份验证体系结构</title>
+
+  <para>
+   <systemitem class="service">cephx</systemitem> 使用共享机密密钥进行身份验证，这意味着，客户端和监视器群集均有客户端机密密钥的副本。身份验证协议可让双方彼此证明各自持有密钥的副本，且无需实际透露密钥。这样就实现了相互身份验证，即，群集可确保用户拥有机密密钥，而用户亦可确保群集持有机密密钥的副本。
+  </para>
+
+  <para>
+   Ceph 的一项重要可伸缩性功能就是可免于通过集中式界面与 Ceph 对象储存交互。这意味着，Ceph 客户端可直接与 OSD 交互。为了保护数据，Ceph 提供了 <systemitem class="service">cephx</systemitem> 身份验证系统来对 Ceph 客户端进行身份验证。
+  </para>
+
+  <para>
+   每个监视器都可对客户端进行身份验证并分发密钥，因此，在使用 <systemitem class="service">cephx</systemitem> 时，不会出现单一故障点或瓶颈。监视器会返回身份验证数据结构，其中包含用于获取 Ceph 服务的会话密钥。此会话密钥本身就已使用客户端的永久机密密钥进行了加密，因此，只有客户端才能从 Ceph 监视器请求服务。然后，客户端使用会话密钥从监视器请求所需的服务，监视器会为客户端提供一个票据，用于客户端在实际处理数据的 OSD 中进行身份验证。Ceph 监视器和 OSD 共享一个机密，因此，客户端可在群集中的任何 OSD 或元数据服务器中使用监视器提供的票据。<systemitem class="service">cephx</systemitem> 票据会失效，因此，攻击者无法使用已失效的票据或不当获取的会话密钥。只要保证客户端机密密钥在失效之前不被泄漏，这种身份验证形式就能防止有权访问通讯媒体的攻击者使用另一客户端的身份创建虚假讯息，或改动另一客户端的合法讯息。
+  </para>
+
+  <para>
+   要使用 <systemitem class="service">cephx</systemitem>，管理员必须先设置客户端/用户。在下图中，<systemitem class="username">client.admin</systemitem> 用户从命令行调用 <command>ceph auth get-or-create-key</command> 来生成用户名和机密密钥。Ceph 的 <command>auth</command> 子系统会生成该用户名和密钥、在监视器中储存一个副本，并将该用户的机密传回给 <systemitem class="username">client.admin</systemitem> 用户。这意味着，客户端和监视器共享一个机密密钥。
+  </para>
+
+  <figure>
+   <title>基本 <systemitem class="service">cephx</systemitem> 身份验证</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   要在监视器中进行身份验证，客户端需将用户名传递给监视器。监视器会生成一个会话密钥，并使用与该用户名关联的机密密钥来加密该会话密钥，同时将加密的票据传回给客户端。然后，客户端使用共享的机密密钥解密数据，以获取会话密钥。会话密钥可识别当前会话的用户。然后，客户端请求与该用户相关的、由会话密钥签名的票据。监视器会生成一个票据，使用用户的机密密钥进行加密，然后将其传回给客户端。客户端解密该票据，并使用它对发往整个群集中的 OSD 和元数据服务器的请求进行签名。
+  </para>
+
+  <figure>
+   <title><systemitem class="service">cephx</systemitem> 身份验证</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <systemitem class="service">cephx</systemitem> 协议对客户端计算机与 Ceph 服务器之间持续进行的通讯进行身份验证。完成初始身份验证后，将使用可由监视器、OSD 和元数据服务器通过共享机密进行校验的票据，对客户端与服务器之间发送的每条讯息进行签名。
+  </para>
+
+  <figure>
+   <title><systemitem class="service">cephx</systemitem> 身份验证 - MDS 和 OSD</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <important>
+   <para>
+    这种身份验证提供的保护只限在 Ceph 客户端与 Ceph 群集主机之间，身份验证不会扩展到 Ceph 客户端以外。如果用户从远程主机访问 Ceph 客户端，则用户主机与客户端主机之间的连接不会应用 Ceph 身份验证。
+   </para>
+  </important>
+ </sect1>
+ <sect1 xml:id="storage.cephx.keymgmt">
+
+
+  <title>密钥管理</title>
+
+  <para>
+   本节介绍 Ceph 客户端用户，以及如何在 Ceph 储存群集中对其进行身份验证和授权。<emphasis>用户</emphasis>是指使用 Ceph 客户端来与 Ceph 储存群集守护程序交互的个人或系统参与者（例如应用程序）。
+  </para>
+
+  <para>
+   在启用身份验证和授权（默认启用）的情况下运行 Ceph 时，必须指定一个用户名，以及包含所指定用户的机密密钥的密钥环（通常通过命令行指定）。如果您未指定用户名，Ceph 将使用 <systemitem class="username">client.admin</systemitem> 作为默认用户名。如果您未指定密钥环，Ceph 将通过 Ceph 配置文件中的密钥环设置来查找密钥环。例如，如果在未指定用户名或密钥环的情况下执行 <command>ceph health</command> 命令，Ceph 将按如下所示解释该命令：
+  </para>
+
+<screen>ceph -n client.admin --keyring=/etc/ceph/ceph.client.admin.keyring health</screen>
+
+  <para>
+   或者，您可以使用 <literal>CEPH_ARGS</literal> 环境变量来避免重复输入用户名和机密。
+  </para>
+
+  <sect2 xml:id="storage.cephx.keymgmt.backgrnd">
+   <title>背景信息</title>
+   <para>
+    不管 Ceph 客户端的类型是什么（无论是块设备、对象储存、文件系统还是本机 API），Ceph 都会在<emphasis>池</emphasis>中将所有数据储存为对象。Ceph 用户需要拥有池访问权限才能读取和写入数据。此外，Ceph 用户必须拥有执行权限才能使用 Ceph 的管理命令。以下概念可帮助您理解 Ceph 用户管理。
+   </para>
+   <sect3>
+    <title>用户</title>
+    <para>
+     用户是指个人或系统参与者（例如应用程序）。通过创建用户，可以控制谁（或哪个参与者）能够访问您的 Ceph 储存群集、池及池中的数据。
+    </para>
+    <para>
+     Ceph 使用用户<emphasis>类型</emphasis>。出于用户管理目的，类型将始终为 <literal>client</literal>。Ceph 以句点 (.)分隔格式标识用户，该格式包括用户类型和用户 ID。例如，<literal>TYPE.ID</literal>、<literal>client.admin</literal> 或 <literal>client.user1</literal>。采用用户类型格式的原因在于，Ceph 监视器、OSD 和元数据服务器也使用 cephx 协议，但它们并非客户端。区分用户类型有助于将客户端用户与其他用户区分开来，从而简化访问控制、用户监视和可追溯性。
+    </para>
+    <note>
+     <para>
+      Ceph 储存群集用户与 Ceph 对象储存用户或 Ceph 文件系统用户均不同。Ceph RADOS 网关使用 Ceph 储存群集用户在网关守护程序与储存群集之间通讯，但网关对于最终用户有其自己的用户管理功能。Ceph 文件系统使用 POSIX 语义。与它关联的用户空间与 Ceph 储存群集用户不同。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>授权和功能</title>
+    <para>
+     Ceph 使用“功能”(cap) 一词来描述授权已经过身份验证的用户，使其能够运用监视器、OSD 和元数据服务器的功能。功能还可以限制对池中的数据或池中某个名称空间的访问。Ceph 管理用户可在创建或更新用户时设置用户的功能。
+    </para>
+    <para>
+     功能语法遵循以下格式：
+    </para>
+<screen><replaceable>daemon-type</replaceable> 'allow <replaceable>capability</replaceable>' [...]</screen>
+    <para>
+     下面是每个服务类型的功能列表：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>监视器功能</term>
+      <listitem>
+       <para>
+        包括 <literal>r</literal>、<literal>w</literal>、<literal>x</literal> 和 <literal>allow profile <replaceable>cap</replaceable></literal>。
+       </para>
+<screen>mon 'allow rwx'
+mon 'allow profile osd'</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>OSD 功能</term>
+      <listitem>
+       <para>
+        包括 <literal>r</literal>、<literal>w</literal>、<literal>x</literal>、<literal>class-read</literal>、<literal>class-write</literal> 和 <literal>profile osd</literal>。此外，使用 OSD 功能还能进行池和名称空间设置。
+       </para>
+<screen>osd 'allow <replaceable>capability</replaceable>' [pool=<replaceable>poolname</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>MDS 功能</term>
+      <listitem>
+       <para>
+        只需要 <literal>allow</literal>，或留空。
+       </para>
+<screen>mds 'allow'</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     以下各项描述了每个功能：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>allow</term>
+      <listitem>
+       <para>
+        在守护程序的访问设置前指定。只有在 MDS 中表示 <literal>rw</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>r</term>
+      <listitem>
+       <para>
+        向用户授予读取权限。监视器需使用此功能来检索 CRUSH 拓扑图。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>w</term>
+      <listitem>
+       <para>
+        向用户授予对象的写入权限。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>x</term>
+      <listitem>
+       <para>
+        授予用户调用类方法（包括读取和写入）的能力，以及在监视器中执行 <literal>auth</literal> 操作的能力。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-read</term>
+      <listitem>
+       <para>
+        授予用户调用类读取方法的能力。<literal>x</literal> 的子集。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-write</term>
+      <listitem>
+       <para>
+        授予用户调用类写入方法的能力。<literal>x</literal> 的子集。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>*</term>
+      <listitem>
+       <para>
+        授予用户对特定守护程序/池的读取、写入和执行权限，以及执行管理命令的能力。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile osd</term>
+      <listitem>
+       <para>
+        向用户授予以某个 OSD 身份连接到其他 OSD 或监视器的权限。授予 OSD 权限，使 OSD 能够处理复制检测信号流量和状态报告。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile mds</term>
+      <listitem>
+       <para>
+        向用户授予以某个 MDS 身份连接到其他 MDS 或监视器的权限。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-osd</term>
+      <listitem>
+       <para>
+        向用户授予引导 OSD 的权限。授权给部署工具，使其在引导 OSD 时有权添加密钥。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-mds</term>
+      <listitem>
+       <para>
+        授予用户引导元数据服务器的权限。授权给部署工具，使其在引导元数据服务器时有权添加密钥。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>池</title>
+    <para>
+     池是指用户在其中储存数据的逻辑分区。在 Ceph 部署中，常见的做法是为类似类型的数据创建一个池用作逻辑分区。例如，将 Ceph 部署为 <phrase role="productname">OpenStack</phrase> 的后端时，典型的部署方式是为卷、映像、备份和虚拟机以及用户（如 <systemitem class="username">client.glance</systemitem> 或 <systemitem class="username">client.cinder</systemitem>）创建相应的池。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.usermgmt">
+   <title>管理用户</title>
+   <para>
+    用户管理功能可让 Ceph 群集管理员能够直接在 Ceph 群集中创建、更新和删除用户。
+   </para>
+   <para>
+    在 Ceph 群集中创建或删除用户时，可能需要将密钥分发到客户端，以便将密钥添加到密钥环。有关详细信息，请参见<xref linkend="storage.cephx.keymgmt.keyringmgmt"/>。
+   </para>
+   <sect3>
+    <title>列出用户</title>
+    <para>
+     要列出群集中的用户，请执行以下命令：
+    </para>
+<screen>ceph auth list</screen>
+    <para>
+     Ceph 将列出您群集中的所有用户。例如，在包含两个节点的群集中，<command>ceph auth list</command> 输出如下所示：
+    </para>
+<screen>installed auth entries:
+
+osd.0
+        key: AQCvCbtToC6MDhAATtuT70Sl+DymPCfDSsyV4w==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+osd.1
+        key: AQC4CbtTCFJBChAAVq5spj0ff4eHZICxIOVZeA==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+client.admin
+        key: AQBHCbtT6APDHhAA5W00cBchwkQjh3dkKsyPjw==
+        caps: [mds] allow
+        caps: [mon] allow *
+        caps: [osd] allow *
+client.bootstrap-mds
+        key: AQBICbtTOK9uGBAAdbe5zcIGHZL3T/u2g6EBww==
+        caps: [mon] allow profile bootstrap-mds
+client.bootstrap-osd
+        key: AQBHCbtT4GxqORAADE5u7RkpCN/oo4e5W0uBtw==
+        caps: [mon] allow profile bootstrap-osd</screen>
+    <note>
+     <title>TYPE.ID 表示法</title>
+     <para>
+      请注意，将对用户应用 <literal>TYPE.ID</literal> 表示法，例如，<literal>osd.0</literal> 指定用户类型为 <literal>osd</literal>，其 ID 为 <literal>0</literal>。<literal>client.admin</literal> 是 <literal>client</literal> 类型的用户，其 ID 为 <literal>admin</literal>。另请注意，每个项包含一个 <literal>key: <replaceable>值</replaceable></literal>项，以及一个或多个 <literal>caps:</literal> 项。
+     </para>
+     <para>
+      可以结合使用 <option>-o <replaceable>文件名</replaceable></option>选项和 <command>ceph auth list</command> 将输出保存到某个文件。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>获取有关用户的信息</title>
+    <para>
+     要检索特定的用户、密钥和功能，请执行以下命令：
+    </para>
+<screen>ceph auth get <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen>ceph auth get client.admin
+exported keyring for client.admin
+[client.admin]
+	key = AQA19uZUqIwkHxAAFuUwvq0eJD4S173oFRxe0g==
+	caps mds = "allow"
+	caps mon = "allow *"
+ caps osd = "allow *"</screen>
+    <para>
+     开发人员也可以执行以下命令：
+    </para>
+<screen>ceph auth export <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     <command>auth export</command> 命令与 <command>auth get</command> 相同，不过它还会列显内部身份验证 ID。
+    </para>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.useradd">
+    <title>添加用户</title>
+    <para>
+     添加一个用户会创建用户名 (<literal>TYPE.ID</literal>)、机密密钥，以及包含在命令中的、用于创建该用户的所有功能。
+    </para>
+    <para>
+     用户可使用其密钥在 Ceph 储存群集中进行身份验证。用户的功能授予该用户在 Ceph 监视器 (mon)、Ceph OSD (osd) 或 Ceph 元数据服务器 (mds) 上进行读取、写入或执行的能力。
+    </para>
+    <para>
+     可以使用几个命令来添加用户：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>ceph auth add</command>
+      </term>
+      <listitem>
+       <para>
+        此命令是添加用户的规范方式。它会创建用户、生成密钥，并添加所有指定的功能。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create</command>
+      </term>
+      <listitem>
+       <para>
+        此命令往往是创建用户的最简便方式，因为它会返回包含用户名（在方括号中）和密钥的密钥文件格式。如果该用户已存在，此命令只以密钥文件格式返回用户名和密钥。您可以使用 <option>-o <replaceable>文件名</replaceable></option>选项将输出保存到某个文件。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create-key</command>
+      </term>
+      <listitem>
+       <para>
+        此命令是创建用户并仅返回用户密钥的简便方式。对于只需要密钥的客户端（例如 <systemitem class="library">libvirt</systemitem>），此命令非常有用。如果该用户已存在，此命令只返回密钥。您可以使用 <option>-o <replaceable>文件名</replaceable></option>选项将输出保存到某个文件。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     创建客户端用户时，可以创建不带功能的用户。不带功能的用户可以进行身份验证，但不能执行其他操作。此类客户端无法从监视器检索群集拓扑图。但是，如果您希望稍后再添加功能，可以使用 <command>ceph auth caps</command> 命令创建一个不带功能的用户。
+    </para>
+    <para>
+     典型的用户至少在 Ceph 监视器上具有读取功能，并在 Ceph OSD 上具有读取和写入功能。此外，用户的 OSD 权限通常限制为只能访问特定的池。
+    </para>
+<screen><prompt>root # </prompt>ceph auth add client.john mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.paul mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.george mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o george.keyring
+<prompt>root # </prompt>ceph auth get-or-create-key client.ringo mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o ringo.key</screen>
+    <important>
+     <para>
+      如果您为某个用户提供了对 OSD 的功能，但<emphasis>未</emphasis>限制只能访问特定池，则该用户将有权访问群集中的<emphasis>所有</emphasis>池。
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>修改用户功能</title>
+    <para>
+     使用 <command>ceph auth caps</command> 命令可以指定用户并更改该用户的功能。设置新功能会重写当前的功能。要查看当前功能，请运行 <command>ceph auth get <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable></command>。要添加功能，使用以下格式时还需要指定现有功能：
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable> <replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]' [<replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]']</screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.john
+<prompt>root # </prompt>ceph auth caps client.john mon 'allow r' osd 'allow rw pool=prague'
+<prompt>root # </prompt>ceph auth caps client.paul mon 'allow rw' osd 'allow rwx pool=prague'
+<prompt>root # </prompt>ceph auth caps client.brian-manager mon 'allow *' osd 'allow *'</screen>
+    <para>
+     要去除某个功能，可重设置该功能。如果希望用户无权访问以前设置的特定守护程序，请指定一个空字符串：
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps client.ringo mon ' ' osd ' '</screen>
+   </sect3>
+   <sect3>
+    <title>删除用户</title>
+    <para>
+     要删除用户，请使用 <command>ceph auth del</command>：
+    </para>
+<screen><prompt>root # </prompt>ceph auth del <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     其中，<replaceable>TYPE</replaceable> 是 <literal>client</literal>、<literal>osd</literal>、<literal>mon</literal> 或 <literal>mds</literal>，<replaceable>ID</replaceable> 是用户名或守护程序的 ID。
+    </para>
+   </sect3>
+   <sect3>
+    <title>列显用户的密钥</title>
+    <para>
+     要将用户的身份验证密钥列显到标准输出，请执行以下命令：
+    </para>
+<screen><prompt>root # </prompt>ceph auth print-key <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     其中，<replaceable>TYPE</replaceable> 是 <literal>client</literal>、<literal>osd</literal>、<literal>mon</literal> 或 <literal>mds</literal>，<replaceable>ID</replaceable> 是用户名或守护程序的 ID。
+    </para>
+    <para>
+     需要在客户端软件（例如 <systemitem class="library">libvirt</systemitem>）中填充某个用户的密钥时，列显用户的密钥非常有帮助，如以下示例所示：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mount -t ceph host:/ mount_point \
+-o name=client.user,secret=`ceph auth print-key client.user`</screen>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.userimp">
+    <title>导入用户</title>
+    <para>
+     要导入一个或多个用户，请使用 <command>ceph auth import</command> 并指定密钥环：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <note>
+     <para>
+      Ceph 储存群集将添加新用户及其密钥和功能，并更新现有用户及其密钥和功能。
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.keyringmgmt">
+   <title>密钥环管理</title>
+   <para>
+    当您通过 Ceph 客户端访问 Ceph 时，该客户端会查找本地密钥环。默认情况下，Ceph 会使用以下四个密钥环名称预设置密钥环设置，因此，除非您要覆盖默认值，否则无需在 Ceph 配置文件中设置这些名称：
+   </para>
+<screen>/etc/ceph/<replaceable>cluster</replaceable>.<replaceable>name</replaceable>.keyring
+/etc/ceph/<replaceable>cluster</replaceable>.keyring
+/etc/ceph/keyring
+/etc/ceph/keyring.bin</screen>
+   <para>
+    <replaceable>cluster</replaceable> 元变量是根据 Ceph 配置文件名称定义的 Ceph 群集名称。<filename>ceph.conf</filename> 表示群集名称为 <literal>ceph</literal>，因此密钥环名称为 <literal>ceph.keyring</literal>。<replaceable>name</replaceable> 元变量是用户类型和用户 ID（例如 <literal>client.admin</literal>），因此密钥环名称为 <literal>ceph.client.admin.keyring</literal>。
+   </para>
+   <para>
+    创建用户（例如 <systemitem class="username">client.ringo</systemitem>）之后，必须获取密钥并将其添加到 Ceph 客户端上的密钥环，以使该用户能够访问 Ceph 储存群集。
+   </para>
+   <para>
+    <xref linkend="storage.cephx.keymgmt"/>详细介绍了如何直接在 Ceph 储存群集中列出、获取、添加、修改和删除用户。但是，Ceph 还提供了 <command>ceph-authtool</command> 实用程序，可让您从 Ceph 客户端管理密钥环。
+   </para>
+   <sect3>
+    <title>创建密钥环</title>
+    <para>
+     使用<xref linkend="storage.cephx.keymgmt"/>中的过程创建用户时，需要向 Ceph 客户端提供用户密钥，使客户端能够检索指定用户的密钥，并在 Ceph 储存群集中进行身份验证。Ceph 客户端将访问密钥环，以查找用户名并检索用户的密钥：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool --create-keyring /path/to/keyring</screen>
+    <para>
+     创建包含多个用户的密钥环时，我们建议使用群集名称（例如 <replaceable>cluster</replaceable>.keyring）作为密钥环文件名，并将其保存在 <filename>/etc/ceph</filename> 目录中，以便默认的密钥环配置设置无需您在 Ceph 配置文件的本地副本中指定文件名，就能选取正确的文件名。例如，执行以下命令创建 <filename>ceph.keyring</filename>：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring</screen>
+    <para>
+     创建包含单个用户的密钥环时，我们建议使用群集名称、用户类型和用户名，并将其保存在 <filename>/etc/ceph</filename> 目录中。例如，为 <systemitem class="username">client.admin</systemitem> 用户创建 <filename>ceph.client.admin.keyring</filename>。
+    </para>
+   </sect3>
+   <sect3>
+    <title>将用户添加到密钥环</title>
+    <para>
+     将某个用户添加到 Ceph 储存群集时（请参见<xref linkend="storage.cephx.keymgmt.usermgmt.useradd"/>），可以检索该用户、密钥和功能，并将该用户保存到密钥环。
+    </para>
+    <para>
+     如果只想为每个密钥环使用一个用户，可以结合 <option>-o</option> 选项使用 <command>ceph auth get</command> 命令以密钥环文件格式保存输出。例如，要为 <systemitem class="username">client.admin</systemitem> 用户创建密钥环，请执行以下命令：
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.admin -o /etc/ceph/ceph.client.admin.keyring</screen>
+    <para>
+     想要将用户导入到密钥环时，可以使用 <command>ceph-authtool</command> 指定目标密钥环和源密钥环：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring \
+  --import-keyring /etc/ceph/ceph.client.admin.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>创建用户</title>
+    <para>
+     Ceph 提供 <command>ceph auth add</command> 命令用于直接在 Ceph 储存群集中创建用户。但是，您也可以直接在 Ceph 客户端密钥环中创建用户、密钥和功能。然后，可将用户导入到 Ceph 储存群集：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -n client.ringo --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.keyring</screen>
+    <para>
+     您也可以在创建密钥环的同时将新用户添加到该密钥环：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx' --gen-key</screen>
+    <para>
+     在前面的方案中，新用户 <systemitem class="username">client.ringo</systemitem> 仅在密钥环中。要将该新用户添加到 Ceph 储存群集，仍必须手动添加：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth add client.ringo -i /etc/ceph/ceph.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>修改用户</title>
+    <para>
+     要修改密钥环中某个用户记录的功能，请指定该密钥环和用户，然后指定功能：
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx'</screen>
+    <para>
+     要在 Ceph 群集环境中更新已修改的用户，必须将密钥环中的更改导入到 Ceph 群集中的用户项：
+    </para>
+<screen><prompt>root # </prompt>ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <para>
+     请参见<xref linkend="storage.cephx.keymgmt.usermgmt.userimp"/>，了解有关从密钥环更新 Ceph 储存群集用户的细节。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.cmdline">
+   <title>命令行用法</title>
+   <para>
+    <command>ceph</command> 命令支持以下与用户名和机密操作相关的选项：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><option>--id</option> 或 <option>--user</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph 使用类型和 ID（<replaceable>类型</replaceable>.<replaceable>ID</replaceable>，例如 <systemitem class="username">client.admin</systemitem> 或 <systemitem class="username">client.user1</systemitem>）来标识用户。使用 <option>id</option>、<option>name</option> 和 <option>-n</option> 选项可以指定用户名的 ID 部分（例如 <systemitem class="username">admin</systemitem> 或 <systemitem class="username">user1</systemitem>）。可以使用 --id 指定用户，并省略类型。例如，要指定用户 client.foo，请输入以下命令：
+      </para>
+<screen><prompt>root # </prompt>ceph --id foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph --user foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--name</option> 或 <option>-n</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph 使用类型和 ID（<replaceable>类型</replaceable>.<replaceable>ID</replaceable>，例如 <systemitem class="username">client.admin</systemitem> 或 <systemitem class="username">client.user1</systemitem>）来标识用户。使用 <option>--name</option> 和 <option>-n</option> 选项可以指定完全限定的用户名。必须指定用户类型（通常是 <literal>client</literal>）和用户 ID：
+      </para>
+<screen><prompt>root # </prompt>ceph --name client.foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph -n client.foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--keyring</option>
+     </term>
+     <listitem>
+      <para>
+       包含一个或多个用户名和机密的密钥环的路径。<option>--secret</option> 选项提供相同的功能，但它不适用于 RADOS 网关，该网关将 <option>--secret</option> 用于其他目的。可以使用 <command>ceph auth get-or-create</command> 检索密钥环并将其储存在本地。这是首选的做法，因为无需切换密钥环路径就能切换用户名：
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo rbd map --id foo --keyring /path/to/keyring mypool/myimage</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

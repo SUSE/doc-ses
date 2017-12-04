@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_erasure.xml" version="5.0" xml:id="cha.ceph.erasure">
+ <title>纠删码池</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>编辑</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Ceph 提供了一种在池中正常复制数据的替代方案，称为<emphasis>纠删</emphasis>池或<emphasis>纠删码</emphasis>池。纠删池无法提供<emphasis>副本</emphasis>池的所有功能，但所需的原始储存空间更少。能够储存 1 TB 数据的默认纠删池需要 1.5 TB 原始储存空间。从这方面而言比副本池更好，因为后者需要 2 TB 的原始储存空间才能储存同样容量的数据。
+ </para>
+ <para>
+  有关纠删码的背景信息，请参见 <link xlink:href="https://en.wikipedia.org/wiki/Erasure_code"/>。
+ </para>
+ <note>
+  <para>
+   使用 Filestore 时，除非已配置超速缓存层，否则无法通过 RBD 接口访问纠删码池。有关详细信息或如何使用 Bluestore，请参见<xref linkend="ceph.tier.erasure"/>。
+  </para>
+ </note>
+ <note>
+  <para>
+   确保<emphasis>纠删池</emphasis>的 CRUSH 规则对 <literal>step</literal> 使用 <literal>indep</literal>。有关详细信息，请参见<xref linkend="datamgm.rules.step.mode"/>。
+  </para>
+ </note>
+ <sect1 xml:id="cha.ceph.erasure.default-profile">
+  <title>创建示例纠删码池</title>
+
+  <para>
+   最简单的纠删码池相当于 RAID5，至少需要三个主机。以下过程介绍如何创建用于测试的池。
+  </para>
+  <procedure>
+   <step>
+    <para>
+     命令 <command>ceph osd pool create</command> 用于创建类型为<emphasis>纠删</emphasis>的池。<literal>12</literal> 表示归置组的数量。使用默认参数时，该池能够处理一个 OSD 的故障。
+    </para>
+<screen><prompt>root # </prompt>ceph osd pool create ecpool 12 12 erasure
+pool 'ecpool' created</screen>
+   </step>
+   <step>
+    <para>
+     字符串 <literal>ABCDEFGHI</literal> 将写入名为 <literal>NYAN</literal> 的对象。
+    </para>
+<screen><prompt>cephadm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -</screen>
+   </step>
+   <step>
+    <para>
+     为了进行测试，现在可以禁用 OSD，例如，断开其网络连接。
+    </para>
+   </step>
+   <step>
+    <para>
+     要测试该池是否可以处理多台设备发生故障的情况，可以使用 <command>rados</command> 命令来访问文件的内容。
+    </para>
+<screen><prompt>root # </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cha.ceph.erasure.erasure-profiles">
+  <title>纠删码配置文件</title>
+  <para>调用 <command>ceph osd pool create</command> 命令来创建<emphasis>纠删池</emphasis>时，除非指定了其他配置文件，否则会使用默认的配置文件。配置文件定义数据冗余。要进行这种定义，可以设置随意命名为 <literal>k</literal> 和 <literal>m</literal> 的两个参数。k 和 m 定义要将数据片段拆分成多少个<literal>大块</literal>，以及要创建多少个编码大块。然后，冗余大块将储存在不同的 OSD 上。
+  </para>
+  <para>
+   纠删池配置文件所需的定义：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>chunk</term>
+    <listitem>
+     <para>
+      调用该编码函数时，将返回相同大小的大块：可加以连接以重构造原始对象的数据大块；可用于重构建丢失的大块的编码大块。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>k</term>
+    <listitem>
+     <para>
+      数据大块的数量，即要将原始对象分割成的大块数量。例如，如果 <literal>k = 2</literal>，则会将一个 10KB 对象分割成各为 5KB 的 <literal>k</literal> 对象。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>m</term>
+    <listitem>
+     <para>
+      编码大块的数量，即编码函数计算的额外大块的数量。如果有 2 个编码大块，则表示可以移出 2 个 OSD，而不会丢失数据。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>crush-failure-domain</term>
+    <listitem>
+     <para>
+      定义要将大块分布到的设备。需要将某个桶类型设置为值。有关所有的桶类型，请参见<xref linkend="datamgm.buckets"/>。如果故障域为<literal>机架</literal>，则会将大块储存在不同的机架上，以提高发生机架故障时的恢复能力。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   使用<xref linkend="cha.ceph.erasure.default-profile"/>中所用的默认纠删码配置文件时，如果单个 OSD 发生故障，将不会丢失群集数据。因此，要储存 1 TB 数据，需要额外提供 0.5 TB 原始储存空间。这意味着，1 TB 数据需要 1.5 TB 原始储存空间。这相当于常见的 RAID 5 配置。相比之下，副本池需要 2 TB 原始储存空间来储存 1 TB 数据。
+  </para>
+  <para>可使用以下命令显示默认配置文件的设置：
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd erasure-code-profile get default
+directory=.libs
+k=2
+m=1
+plugin=jerasure
+crush-failure-domain=host
+technique=reed_sol_van</screen>
+
+  <para>
+   选择适当的配置文件非常重要，因为在创建池后便无法修改配置文件。需要创建使用不同配置文件的新池，并将之前的池中的所有对象移到新池。
+  </para>
+
+  <para>
+   配置文件最重要的参数是 <literal>k</literal>、<literal>m</literal> 和 <literal>crush-failure-domain</literal>，因为它们定义储存开销和数据持久性。例如，如果在丢失两个机架并且储存开销达到 66% 的情况下，必须能够维系所需的体系结构，可定义以下配置文件：
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
+   k=3 \
+   m=2 \
+   crush-failure-domain=rack</screen>
+
+  <para>
+   对于此新配置文件，可以重复<xref linkend="cha.ceph.erasure.default-profile"/>中的示例：
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
+<prompt>cephadm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
+<prompt>root # </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+
+  <para>
+   NYAN 对象将分割成三个 (<literal>k=3</literal>)，并将创建两个额外的大块 (<literal>m=2</literal>)。<literal>m</literal> 值定义可以同时丢失多少个 OSD 而不会丢失任何数据。<literal>crush-failure-domain==rack</literal> 将创建一个 CRUSH 规则集，用于确保不会将两个大块储存在同一个机架中。
+  </para>
+
+  <informalfigure>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="ceph_erasure_obj.png" width="80%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="ceph_erasure_obj.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </informalfigure>
+
+  <para>
+   有关纠删码配置文件的详细信息，请参见 <link xlink:href="http://docs.ceph.com/docs/master/rados/operations/erasure-code-profile"/>。
+  </para>
+ </sect1>
+ <sect1 xml:id="ceph.tier.erasure">
+  <title>纠删码池和超速缓存层</title>
+
+  <para>
+   纠删码池所需的资源比副本池更多，并且缺少某些功能，例如部分写入。要克服这些限制，建议在纠删码池的前面设置一个超速缓存层。
+  </para>
+
+  <para>
+   例如，如果<quote>热储存</quote>池由高速储存设备构成，则可使用以下命令来加速<xref linkend="cha.ceph.erasure.erasure-profiles"/>中创建的<quote>ecpool</quote>：
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd tier add ecpool hot-storage
+<prompt>root # </prompt>ceph osd tier cache-mode hot-storage writeback
+<prompt>root # </prompt>ceph osd tier set-overlay ecpool hot-storage</screen>
+
+  <para>
+   这会将用作 ecpool 层的<quote>热储存</quote>池置于写回模式，以便每次写入和读取 ecpool 时实际使用的都是热储存，并受益于热储存的灵活性和速度。
+  </para>
+
+  <para>
+   使用 Filestore 时，无法在纠删码池中创建 RBD 映像，因为此操作需要部分写入。但是，如果将副本池层设置为超速缓存层，则可以在纠删码池中创建 RBD 映像：
+  </para>
+
+<screen><prompt>root # </prompt>rbd --pool ecpool create --size 10 myvolume</screen>
+
+  <para>
+   有关超速缓存层的详细信息，请参见<xref linkend="cha.ceph.tiered"/>。
+  </para>
+ </sect1>
+</chapter>
