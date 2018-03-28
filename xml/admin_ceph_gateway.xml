@@ -98,85 +98,145 @@
   </variablelist>
  </sect1>
  <sect1 xml:id="ceph.rgw.https">
-  <title>Enable HTTPS</title>
+  <title>Enable HTTPS/SSL for &ogw;</title>
 
-  <sect2 xml:id="ceph.rgw.https.ceph_conf">
-   <title>&rgw; Configuration</title>
-   <para>
-    To enable HTTPS for the default &rgw; role, a certificate file has to be
-    created on the &rgw; nodes and port 443 needs to be enabled in the
-    <filename>ceph.conf</filename>. Edit the <literal>[rgw]</literal> section
-    in the <filename>/etc/ceph/ceph.conf</filename> to contain the following
-    lines:
-   </para>
-<screen>[client.rgw.<replaceable>NODE_NAME</replaceable>]
-rgw_frontends = civetweb port=443s ssl_certificate=/etc/ceph/private/keyandcert.pem</screen>
-   <para>
-    The <filename>keyandcert.pem</filename> must contain the key and the
-    certificate. Replace <replaceable>NODE_NAME</replaceable> with the name of
-    the node.
-   </para>
-  </sect2>
+  <para>
+   To enable the default &rgw; role to communicate securely using SSL, you need
+   to either have a CA issued certificate, or create a self-signed one. There
+   are two ways to configure &ogw; with HTTPS enabled&mdash;a simple way that
+   makes use of the default settings, and an advanced way that lets you fine
+   tune HTTPS related settings.
+  </para>
 
-  <sect2 xml:id="ceph.rgw.https.deepsea">
-   <title>Configure with &deepsea;</title>
+  <sect2 xml:id="ogw.selfcert">
+   <title>Create a Self-Signed Certificate</title>
+   <tip>
+    <para>
+     Skip this section if you already have a valid certificate signed by CA.
+    </para>
+   </tip>
    <para>
-    This example procedure describes how to generate the certificate on the
-    &smaster; and distribute all required changes via &deepsea;.
+    The following procedure describes how to generate a self-signed SSL
+    certificate on the &smaster;.
    </para>
    <procedure>
     <step>
      <para>
-      Create the certificates on the &smaster;. Enter all data you need in your
-      certificate when running the <command>openssl</command> command.
-      Especially entering the FQDN as the common name is useful.
-     </para>
-<screen>&prompt.smaster;<command>mkdir</command> /srv/salt/ceph/rgw/cert
-&prompt.smaster;<command>cd</command> /srv/salt/ceph/rgw/cert
-&prompt.smaster;<command>openssl</command> req -x509 -nodes -days 1095 -newkey rsa:4096 -keyout rgw.key -out rgw.crt
-&prompt.smaster;<command>cat</command> rgw.key &gt; rgw.pem &amp;&amp; <command>cat</command> rgw.crt &gt;&gt; rgw.pem</screen>
-     <para>
-      It is also possible to use a certificate signed by a CA instead and place
-      it in the <filename>/srv/salt/ceph/rgw/cert</filename> directory. The
-      <filename>rgw.pem</filename> must contain the key and certificate.
+      Change to the directory where you want to store the SSL certificate.
+      &ceph; reads the certificate from the
+      <filename>/etc/ceph/rgw.pem</filename> file by default.
      </para>
     </step>
     <step>
      <para>
-      Edit the
-      <filename>/srv/salt/ceph/configuration/files/rgw.conf</filename> and
-      change the content to:
-     </para>
-<screen>[ client.{{ client }} ]
-rgw frontends = "civetweb port=443s ssl_certificate=/etc/ceph/rgw.pem"
-rgw dns name = {{ grains['host'] }}</screen>
-    </step>
-    <step>
-     <para>
-      Execute &deepsea; stages 1 to 4:
+      Add the <option>subjectAltName</option> option to the
+      <literal>[v3_req]</literal> section of the
+      <filename>/etc/ssl/openssl.cnf</filename> file for all the host names you
+      want your &ogw; to be known by:
      </para>
 <screen>
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.1
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.2
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.3
-&prompt.smaster;<command>salt-run</command> state.orch ceph.stage.4
+[...]
+[ v3_req ]
+subjectAltName = ${ENV::SAN}
+[...]
+</screen>
+    </step>
+    <step>
+     <para>
+      Create the key and the certificate using <command>openssl</command>.
+      Prefix <command>openssl</command> with <literal>env
+      SAN=DNS:fqdn</literal>. Enter all data you need to include in your
+      certificate. We recommend entering the FQDN as the common name. Before
+      signing the certificate, verify that 'X509v3 Subject Alternative Name:'
+      is included in requested extensions, and that the resulting certificate
+      has "X509v3 Subject Alternative Name:" set.
+     </para>
+<screen>
+&prompt.smaster;env SAN=DNS:fqdn openssl req -x509 -nodes -days 1095 \
+ -newkey rsa:4096 -keyout rgw.key -out rgw.crt
 </screen>
     </step>
    </procedure>
   </sect2>
- </sect1>
- <sect1 xml:id="rgw.civetweb.multiport">
-  <title>Binding to Multiple Ports</title>
 
-  <para>
-   The Civetweb server can bind to multiple ports. This is useful if you need
-   to access a single &ogw; instance with both SSL and non-SSL connections.
-   When specifying the ports, separate their numbers by a plus sign '+' on the
-   configuration line:
-  </para>
+  <sect2 xml:id="ogw.ssl.simple">
+   <title>Simple HTTPS Configuration</title>
+   <para>
+    The default &ogw; SSL configuration uses the
+    <filename>/etc/ceph/rgw.pem</filename>certificate and port 443 for secure
+    communication. If you do not need to change these values, follow these
+    steps:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Edit <filename>/srv/pillar/ceph/stack/global.yml</filename> and add the
+      following line:
+     </para>
+<screen>
+rgw_configurations: rgw-ssl
+</screen>
+    </step>
+    <step>
+     <para>
+      Run &deepsea; Stages 2, 3, and 4 to apply the changes:
+     </para>
+<screen>
+&prompt.smaster;salt-run state.orch ceph.stage.2
+&prompt.smaster;salt-run state.orch ceph.stage.3
+&prompt.smaster;salt-run state.orch ceph.stage.4
+</screen>
+    </step>
+   </procedure>
+  </sect2>
 
-<screen>[client.rgw.<replaceable>NODE_NAME</replaceable>]
-rgw_frontends = civetweb port=80+443s ssl_certificate=/etc/ceph/private/keyandcert.pem</screen>
+  <sect2 xml:id="ogw.ssl.advanced">
+   <title>Advanced HTTPS Configuration</title>
+   <para>
+    If you need to change th default values for SSL settings of the &ogw;,
+    follow these steps:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Copy the default &ogw; SSL configuration to the
+      <filename>ceph.conf.d</filename> subdirectory:
+     </para>
+<screen>
+&prompt.smaster;cp /srv/salt/ceph/configuration/files/rgw-ssl.conf \
+ /srv/salt/ceph/configuration/files/ceph.conf.d/rgw.conf
+</screen>
+    </step>
+    <step>
+     <para>
+      Edit
+      <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/rgw.conf</filename>
+      and change the default options, such as port number or path to the SSL
+      certificate, to reflect your setup.
+     </para>
+    </step>
+    <step>
+     <para>
+      Run &deepsea; Stage 3 and 4 to apply the changes:
+     </para>
+<screen>
+&prompt.smaster;salt-run state.orch ceph.stage.3
+&prompt.smaster;salt-run state.orch ceph.stage.4
+</screen>
+    </step>
+   </procedure>
+   <tip xml:id="rgw.civetweb.multiport">
+    <title>Binding to Multiple Ports</title>
+    <para>
+     The Civetweb server can bind to multiple ports. This is useful if you need
+     to access a single &ogw; instance with both SSL and non-SSL connections.
+     When specifying the ports, separate their numbers by a plus sign '+'. The
+     two-port configuration line example follows:
+    </para>
+<screen>[client.{{ client }}]
+rgw_frontends = civetweb port=80+443s ssl_certificate=/etc/ceph/rgw.pem</screen>
+   </tip>
+  </sect2>
  </sect1>
  <sect1 xml:id="ceph.rgw.access">
   <title>Managing &rgw; Access</title>
