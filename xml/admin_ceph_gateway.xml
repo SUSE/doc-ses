@@ -84,7 +84,7 @@
      following step, make sure that &ceph; together with the object gateway
      package are correctly installed on the node where you want to setup &rgw;:
     </para>
-    <screen>ceph-deploy install --rgw <replaceable>short_rgw_hostname</replaceable>
+<screen>ceph-deploy install --rgw <replaceable>short_rgw_hostname</replaceable>
 </screen>
    </important>
    <para>
@@ -616,6 +616,219 @@ listen-address=<replaceable>client-loopback-ip</replaceable></screen>
      See <xref linkend="storage.bp.account.user_pwd"/>.
     </para>
    </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ogw.bucket_sharding">
+  <title>Bucket Index Sharding</title>
+
+  <para>
+   The &ogw; stores bucket index data in an index pool, which defaults to
+   <literal>.rgw.buckets.index</literal>. If you put too many (hundreds of
+   thousands) objects into a single bucket and the quota for maximum number of
+   objects per bucket (<option>rgw bucket default quota max objects</option>)
+   is not set, the performance of the index pool may degrade. <emphasis>Bucket
+   index sharding</emphasis> prevents such performance decreases and allows a
+   high number of objects per bucket.
+  </para>
+
+  <sect2 xml:id="ogw.bucket_sharding.new">
+   <title>Bucket Index Sharding for New Buckets</title>
+   <para>
+    There are two options that affect bucket index sharding:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Use the <option>rgw_override_bucket_index_max_shards</option> option for
+      simple configurations.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Use the <option>bucket_index_max_shards</option> option for multi-site
+      configurations.
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    Setting the options to <literal>0</literal> disables bucket index sharding.
+    A value greater than <literal>0</literal> enables bucket index sharding and
+    sets the maximum number of shards.
+   </para>
+   <para>
+    The following formula helps you calculate the recommended number of shards:
+   </para>
+<screen>
+number_of_objects_expected_in_a_bucket / 100000
+</screen>
+   <para>
+    Be aware that the maximum number of shards is 7877.
+   </para>
+   <sect3>
+    <title>Simple Configurations</title>
+    <procedure>
+     <step>
+      <para>
+       Open the &ceph; configuration file and add or modify the following
+       option:
+      </para>
+<screen>
+rgw_override_bucket_index_max_shards = 12
+</screen>
+      <tip>
+       <title>All or One &ogw; Instances</title>
+       <para>
+        To configure bucket index sharding for all instances of the &ogw;,
+        include <option>rgw_override_bucket_index_max_shards</option> in the
+        <literal>[global]</literal> section.
+       </para>
+       <para>
+        To configure bucket index sharding only for a particular instance of
+        the &ogw;, include
+        <option>rgw_override_bucket_index_max_shards</option> in the related
+        instance section.
+       </para>
+      </tip>
+     </step>
+     <step>
+      <para>
+       Restart the &ogw;. See <xref linkend="ceph.rgw.operating"/> for more
+       details.
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>Multi-site Configurations</title>
+    <para>
+     Multi-site configurations can have a different index pool to manage
+     failover. To configure a consistent shard count for zones in one zone
+     group, set the <option>bucket_index_max_shards</option> option in the zone
+     group's configuration:
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Export the zone group configuration to the
+       <filename>zonegroup.json</filename> file:
+      </para>
+<screen>
+&prompt.sminion;radosgw-admin zonegroup get &gt; zonegroup.json
+</screen>
+     </step>
+     <step>
+      <para>
+       Edit the <filename>zonegroup.json</filename> file and set the
+       <option>bucket_index_max_shards</option> option for each named zone.
+      </para>
+     </step>
+     <step>
+      <para>
+       Reset the zone group:
+      </para>
+<screen>
+&prompt.sminion;radosgw-admin zonegroup set &lt; zonegroup.json
+</screen>
+     </step>
+     <step>
+      <para>
+       Update the period:
+      </para>
+<screen>
+&prompt.sminion;adosgw-admin period update --commit
+</screen>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ogw.bucket_sharding.re">
+   <title>Bucket Index Resharding for Existing Buckets</title>
+   <para>
+    If a bucket has grown large and its initial configuration is not sufficient
+    anymore, reshard the bucket's index pool using the following command:
+   </para>
+<screen>
+&prompt.sminion;radosgw-admin bucket reshard
+</screen>
+   <para>
+    The <command>bucket reshard</command> command performs the following:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Creates a new set of bucket index objects for the specified object.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Spreads all objects entries of these index objects.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Creates a new bucket instance.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Links the new bucket instance with the bucket so that all new index
+      operations go through the new bucket indexes.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Prints the old and the new bucket ID to the standard output.
+     </para>
+    </listitem>
+   </itemizedlist>
+   <procedure>
+    <title>Resharding the Bucket Index Pool</title>
+    <step>
+     <para>
+      Make sure that all operations to the bucket are stopped.
+     </para>
+    </step>
+    <step>
+     <para>
+      Back up the original bucket index:
+     </para>
+<screen>
+&prompt.sminion;radosgw-admin bi list \
+ --bucket=<replaceable>BUCKET_NAME</replaceable> \
+ &gt; <replaceable>BUCKET_NAME</replaceable>.list.backup
+</screen>
+    </step>
+    <step>
+     <para>
+      Reshard the bucket index:
+     </para>
+<screen>
+ &prompt.sminion;radosgw-admin reshard \
+ --bucket=<replaceable>BUCKET_NAME</replaceable> \
+ --num-shards=<replaceable>NEW_SHARDS_NUMBER</replaceable>
+</screen>
+     <tip>
+      <title>Old Bucket ID</title>
+      <para>
+       As part of its output, this command also prints the new and the old
+       bucket ID. Note the old bucket ID down; you will need it to purge the
+       old bucket index objects.
+      </para>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Verify that the objects are listed correctly by comparing the old bucket
+      index listing with the new one. Then purge the old bucket index objects:
+     </para>
+<screen>
+&prompt.sminion;radosgw-admin bi purge
+ --bucket=<replaceable>BUCKET_NAME</replaceable>
+ --bucket-id=<replaceable>OLD_BUCKET_ID</replaceable>
+</screen>
+    </step>
+   </procedure>
   </sect2>
  </sect1>
  <sect1 xml:id="ceph.rgw.fed">
