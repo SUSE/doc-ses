@@ -33,13 +33,18 @@
   </para>
  </warning>
  <sect1 xml:id="sec.ses.cifs.example">
-  <title>Example Installation</title>
+  <title>Single Gateway Example</title>
 
   <para>
-   Exporting &cephfs; is a technology preview and not supported. To export a
-   Samba share, you need to manually install Samba on one cluster node and
-   configure it. Failover functionality can be provided with CTDB and the &sle;
-   &hasi;.
+   To export a Samba share, you need to manually install the
+   <package>samba</package> package on a host with access to the &ceph; client
+   network including OSD, MDS, and Monitor nodes. The host needs to have
+   sufficient CPU, memory and networking resources.
+  </para>
+
+  <para>
+   Failover functionality can be provided with CTDB and the &sle; &hasi;. Refer
+   to <xref linkend="sec.ses.cifs.ha"/> for more information on HA setup.
   </para>
 
   <procedure>
@@ -51,11 +56,11 @@
    </step>
    <step>
     <para>
-     Create a Samba Gateway specific keyring on the &smaster; and copy it to
-     the Samba gateway node:
+     Create a Samba Gateway specific keyring on the &ceph; admin node and copy
+     it to the Samba gateway node:
     </para>
 <screen>&prompt.smaster;<command>ceph</command> auth get-or-create client.samba.gw mon 'allow r' \
-    osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
+ osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
 &prompt.smaster;<command>scp</command> ceph.client.samba.gw.keyring <replaceable>SAMBA_NODE</replaceable>:/etc/ceph/</screen>
     <para>
      Replace <replaceable>SAMBA_NODE</replaceable> with the name of the Samba
@@ -64,36 +69,82 @@
    </step>
    <step>
     <para>
-     The following steps are executed on the Samba gateway node. Install the
-     Samba daemon on the Samba gateway node:
+     The following steps are executed on the Samba gateway node. Install Samba
+     together with the &ceph; integration package:
     </para>
 <screen>&prompt.root;<command>zypper</command> in samba samba-ceph</screen>
    </step>
    <step>
     <para>
-     Edit the <filename>/etc/samba/smb.conf</filename> and add the following
-     section:
+     Edit the <filename>/etc/samba/smb.conf</filename> file. Remove all
+     existing share definitions (for example <literal>[home]</literal> or
+     <literal>[printers]</literal>) and add the following section:
     </para>
-<screen>[<replaceable>SHARE_NAME</replaceable>]
-        path = /
-        vfs objects = ceph
-        ceph:config_file = /etc/ceph/ceph.conf
-        ceph: user_id = samba.gw
-        read only = no</screen>
+<screen>
+[SHARE_NAME]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+ 	kernel share modes = no
+ </screen>
+    <tip>
+     <title><option>oplocks</option></title>
+     <para>
+      <option>oplocks</option> (also known as SMB2+ leases) allow for improved
+      performance through aggressive client caching, but are currently unsafe
+      when Samba is deployed together with other &cephfs; clients, such as
+      kernel <literal>mount.cephfs</literal>, fuse, or &ganesha;.
+     </para>
+     <para>
+      Currently, kernel share modes need to be disabled in a share running with
+      the &cephfs; vfs module for file serving to work properly.
+     </para>
+    </tip>
+    <important>
+     <title>Permitting Access</title>
+     <para>
+      Since <systemitem>vfs_ceph</systemitem> does not require a file system
+      mount, the share path is interpreted as an absolute path within the
+      &ceph; file system on the attached &ceph; cluster. For successful share
+      I/O, the path's access control list (ACL) needs to permit access from the
+      mapped user for the given Samba client. You can modify the ACL by
+      temporarily mounting via the &cephfs; kernel client and using the
+      <command>chmod</command>, <command>chown</command> or
+      <command>setfacl</command> utilities against the share path, for example:
+     </para>
+<screen>
+&prompt.root;chmod 777 <replaceable>MOUNTED_SHARE_PATH</replaceable>
+</screen>
+    </important>
    </step>
    <step>
     <para>
      Start and enable the Samba daemon:
     </para>
-<screen>&prompt.root;<command>systemctl</command> start smb.service
+<screen>
+&prompt.root;<command>systemctl</command> start smb.service
 &prompt.root;<command>systemctl</command> enable smb.service
 &prompt.root;<command>systemctl</command> start nmb.service
-&prompt.root;<command>systemctl</command> enable nmb.service</screen>
+&prompt.root;<command>systemctl</command> enable nmb.service
+</screen>
    </step>
   </procedure>
  </sect1>
  <sect1 xml:id="sec.ses.cifs.ha">
   <title>High Availability Configuration</title>
+
+  <important>
+   <title>Transparent Failover Not Supported</title>
+   <para>
+    Although a multi-node Samba + CTDB deployment is more highly available
+    compared to the single node (see <xref linkend="cha.ses.cifs"/>),
+    client-side transparent failover is not supported. Applications will likely
+    experience a short outage on Samba gateway node failure.
+   </para>
+  </important>
 
   <para>
    This section provides an example of how to set up a two-node high
@@ -165,12 +216,6 @@
        needed for CTDB to communicate with other cluster nodes.
       </para>
      </step>
-     <step>
-      <para>
-       Create a directory for the CTDB lock on the shared file system:
-      </para>
-<screen>&prompt.root;<command>mkdir</command> -p /srv/samba/</screen>
-     </step>
     </substeps>
    </step>
    <step>
@@ -193,17 +238,30 @@
        <literal>[global]</literal> section of
        <filename>/etc/samba/smb.conf</filename>. Use the host name of your
        choice in place of "CTDB-SERVER" (all nodes in the cluster will appear
-       as one big node with this name, effectively):
+       as one big node with this name, effectively). Add a share definition as
+       well, consider <replaceable>SHARE_NAME</replaceable> as an example:
       </para>
-<screen>[global]
-    netbios name = CTDB-SERVER
-    clustering = yes
-    idmap config * : backend = tdb2
-    passdb backend = tdbsam
-    ctdbd socket = /var/lib/ctdb/ctdb.socket</screen>
+<screen>
+[global]
+  netbios name = CTDB-SERVER
+  clustering = yes
+  idmap config * : backend = tdb2
+  passdb backend = tdbsam
+  ctdbd socket = /var/lib/ctdb/ctdb.socket
+
+[SHARE_NAME]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+ 	kernel share modes = no
+</screen>
       <para>
-       For details about <command>csync2</command>, see
-       <link xlink:href="https://www.suse.com/documentation/sle-ha-12/singlehtml/book_sleha/book_sleha.html#pro.ha.installation.setup.csync2.start"/>.
+       Note that the <filename>/etc/ctdb/nodes</filename> and
+       <filename>/etc/samba/smb.conf</filename> files need to match on all
+       Samba gateway nodes.
       </para>
      </step>
     </substeps>
@@ -277,13 +335,13 @@ Full list of resources:
         op start interval="0" timeout="90" \
         op stop interval="0" timeout="100"
 &prompt.crm.conf;<command>primitive</command> nmb systemd:nmb \
-    op start timeout="60" interval="0" \
-    op stop timeout="60" interval="0" \
-    op monitor interval="60" timeout="60"
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
 &prompt.crm.conf;<command>primitive</command> smb systemd:smb \
-    op start timeout="60" interval="0" \
-    op stop timeout="60" interval="0" \
-    op monitor interval="60" timeout="60"
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
 &prompt.crm.conf;<command>group</command> g-ctdb ctdb nmb smb
 &prompt.crm.conf;<command>clone</command> cl-ctdb g-ctdb meta interleave="true"
 &prompt.crm.conf;<command>commit</command></screen>
@@ -291,8 +349,15 @@ Full list of resources:
      The binary <command>/usr/lib64/ctdb/ctdb_mutex_ceph_rados_helper</command>
      in the configuration option <literal>ctdb_recovery_lock</literal> has the
      parameters <replaceable>CLUSTER_NAME</replaceable>
-     <replaceable>CEPHX_USER</replaceable> <replaceable>CEPH_POOL</replaceable>
-     <replaceable>CEPHX_USER</replaceable> in this order.
+     <replaceable>CEPHX_USER</replaceable>
+     <replaceable>RADOS_POOL</replaceable>
+     <replaceable>RADOS_OBJECT</replaceable> in this order.
+    </para>
+    <para>
+     An extra lock-timeout parameter can be appended to override the default
+     value used (10 second). A higher value will increase the CTDB recovery
+     master failover time, a lower value may result in the recovery master
+     being incorrectly detected as down, triggering flapping failovers.
     </para>
    </step>
    <step>
