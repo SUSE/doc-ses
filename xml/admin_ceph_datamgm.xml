@@ -8,17 +8,17 @@
 <chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="cha.storage.datamgm">
  <title>Stored Data Management</title>
  <info>
-      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
-        <dm:maintainer>tbazant@suse.com</dm:maintainer>
-        <dm:status>editing</dm:status>
-        <dm:deadline/>
-        <dm:priority/>
-        <dm:translation>yes</dm:translation>
-        <dm:languages/>
-        <dm:release>SES 5</dm:release>
-      </dm:docmanager>
-    </info>
-    <para>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>editing</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 5</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
   The CRUSH algorithm determines how to store and retrieve data by computing
   data storage locations. CRUSH empowers &ceph; clients to communicate with
   OSDs directly rather than through a centralized server or broker. With an
@@ -65,8 +65,9 @@
  </para>
  <para>
   A custom &crushmap;can also help you identify the physical locations where
-  &ceph; stores redundant copies of data when the placement group(s) associated
-  with a failed host are in a degraded state.
+  &ceph; stores redundant copies of data when the placement group(s) (refer to
+  <xref linkend="op.pgs"/>) associated with a failed host are in a degraded
+  state.
  </para>
  <para>
   There are three main sections to a &crushmap;.
@@ -702,6 +703,363 @@ rule example2 {
    </figure>
   </sect2>
  </sect1>
+ <sect1 xml:id="op.pgs">
+  <title>Placement Groups</title>
+
+  <para>
+   &ceph; maps objects to placement groups (PGs). Placement groups are shards
+   or fragments of a logical object pool that place objects as a group into
+   OSDs. Placement groups reduce the amount of per-object metadata when &ceph;
+   stores the data in OSDs. A larger number of placement groups (e.g., 100 per
+   OSD) leads to better balancing.
+  </para>
+
+  <sect2 xml:id="op.pgs.usage">
+   <title>How Are Placement Groups Used ?</title>
+   <para>
+    A placement group (PG) aggregates objects within a pool. The main reason is
+    that tracking object placement and metadata on a per-object basis is
+    computationally expensive. For example, a system with millions of objects
+    cannot track placement of its each object directly.
+   </para>
+   <figure>
+    <title>Placement Groups in a Pool</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    The &ceph; client will calculate to which placement group an object will
+    belong to. It does this by hashing the object ID and applying an operation
+    based on the number of PGs in the defined pool and the ID of the pool.
+   </para>
+   <para>
+    The object’s contents within a placement group are stored in a set of
+    OSDs. For instance, in a replicated pool of size two, each placement group
+    will store objects on two OSDs:
+   </para>
+   <figure>
+    <title>Palcement Groups and OSDs</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    If OSD #2 fails, another OSD will be assigned to placement group #1 and
+    will be filled with copies of all objects in OSD #1. If the pool size is
+    changed from two to three, an additional OSD will be assigned to the
+    placement group and will receive copies of all objects in the placement
+    group.
+   </para>
+   <para>
+    Placement groups do not own the OSD, they share it with other placement
+    groups from the same pool or even other pools. If OSD #2 fails, the
+    placement group #2 will also have to restore copies of objects, using OSD
+    #3.
+   </para>
+   <para>
+    When the number of placement groups increases, the new placement groups
+    will be assigned OSDs. The result of the CRUSH function will also change
+    and some objects from the former placement groups will be copied over to
+    the new placement groups and removed from the old ones.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op.pgs.pg_num">
+   <title>Determining the Value of <replaceable>PG_NUM</replaceable></title>
+   <para>
+    When creating a new pool, it is mandatory to choose the value of
+    <replaceable>PG_NUM</replaceable>:
+   </para>
+<screen>
+&prompt.root;ceph osd pool create <replaceable>POOL_NAME</replaceable> <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    Because <replaceable>PG_NUM</replaceable> cannot be calculated
+    automatically. Following are a few commonly used values, depending on the
+    number of OSDs in the cluster:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>Less than 5 OSDs:</term>
+     <listitem>
+      <para>
+       Set <replaceable>PG_NUM</replaceable> to 128.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>Between 5 and 10 OSDs:</term>
+     <listitem>
+      <para>
+       Set <replaceable>PG_NUM</replaceable> to 512.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>Between 10 and 50 OSDs:</term>
+     <listitem>
+      <para>
+       Set <replaceable>PG_NUM</replaceable> to 1024.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    As the number of OSDs increases, choosing the right value for
+    <replaceable>PG_NUM</replaceable> becomes more important.
+    <replaceable>PG_NUM</replaceable> strongly affects the behavior of the
+    cluster as well as the durability of the data in case of OSD(s) failure.
+   </para>
+   <sect3 xml:id="op.pgs.choosing">
+    <title>Number of Placement Groups for More than 50 OSDs</title>
+    <para>
+     If you have less than 50 OSDs, use the preselection described in
+     <xref linkend="op.pgs.pg_num"/>. If you have more than 50 OSDs, we
+     recommend approximately 50-100 placement groups per OSD to balance out
+     resource usage, data durability and distribution. For a single pool of
+     objects, you can use the following formula to get a baseline:
+    </para>
+<screen>
+          total PGs = (OSDs * 100) / <replaceable>POOL_SIZE</replaceable>
+</screen>
+    <para>
+     Where <replaceable>POOL_SIZE</replaceable> is either the number of
+     replicas for replicated pools, or the 'k'+',m' sum for erasure code pools
+     as returned by the <command>ceph osd erasure-code-profile get</command>
+     command. You should rounded the result up to the nearest power of 2.
+     Rounding up is recommended for the CRUSH algorithm to evenly balance the
+     number of objects among placement groups.
+    </para>
+    <para>
+     As an example, for a cluster with 200 OSDs and a pool size of 3 replicas,
+     you would estimate the number of PGs as follows:
+    </para>
+<screen>
+          (200 * 100) / 3 = 6667
+</screen>
+    <para>
+     The nearest power of 2 is <emphasis role="bold">8192</emphasis>.
+    </para>
+    <para>
+     When using multiple data pools for storing objects, you need to ensure
+     that you balance the number of placement groups per pool with the number
+     of placement groups per OSD. You need to reach a reasonable total number
+     of placement groups that provides reasonably low variance per OSD without
+     taxing system resources or making the peering process too slow.
+    </para>
+    <para>
+     For example a cluster of 10 pools each with 512 placement groups on 10
+     OSDs is a total of 5,120 placement groups spread over 10 OSDs, that is 512
+     placement groups per OSD. Such setup does not use too many resources.
+     However, if 1000 pools were created with 512 placement groups each, the
+     OSDs will handle approximately 50,000 placement groups each and it would
+     require significantly more resources and time for peering.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op.pg.set">
+   <title>Setting the Number of Placement Groups</title>
+   <para>
+    To set the number of placement groups in a pool, you need to specify the
+    number of placement groups at the time you create the pool (see
+    <xref linkend="ceph.pools.operate.add_pool"/>). Once you have set placement
+    groups for a pool, you may increase the number of placement groups, but you
+    cannot decrease it. To increase the number of placement groups, run the
+    following:
+   </para>
+<screen>
+&prompt.root;ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_num <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    After you increase the number of placement groups, you also need to
+    increase the number of placement groups for placement
+    (<option>pgp_num</option>) before your cluster will rebalance. The
+    <option>pgp_num</option> will be the number of placement groups that will
+    be considered for placement by the CRUSH algorithm. Increasing
+    <option>pgp_num</option> splits the placement groups but data will not be
+    migrated to the newer placement groups until <option>pgp_num</option> is
+    increased. The <option>pgp_num</option> should be equal to the
+    <option>pg_num</option>. To increase the number of placement groups for
+    placement, run the following:
+   </para>
+<screen>
+&prompt.root;ceph osd pool set <replaceable>POOL_NAME</replaceable> pgp_num <replaceable>PGP_NUM</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op.pg.get">
+   <title>Getting the Number of Placement Groups</title>
+   <para>
+    To get the number of placement groups in a pool, run the following:
+   </para>
+<screen>
+&prompt.root;ceph osd pool get <replaceable>POOL_NAME</replaceable> pg_num
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op.pg.getpgstat">
+   <title>Getting a Cluster's PG Statistics</title>
+   <para>
+    To get the statistics for the placement groups in your cluster, run the
+    following:
+   </para>
+<screen>
+&prompt.root;ceph pg dump [--format <replaceable>FORMAT</replaceable>]
+</screen>
+   <para>
+    Valid formats are 'plain' (default) and 'json'.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op.pg.getstuckstat">
+   <title>Getting Statistics for Stuck PGs</title>
+   <para>
+    To get the statistics for all placement groups stuck in a specified state,
+    run the following:
+   </para>
+<screen>
+&prompt.root;ceph pg dump_stuck <replaceable>STATE</replaceable> \
+ [--format <replaceable>FORMAT</replaceable>] [--threshold <replaceable>THRESHOLD</replaceable>]
+</screen>
+   <para>
+    <replaceable>STATE</replaceable> is one of 'inactive' (PGs cannot process
+    reads or writes because they are waiting for an OSD with the most
+    up-to-date data to come up), 'unclean' (PGs contain objects that are not
+    replicated the desired number of times), 'stale' (PGs are in an unknown
+    state - the OSDs that host them have not reported to the monitor cluster in
+    a time interval specified by the <option>mon_osd_report_timeout</option>
+    option), 'undersized', or 'degraded'.
+   </para>
+   <para>
+    Valid formats are 'plain' (default) and 'json'.
+   </para>
+   <para>
+    The threshold defines the minimum number of seconds the placement group is
+    stuck before including it in the returned statistics (300 seconds by
+    default).
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op.pgs.pgmap">
+   <title>Getting a Placement Group Map</title>
+   <para>
+    To get the placement group map for a particular placement group, run the
+    following:
+   </para>
+<screen>
+&prompt.root;ceph pg map <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    &ceph; will return the placement group map, the placement group, and the
+    OSD status:
+   </para>
+<screen>
+&prompt.root;ceph pg map 1.6c
+osdmap e13 pg 1.6c (1.6c) -> up [1,0] acting [1,0]
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op.pg.pgstats">
+   <title>Getting a Palcement Group Statistics</title>
+   <para>
+    To retrieve statistics for a particular placement group, run the following:
+   </para>
+<screen>
+&prompt.root;ceph pg <replaceable>PG_ID</replaceable> query
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op.pg.scrubpg">
+   <title>Scrubbing a Placement Group</title>
+   <para>
+    To scrub (<xref linkend="scrubbing"/>) a placement group, run the
+    following:
+   </para>
+<screen>
+&prompt.root;ceph pg scrub <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    &ceph; checks the primary and replica nodes, generates a catalog of all
+    objects in the placement group, and compares them to ensure that no objects
+    are missing or mismatched and their contents are consistent. Assuming the
+    replicas all match, a final semantic sweep ensures that all of the
+    snapshot-related object metadata is consistent. Errors are reported via
+    logs.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op.pg.backfill">
+   <title>Prioritize Backfill and Recovery of Placement Groups</title>
+   <para>
+    You may run into a situation where several placement groups require
+    recovery and/or backfill, while some groups hold data more important than
+    others. For example, those PGs may hold data for images used by running
+    machines and other PGs may be used by inactive machines or less relevant
+    data. In that case, you may want to prioritize recovery of those groups so
+    that performance and availability of data stored on those groups is
+    restored earlier. To mark particular placement groups as prioritized during
+    backfill or recovery, run the following:
+   </para>
+<screen>
+&prompt.root;ceph pg force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+&prompt.root;ceph pg force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    This will cause &ceph; to perform recovery or backfill on specified
+    placement groups first, before other placement groups. This does not
+    interrupt currently ongoing backfills or recovery, but causes specified PGs
+    to be processed as soon as possible. If you change your mind or prioritize
+    wrong groups, cancel the prioritization:
+   </para>
+<screen>
+&prompt.root;ceph pg cancel-force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+&prompt.root;ceph pg cancel-force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    The <command>cancel-*</command> commands remove the 'force' flag from the
+    PGs so that they are processed in default order. Again, this does not
+    affect currently processed placement group, only those that are still
+    queued. The 'force' flag is cleared automatically after recovery or
+    backfill of group is done.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op.pgs.revert">
+   <title>Reverting Lost Objects</title>
+   <para>
+    If the cluster has lost one or more objects and you have decided to abandon
+    the search for the lost data, you need to mark the unfound objects as
+    'lost'.
+   </para>
+   <para>
+    If the objects are still lost after having queried all possible locations,
+    you may need to give up on the lost objects. This is possible given unusual
+    combinations of failures that allow the cluster to learn about writes that
+    were performed before the writes themselves are recovered.
+   </para>
+   <para>
+    Currently the only supported option is 'revert', which will either roll
+    back to a previous version of the object, or forget about it entirely in
+    case of a new object. To mark the 'unfound' objects as 'lost', run the
+    following:
+   </para>
+<screen>
+&prompt.root;ceph pg <replaceable>PG_ID</replaceable> mark_unfound_lost revert|delete
+</screen>
+  </sect2>
+ </sect1>
  <sect1 xml:id="op.crush">
   <title>&crushmap; Manipulation</title>
 
@@ -1138,7 +1496,8 @@ row=foo rack=bar host=foo-bar-1</screen>
    in the
    <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/global.conf</filename>
    file, and then run &deepsea; Stage 3 to distribute the change (refer to
-   <xref linkend="ds.custom.cephconf"/> for more information):
+   <xref
+    linkend="ds.custom.cephconf"/> for more information):
   </para>
 
 <screen>
