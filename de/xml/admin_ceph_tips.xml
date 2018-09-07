@@ -1,0 +1,671 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tips.xml" version="5.0" xml:id="storage.tips">
+ <title>Hinweise und Tipps</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>Ja</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  In diesem Kapitel finden Sie Informationen, die Ihnen dabei helfen, die Leistung Ihres Ceph Clusters zu verbessern. Außerdem erhalten Sie Tipps zum Einrichten des Clusters.
+ </para>
+ <sect1 xml:id="tips.scrubbing">
+  <title>Anpassen des Scrubbings</title>
+
+  <para>
+   Ceph führt standardmäßig täglich ein Light Scrubbing und wöchentlich ein Deep Scrubbing durch (Detailinformationen hierzu finden Sie in <xref linkend="scrubbing"/>). Beim <emphasis>Light</emphasis> Scrubbing werden die Objektgrößen und Prüfsummen geprüft, um sicherzustellen, dass Placement Groups dieselben Objektdaten speichern. Beim <emphasis>Deep</emphasis> Scrubbing wird der Inhalt eines Objekt mit dem Inhalt seiner Reproduktionen verglichen, um sicherzustellen, dass die tatsächlichen Inhalte identisch sind. Die Überprüfung der Datenintegrität führt zu einer höheren E/A-Last am Cluster während des Scrubbing-Vorgangs.
+  </para>
+
+  <para>
+   Mit den Standardeinstellungen könnten Ceph OSDs ein Scrubbing zu unpassenden Zeiten durchführen, wie zum Beispiel in Zeiten mit sehr hoher Last. Kunden erfahren Latenz und schlechte Leistung, wenn zwischen den Scrubbing-Operationen und den Operationen der Kunden ein Konflikt besteht. Ceph bietet verschiedene Scrubbing-Einstellungen, die das Scrubbing auf Zeiten mit geringerer Last außerhalb der Spitzenzeiten beschränken.
+  </para>
+
+  <para>
+   Wenn die Cluster-Last tagsüber hoch und nachts gering ist, sollten Sie das Scrubbing auf die Nachtstunden beschränken, wie zum Beispiel zwischen 23 Uhr und 6 Uhr:
+  </para>
+
+<screen>
+[osd]
+osd_scrub_begin_hour = 23
+osd_scrub_end_hour = 6
+</screen>
+
+  <para>
+   Wenn die Zeitbeschränkung keine effiziente Methode zum Festlegen eines Scrubbing-Zeitplans ist, sollten Sie die Option <option>osd_scrub_load_threshold</option> verwenden. Der Standardwert ist 0,5, doch der Wert könnte für Bedingungen mit geringer Last geändert werden:
+  </para>
+
+<screen>
+[osd]
+osd_scrub_load_threshold = 0.25
+</screen>
+ </sect1>
+ <sect1 xml:id="tips.stopping_osd_without_rebalancing">
+  <title>Stoppen von OSDs ohne erneuten Ausgleich</title>
+
+  <para>
+   Sie möchten möglicherweise die OSDS regelmäßig zur Wartung stoppen. Legen Sie den Cluster zunächst auf <literal>noout</literal> fest, wenn Sie nicht möchten, dass CRUSH automatisch den Cluster ausgleicht, um enorme Datenübertragungen zu vermeiden:
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd set noout
+</screen>
+
+  <para>
+   Wenn der Cluster auf <literal>noout</literal> festgelegt ist, können Sie zu Beginn die OSDs in der Fehlerdomäne stoppen, die gewartet werden muss:
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl stop ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Weitere Informationen finden Sie in <xref linkend="ceph.operating.services.individual"/>.
+  </para>
+
+  <para>
+   Starten Sie die OSDs nach der Wartung erneut:
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl start ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Entfernen Sie die Cluster-Einstellung <literal>noout</literal> nach dem Starten der OSD Services:
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd unset noout
+</screen>
+ </sect1>
+ <sect1 xml:id="Cluster_Time_Setting">
+  <title>Zeitsynchronisierung der Nodes</title>
+
+  <para>
+   Für Ceph ist eine präzise Zeitsynchronisierung zwischen bestimmten Nodes erforderlich. Sie sollten einen Node mit Ihrem NTP-Server einrichten. Auch wenn es möglich ist, alle ntpd-Instanzen auf einen öffentlichen Remote-Zeitserver zu verweisen, ist dies bei Ceph nicht zu empfehlen. Bei einer derartigen Konfiguration hat jeder Node im Cluster einen eigenen NTP-Daemon. Diese kommunizieren kontinuierlich über das Internet mit drei oder vier Zeitservern, die alle ziemlich weit entfernt sind. Bei dieser Lösung ist mit einem hohen Maß an Latenzschwankung zu rechnen, was es schwierig oder gar unmöglich macht, die Uhrenfehler unter 0,05 Sekunden zu halten (was wiederum für die Ceph Monitors erforderlich ist).
+  </para>
+
+  <para>
+   Verwenden Sie daher einen einzelnen Rechner als NTP-Server für den gesamten Cluster. Die ntpd-Instanz Ihres NTP-Servers kann dann auf den (öffentlichen) Remote-NTP-Server verweisen oder eine eigene Zeitquelle heranziehen. Die ntpd-Instanzen in allen Nodes werden dann zu diesem lokalen Server verwiesen. Diese Lösung bietet einige Vorteile, wie die Eliminierung von unnötigem Netzwerkdatenverkehr und Taktversatz sowie die Reduzierung der Last für öffentliche NTP-Server. Detailinformationen zur Einrichtung der NTP-Server finden Sie im <link xlink:href="https://www.suse.com/documentation/sled11/book_sle_admin/data/cha_netz_xntp.html">SUSE Linux Enterprise Server-Verwaltungshandbuch</link>.
+  </para>
+
+  <para>
+   Gehen Sie folgendermaßen vor, um die Zeit an Ihrem Cluster zu ändern:
+  </para>
+
+  <important>
+   <title>Einstellen der Uhrzeit</title>
+   <para>
+    Sie kommen möglicherweise hin und wieder in eine Situation, in der Sie die Uhrzeit zurücksetzen müssen, beispielsweise wenn die Sommerzeit zur Standardzeit umgestellt wird. Es ist nicht empfehlenswert, die Uhrzeit für einen längeren Zeitraum als den Ausfall des Clusters zurückzustellen. Die Uhrzeit vorzustellen, verursacht dagegen keine Probleme.
+   </para>
+  </important>
+
+  <procedure>
+   <title>Zeitsynchronisierung am Cluster</title>
+   <step>
+    <para>
+     Stoppen Sie alle Clients, die auf den Ceph Cluster zugreifen, insbesondere die Clients, die iSCSI verwenden.
+    </para>
+   </step>
+   <step>
+    <para>
+     Fahren Sie Ihren Ceph Cluster herunter. Führen Sie in jedem Node Folgendes aus:
+    </para>
+<screen>systemctl stop ceph.target</screen>
+    <note>
+     <para>
+      Wenn Sie Ceph und SUSE OpenStack Cloud verwenden, stoppen Sie auch die SUSE OpenStack Cloud.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Verifizieren Sie, dass Ihr NTP-Server korrekt eingerichtet ist. Alle ntpd-Daemons müssen Ihre Uhrzeit aus einer oder mehreren Quellen im lokalen Netzwerk beziehen.
+    </para>
+   </step>
+   <step>
+    <para>
+     Legen Sie die korrekte Uhrzeit auf Ihrem NTP-Server fest.
+    </para>
+   </step>
+   <step>
+    <para>
+     Verifizieren Sie, dass NTP ausgeführt wird und ordnungsgemäß funktioniert. Führen Sie in allen Nodes Folgendes aus:
+    </para>
+<screen>status ntpd.service</screen>
+    <para>
+     oder
+    </para>
+<screen>ntpq -p</screen>
+   </step>
+   <step>
+    <para>
+     Starten Sie alle Überwachungs-Nodes und verifizieren Sie, dass kein Taktversatz besteht:
+    </para>
+<screen>systemctl start <replaceable>target</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     Starten Sie alle OSD Nodes.
+    </para>
+   </step>
+   <step>
+    <para>
+     Starten Sie sonstige Ceph-Services.
+    </para>
+   </step>
+   <step>
+    <para>
+     Starten Sie die SUSE OpenStack Cloud, falls vorhanden.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="storage.bp.cluster_mntc.unbalanced">
+  <title>Prüfung auf nicht ausgeglichene Datenschreibvorgänge</title>
+
+  <para>
+   Wenn Daten gleichmäßig verteilt an OSDs geschrieben werden, ist der Cluster ausgeglichen. Jedem OSD in einem Cluster ist ein eigenes <emphasis>Gewicht</emphasis> zugewiesen. Das Gewicht ist eine relative Zahl und informiert Ceph darüber, wie viele der Daten auf den jeweiligen OSD geschrieben werden sollten. Je höher das Gewicht, desto mehr Daten werden geschrieben. Wenn ein OSD kein Gewicht aufweist, werden keine Daten an ihn geschrieben. Wenn das Gewicht eines OSD relativ hoch ist im Vergleich zu anderen OSDs, wird ein Großteil der Daten an diesen OSD geschrieben, wodurch der Cluster unausgeglichen wird.
+  </para>
+
+  <para>
+   Unausgeglichene Cluster weisen eine schlechte Leistung auf. Falls ein OSD mit einem hohen Gewicht plötzlich abstürzt, müssen sehr viele Daten zu anderen OSDs verschoben werden, was den Cluster ebenfalls verlangsamt.
+  </para>
+
+  <para>
+   Um dies zu vermeiden, sollten sie regelmäßig die OSDs auf die Menge der geschriebenen Daten hin überprüfen. Wenn die Menge zwischen 30 und 50 Prozent der Kapazität einer Gruppe von OSDs, die durch einen Regelsatz angegeben ist, ausmacht, müssen Sie das Gewicht der OSDs neu festlegen. Prüfen Sie, welche der einzelnen Festplatten schneller gefüllt werden als andere (oder allgemein langsamer sind) und reduzieren Sie deren Gewicht. Das gleiche gilt für OSDs, an die nicht genug Daten geschrieben werden. Erhöhen Sie deren Gewicht, damit Ceph mehr Daten an sie schreibt. Im folgenden Beispiel ermitteln Sie das Gewicht eines OSDs mit ID 13 und ändern sein Gewicht von 3 auf 3,05:
+  </para>
+
+<screen>$ ceph osd tree | grep osd.13
+ 13  3                   osd.13  up  1
+
+ $ ceph osd crush reweight osd.13 3.05
+ reweighted item id 13 name 'osd.13' to 3.05 in crush map
+
+ $ ceph osd tree | grep osd.13
+ 13  3.05                osd.13  up  1</screen>
+
+  <para/>
+
+  <tip>
+   <title>Ändern des OSD-Gewichts entsprechend der Auslastung</title>
+   <para>
+    Mit dem Kommando <command>ceph osd reweight-by-utilization</command>
+    <replaceable>threshold</replaceable> wird der Vorgang der Reduzierung des Gewichts von übermäßig ausgelasteten OSDs automatisiert. Standardmäßig wird das Gewicht von OSDs verringert, die 120 % der durchschnittlichen Auslastung erreicht haben. Wenn Sie jedoch einen Schwellwert ("threshold") hinzufügen, wird stattdessen dieser Prozentsatz verwendet.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage.tips.ceph_btrfs_subvol">
+  <title>Btrfs Sub-Volume für /var/lib/ceph</title>
+
+  <para>
+   SUSE Linux Enterprise wird standardmäßig auf einer Btrfs-Partition installiert. Das Verzeichnis <filename>/var/lib/ceph</filename> sollte von Btrfs-Snapshots und Rollbacks ausgeschlossen werden, insbesondere wenn ein MON im Node ausgeführt wird. DeepSea bietet <literal>fs</literal>-Ausführungsprogramme, die ein Sub-Volume für diesen Pfad einrichten.
+  </para>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.req-new">
+   <title>Anforderungen für die neue Installation</title>
+   <para>
+    Wenn Sie den Cluster zum ersten Mal einrichten, müssen vor Verwendung des DeepSea-Ausführungsprogramms die folgenden Anforderungen erfüllt sein:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Salt und DeepSea sind ordnungsgemäß installiert und funktionieren entsprechend der Vorgaben in dieser Dokumentation.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <command>salt-run state.orch ceph.stage.0</command> wurde aufgerufen, um alle Salt- und DeepSea-Module mit den Minions zu synchronisieren.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Ceph ist noch nicht installiert, daher wurde "ceph.stage.3" noch nicht ausgeführt und <filename>/var/lib/ceph</filename> ist noch nicht vorhanden.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.req-existing">
+   <title>Anforderungen für die bestehende Installation</title>
+   <para>
+    Wenn Ihr Cluster bereits installiert ist, müssen vor Verwendung des DeepSea-Ausführungsprogramms die folgenden Anforderungen erfüllt sein:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Die Nodes werden auf SUSE Enterprise Storage aufgerüstet und der Cluster wird von DeepSea gesteuert.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Der Ceph Cluster ist aktiv und fehlerfrei.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Beim Upgrade wurden die Salt- und DeepSea-Module mit allen Minion Nodes synchronisiert.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.automatic">
+   <title>Automatische Einrichtung</title>
+   <procedure>
+    <step>
+     <para>
+      Führen Sie am Salt Master Folgendes aus:
+     </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> state.orch ceph.migrate.subvolume</screen>
+     <para>
+      In Nodes ohne Verzeichnis <filename>/var/lib/ceph</filename> wird dadurch bei jeweils einem Node:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        <filename>/var/lib/ceph</filename> als ein <literal>@/var/lib/ceph</literal> Btrfs-Sub-Volume erstellt.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        das neue Sub-Volume eingehängt und <filename>/etc/fstab</filename> entsprechend aktualisiert.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        eine Kopie beim Schreibvorgang für <filename>/ceph</filename> deaktiviert.
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      In Nodes mit Ceph-Installation wird/werden dadurch bei jeweils einem Node:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        die Ausführung der Ceph-Vorgänge beendet.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        die OSDs im Node ausgehängt.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        das <literal>@/var/lib/ceph</literal> Btrfs-Sub-Volume erstellt und die bestehenden <filename>/var/lib/ceph</filename> Daten migriert.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        das neue Sub-Volume eingehängt und <filename>/etc/fstab</filename> entsprechend aktualisiert.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        eine Kopie beim Schreibvorgang für <filename>/var/lib/ceph/*</filename> deaktiviert und <filename>/var/lib/ceph/osd/*</filename> weggelassen.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        die OSDs neu eingehängt.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        die Ceph-Daemons neu gestartet.
+       </para>
+      </listitem>
+     </itemizedlist>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.manually">
+   <title>Manuelle Einrichtung</title>
+   <para>
+    Hierzu wird das neue <literal>fs</literal>-Ausführungsprogramm verwendet.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Es prüft den Zustand von <filename>/var/lib/ceph</filename> in allen Nodes und gibt Vorschläge zur weiteren Vorgehensweise aus:
+     </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> fs.inspect_var</screen>
+     <para>
+      Dadurch wird eines der folgenden Kommandos ausgegeben:
+     </para>
+<screen>salt-run fs.create_var
+salt-run fs.migrate_var
+salt-run fs.correct_var_attrs</screen>
+    </step>
+    <step>
+     <para>
+      Führen Sie das Kommando aus, das im vorigen Schritt ausgegeben wurde.
+     </para>
+     <para>
+      Falls in einem der Nodes ein Fehler auftritt, wird die Ausführung für andere Nodes ebenfalls gestoppt und das Ausführungsprogramm versucht, die vorgenommenen Änderungen zurückzusetzen. Sehen Sie in den Protokolldateien zu den Minions nach, welches Problem aufgetreten ist. Das Ausführungsprogramm kann erneut ausgeführt werden, nachdem das Problem behoben wurde.
+     </para>
+    </step>
+   </procedure>
+   <para>
+    Das Kommando <command>salt-run fs.help</command> erstellt eine Liste aller Ausführungsprogramm- und Modulkommandos für das <literal>fs</literal>-Modul.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage.bp.srv_maint.fds_inc">
+  <title>Erhöhen der Dateideskriptoren</title>
+
+  <para>
+   Bei OSD-Daemons sind die Lese/Schreib-Operationen entscheidend für den Ausgleich im Ceph Cluster. Sie müssen oft viele Dateien gleichzeitig zum Lesen und Schreiben offen halten. Auf Betriebssystemebene wird die maximale Anzahl von gleichzeitig offenen Dateien als "maximale Anzahl der Dateideskriptoren" bezeichnet.
+  </para>
+
+  <para>
+   Um zu verhindern, dass den OSDs die Dateideskriptoren ausgehen, überschreiben Sie den Standardwert des Betriebssystems und geben Sie die Anzahl in <filename>/etc/ceph/ceph.conf</filename> an. Beispiel:
+  </para>
+
+<screen>max_open_files = 131072</screen>
+
+  <para>
+   Nach dem Ändern von <option>max_open_files</option> müssen Sie den OSD-Service im relevanten Ceph Node neu starten.
+  </para>
+ </sect1>
+ <sect1 xml:id="bp.osd_on_exisitng_partitions">
+  <title>Wie die bestehenden Partitionen für OSDs und OSD-Journale verwendet werden</title>
+
+  <important>
+   <para>
+    In diesem Abschnitt wird ein anspruchsvolles Thema beschrieben, mit dem sich nur Speicherexperten und Entwickler befassen sollten. Es wird hauptsächlich dann relevant, wenn vom Standard abweichende OSD-Journalgrößen verwendet werden. Wenn die Größe der Partition kleiner als 10 GB beträgt, wird das anfängliche Gewicht auf 0 gerundet. Da aus diesem Grund keine Daten darauf platziert werden, sollten Sie deren Gewicht erhöhen. Wir übernehmen keine Verantwortung für überfüllte Journale.
+   </para>
+  </important>
+
+  <para>
+   Wenn Sie bestehende Festplattenpartitionen als OSD Node verwenden müssen, müssen die Partitionen für das OSD-Journal und die Daten in einer GPT-Partitionstabelle vorhanden sein.
+  </para>
+
+  <para>
+   Sie müssen für die OSD-Partitionen den korrekten Partitionstyp festlegen, sodass <systemitem>udev</systemitem> sie korrekt erkennt und ihre Eigentümerschaft auf <literal>ceph:ceph</literal> festlegt.
+  </para>
+
+  <para>
+   Führen Sie beispielsweise Folgendes aus, um den Partitionstyp für die Journalpartition <filename>/dev/vdb1</filename> und die Datenpartition <filename>/dev/vdb2</filename> festzulegen:
+  </para>
+
+<screen>sudo sgdisk --typecode=1:45b0969e-9b03-4f30-b4c6-b4b80ceff106 /dev/vdb
+sudo sgdisk --typecode=2:4fbd7e29-9d25-41b8-afd0-062c0ceff05d /dev/vdb</screen>
+
+  <tip>
+   <para>
+    Die Typen der Ceph-Partitionstabellen sind in <filename>/usr/lib/udev/rules.d/95-ceph-osd.rules</filename> aufgeführt:
+   </para>
+<screen>cat /usr/lib/udev/rules.d/95-ceph-osd.rules
+# OSD_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+
+# JOURNAL_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+[...]</screen>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage.admin.integration">
+  <title>Integration in Virtualisierungssoftware</title>
+
+  <sect2 xml:id="storage.bp.integration.kvm">
+   <title>Speichern von KVM-Datenträgern im Ceph Cluster</title>
+   <para>
+    Sie können ein Datenträger-Image für KVM-betriebene virtuelle Maschinen erstellen, diese in einem Ceph Pool speichern, optional den Inhalt eines bestehenden Image zu diesem Image konvertieren und dann die virtuelle Maschine mit <command>qemu-kvm</command> ausführen und das im Cluster gespeicherte Datenträger-Image dazu verwenden. Weitere Informationen hierzu finden Sie in <xref linkend="cha.ceph.kvm"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.integration.libvirt">
+   <title>Speichern von <systemitem class="library">libvirt</systemitem>-Datenträgern im Ceph Cluster</title>
+   <para>
+    Auf ähnliche Weise wie KVM (Informationen hierzu finden Sie in <xref linkend="storage.bp.integration.kvm"/>) können Sie Ceph zum Speichern virtueller Maschinen verwenden, die über <systemitem class="library">libvirt</systemitem> betrieben werden. Der Vorteil besteht darin, dass Sie jede beliebige von <systemitem class="library">libvirt</systemitem> unterstützte Virtualisierungslösung ausführen können, wie etwa KVM, Xen oder LXC. Weitere Informationen finden Sie in <xref linkend="cha.ceph.libvirt"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.integration.xen">
+   <title>Speichern von Xen-Datenträgern im Ceph Cluster</title>
+   <para>
+    Eine Methode zum Speichern von Xen-Datenträgern mit Ceph ist die Verwendung von <systemitem class="library">libvirt</systemitem> wie in <xref linkend="cha.ceph.libvirt"/> beschrieben.
+   </para>
+   <para>
+    Alternativ kann Xen zur direkten Kommunikation mit dem <systemitem>rbd</systemitem>-Blockgerät eingerichtet werden:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Wenn Sie kein Festplatten-Image für Xen vorbereitet haben, erstellen sie ein neues Image:
+     </para>
+<screen>rbd create myimage --size 8000 --pool mypool</screen>
+    </step>
+    <step>
+     <para>
+      Listen Sie die Images im Pool <literal>mypool</literal> auf und prüfen Sie, ob das neue Image vorhanden ist:
+     </para>
+<screen>rbd list mypool</screen>
+    </step>
+    <step>
+     <para>
+      Erstellen Sie ein neues Blockgerät, indem Sie das Image <literal>myimage</literal> zum Kernel-Modul <systemitem>rbd</systemitem> zuordnen:
+     </para>
+<screen>sudo rbd map --pool mypool myimage</screen>
+     <tip>
+      <title>Benutzername und -authentifizierung</title>
+      <para>
+       Geben Sie einen Benutzernamen mit <option>--id <replaceable>user-name</replaceable></option> an. Wenn Sie die <systemitem>cephx</systemitem>-Authentifizierung nutzen, müssen Sie außerdem ein Geheimnis angeben. Es kann von einem Schlüsselbund stammen oder aus einer Datei, die das Geheimnis enthält:
+      </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+      <para>
+       oder
+      </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Listen Sie alle zugeordneten Geräte auf:
+     </para>
+<screen><command>rbd showmapped</command>
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    </step>
+    <step>
+     <para>
+      Nun können Sie Xen so konfigurieren, dass es dieses Gerät als Festplatte zum Ausführen einer virtuellen Maschine verwendet. Beispielsweise kann die folgende Zeile zur Domänenkonfigurationsdatei vom Typ <command>xl</command> hinzugefügt werden:
+     </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage.bp.net.firewall">
+  <title>Firewall-Einstellungen für Ceph</title>
+
+  <warning>
+   <title>DeepSea-Phasen werden bei aktiver Firewall nicht durchgeführt</title>
+   <para>
+    Die DeepSea-Phasen zur Bereitstellung werden nicht ausgeführt, wenn die Firewall aktiv ist (und sogar konfiguriert). Um die Phasen korrekt abzuschließen, müssen Sie entweder die Firewall durch Ausführen von
+   </para>
+<screen>
+<prompt>root@master # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+   <para>
+    ausschalten oder die Option <option>FAIL_ON_WARNING</option> in <filename>/srv/pillar/ceph/stack/global.yml</filename> auf "False" festlegen:
+   </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+  </warning>
+
+  <para>
+   Wir empfehlen, die Netzwerk-Cluster-Kommunikation mit SUSE Firewall. Deren Konfiguration wird durch Auswahl von <menuchoice><guimenu>YaST</guimenu><guimenu>Sicherheit und Benutzer</guimenu><guimenu>Firewall</guimenu><guimenu>Zulässige Dienste</guimenu></menuchoice> bearbeitet.
+  </para>
+
+  <para>
+   Nachfolgend sehen Sie eine Liste der für Ceph relevanten Services und Nummern der Ports, die diese normalerweise verwenden:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>Ceph Monitor</term>
+    <listitem>
+     <para>
+      Aktivieren Sie den <guimenu>Ceph MON</guimenu>-Service oder Port 6789 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Ceph OSD oder Metadata Server</term>
+    <listitem>
+     <para>
+      Aktivieren Sie den <guimenu>Ceph OSD/MDS</guimenu>-Service oder die Ports 6800-7300 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>iSCSI Gateway</term>
+    <listitem>
+     <para>
+      Öffnen Sie Port 3260 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Object Gateway</term>
+    <listitem>
+     <para>
+      Öffnen Sie den Port, an dem die Object Gateway-Kommunikation stattfindet. Er wird in <filename>/etc/ceph.conf</filename> in der Zeile beginnend mit <literal>rgw frontends =</literal> festgelegt. Die Standardeinstellung ist 80 für HTTP und 443 für HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NFS Ganesha</term>
+    <listitem>
+     <para>
+      NFS Ganesha verwendet standardmäßig die Ports 2049 (NFS-Service, TCP) und 875 (rquota-Unterstützung, TCP). Weitere Informationen zum Ändern der standardmäßigen Ports für NFS Ganesha finden Sie in <xref linkend="ganesha.nfsport"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Apache-basierte Services, wie openATTIC, SMT oder SUSE Manager</term>
+    <listitem>
+     <para>
+      Öffnen Sie Port 80 für HTTP und Port 443 für HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>SSH</term>
+    <listitem>
+     <para>
+      Öffnen Sie Port 22 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NTP</term>
+    <listitem>
+     <para>
+      Öffnen Sie Port 123 (UDP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Salt</term>
+    <listitem>
+     <para>
+      Öffnen Sie Port 4505 und Port 4506 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Grafana</term>
+    <listitem>
+     <para>
+      Öffnen Sie Port 3000 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Prometheus</term>
+    <listitem>
+     <para>
+      Öffnen Sie Port 9100 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="storage.bp.network_test">
+  <title>Testen der Netzwerkleistung</title>
+
+  <para>
+   Zum Testen der Netzwerkleistung stellt das DeepSea <literal>net</literal>-Ausführungsprogramm die folgenden Kommandos zur Verfügung. 
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Ein einfaches Ping an alle Nodes:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.ping
+Succeeded: 9 addresses from 9 minions average rtt 1.35 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Ein Jumbo-Ping an alle Nodes:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.jumbo_ping
+Succeeded: 9 addresses from 9 minions average rtt 2.13 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Ein Bandbreitentest:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.iperf
+Fastest 2 hosts:
+    |_
+      - 192.168.58.106
+      - 2981 Mbits/sec
+    |_
+      - 192.168.58.107
+      - 2967 Mbits/sec
+Slowest 2 hosts:
+    |_
+      - 192.168.58.102
+      - 2857 Mbits/sec
+    |_
+      - 192.168.58.103
+      - 2842 Mbits/sec</screen>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="storage.bd.replacing_disk">
+  <title>Austauschen der Speicherfestplatte</title>
+
+  <para>
+   Der Austausch einer Speicherfestplatte in einem Ceph Cluster ist während des Betriebs des Clusters möglich. Durch den Austausch wird vorübergehend die Datenübertragung erhöht.
+  </para>
+
+  <para>
+   Wenn die Festplatte vollständig ausfällt, muss Ceph mindestens dieselbe Anzahl von Daten erneut schreiben, wie es die Kapazität der ausgefallenen Festplatte zulässt. Wenn die Festplatte vollständig evakuiert und dann erneut hinzugefügt wird, um einen Verlust der Redundanz während des Vorgangs zu vermeiden, wird die Anzahl der neu geschriebenen Daten doppelt so hoch. Wenn die neue Festplatte eine andere Größe aufweist als die ersetzte Festplatte, dann werden einige zusätzliche Daten erneut verteilt, um die Auslastung auf alle OSDs auszugleichen.
+  </para>
+ </sect1>
+</chapter>

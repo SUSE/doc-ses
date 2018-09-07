@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<appendix xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_manual-install.xml" version="5.0" xml:id="app.storage.manual_inst">
+ <title>Ejemplo de procedimiento de una instalación manual de Ceph</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>sí</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  El procedimiento siguiente muestra los comandos que necesita para instalar de forma manual el clúster de almacenamiento de Ceph.
+ </para>
+ <procedure>
+  <step>
+   <para>
+    Genere los secretos de clave para los servicios de Ceph que tenga previsto ejecutar. Puede utilizar los siguientes comandos para ello:
+   </para>
+<screen>python -c "import os ; import struct ; import time; import base64 ; \
+ key = os.urandom(16) ; header = struct.pack('&lt;hiih',1,int(time.time()),0,len(key)) ; \
+ print base64.b64encode(header + key)"</screen>
+  </step>
+  <step>
+   <para>
+    Añada las claves en los anillos de claves relacionados. Primero para <systemitem class="username">client.admin</systemitem>, después para los monitores y, a continuación, para los demás servicios relacionados, como OSD, Object Gateway o el servidor de metadatos:
+   </para>
+<screen>ceph-authtool -n client.admin \
+ --create-keyring /etc/ceph/ceph.client.admin.keyring \
+ --cap mds 'allow *' --cap mon 'allow *' --cap osd 'allow *'
+ceph-authtool -n mon. \
+ --create-keyring /var/lib/ceph/bootstrap-mon/ceph-osceph-03.keyring \
+ --set-uid=0 --cap mon 'allow *'
+ceph-authtool -n client.bootstrap-osd \
+ --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring \
+ --cap mon 'allow profile bootstrap-osd'
+ceph-authtool -n client.bootstrap-rgw \
+ --create-keyring /var/lib/ceph/bootstrap-rgw/ceph.keyring \
+ --cap mon 'allow profile bootstrap-rgw'
+ceph-authtool -n client.bootstrap-mds \
+ --create-keyring /var/lib/ceph/bootstrap-mds/ceph.keyring \
+ --cap mon 'allow profile bootstrap-mds'</screen>
+  </step>
+  <step>
+   <para>
+    Cree un monmap, una base de datos de todos los monitores de un clúster:
+   </para>
+<screen>monmaptool --create --fsid eaac9695-4265-4ca8-ac2a-f3a479c559b1 \
+ /tmp/tmpuuhxm3/monmap
+monmaptool --add osceph-02 192.168.43.60 /tmp/tmpuuhxm3/monmap
+monmaptool --add osceph-03 192.168.43.96 /tmp/tmpuuhxm3/monmap
+monmaptool --add osceph-04 192.168.43.80 /tmp/tmpuuhxm3/monmap</screen>
+  </step>
+  <step>
+   <para>
+    Cree un nuevo anillo de claves e importe en él las claves de los anillos de claves de administración y de los monitores. A continuación, úselos para iniciar los monitores:
+   </para>
+<screen>ceph-authtool --create-keyring /tmp/tmpuuhxm3/keyring \
+ --import-keyring /var/lib/ceph/bootstrap-mon/ceph-osceph-03.keyring
+ceph-authtool /tmp/tmpuuhxm3/keyring \
+ --import-keyring /etc/ceph/ceph.client.admin.keyring
+sudo -u ceph ceph-mon --mkfs -i osceph-03 \
+ --monmap /tmp/tmpuuhxm3/monmap --keyring /tmp/tmpuuhxm3/keyring
+systemctl restart ceph-mon@osceph-03</screen>
+  </step>
+  <step>
+   <para>
+    Compruebe el estado de los monitores en <systemitem class="daemon">systemd</systemitem>:
+   </para>
+<screen>systemctl show --property ActiveState ceph-mon@osceph-03</screen>
+  </step>
+  <step>
+   <para>
+    Compruebe si Ceph se está ejecutando y notifique el estado del monitor:
+   </para>
+<screen>ceph --cluster=ceph \
+ --admin-daemon /var/run/ceph/ceph-mon.osceph-03.asok mon_status</screen>
+  </step>
+  <step>
+   <para>
+    Compruebe el estado de los servicios específicos con las claves existentes:
+   </para>
+<screen>ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin -f json-pretty status
+[...]
+ceph --connect-timeout 5 \
+ --keyring /var/lib/ceph/bootstrap-mon/ceph-osceph-03.keyring \
+ --name mon. -f json-pretty status</screen>
+  </step>
+  <step>
+   <para>
+    Importe el anillo de claves de los servicios de Ceph existentes y compruebe su estado:
+   </para>
+<screen>ceph auth import -i /var/lib/ceph/bootstrap-osd/ceph.keyring
+ceph auth import -i /var/lib/ceph/bootstrap-rgw/ceph.keyring
+ceph auth import -i /var/lib/ceph/bootstrap-mds/ceph.keyring
+ceph --cluster=ceph \
+ --admin-daemon /var/run/ceph/ceph-mon.osceph-03.asok mon_status
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin -f json-pretty status</screen>
+  </step>
+  <step>
+   <para>
+    Prepare discos/particiones para los OSD mediante el sistema de archivos XFS:
+   </para>
+<screen>ceph-disk -v prepare --fs-type xfs --data-dev --cluster ceph \
+ --cluster-uuid eaac9695-4265-4ca8-ac2a-f3a479c559b1 /dev/vdb
+ceph-disk -v prepare --fs-type xfs --data-dev --cluster ceph \
+ --cluster-uuid eaac9695-4265-4ca8-ac2a-f3a479c559b1 /dev/vdc
+[...]</screen>
+  </step>
+  <step>
+   <para>
+    Active las particiones:
+   </para>
+<screen>ceph-disk -v activate --mark-init systemd --mount /dev/vdb1
+ceph-disk -v activate --mark-init systemd --mount /dev/vdc1</screen>
+  </step>
+  <step>
+   <para>
+    En SUSE Enterprise Storage 2.1 y versiones anteriores, cree los repositorios por defecto:
+   </para>
+<screen>ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .users.swift 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .intent-log 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .rgw.gc 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .users.uid 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .rgw.control 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .users 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .usage 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .log 16 16
+ceph --connect-timeout 5 --keyring /etc/ceph/ceph.client.admin.keyring \
+ --name client.admin osd pool create .rgw 16 16</screen>
+  </step>
+  <step>
+   <para>
+    Cree la clave de la instancia de Object Gateway a partir de la clave bootstrap:
+   </para>
+<screen>ceph --connect-timeout 5 --cluster ceph --name client.bootstrap-rgw \
+ --keyring /var/lib/ceph/bootstrap-rgw/ceph.keyring auth get-or-create \
+ client.rgw.0dc1e13033d2467eace46270f0048b39 osd 'allow rwx' mon 'allow rw' \
+ -o /var/lib/ceph/radosgw/ceph-rgw.<replaceable>rgw_name</replaceable>/keyring
+  </screen>
+  </step>
+  <step>
+   <para>
+    Habilite e inicie Object Gateway:
+   </para>
+<screen>systemctl enable ceph-radosgw@rgw.<replaceable>rgw_name</replaceable>
+systemctl start ceph-radosgw@rgw.<replaceable>rgw_name</replaceable></screen>
+  </step>
+  <step>
+   <para>
+    Opcionalmente, puede crear la clave de la instancia del servidor de metadatos a partir de la clave bootstrap, habilitarla e iniciarla:
+   </para>
+<screen>ceph --connect-timeout 5 --cluster ceph --name client.bootstrap-mds \
+ --keyring /var/lib/ceph/bootstrap-mds/ceph.keyring auth get-or-create \
+ mds.mds.<replaceable>rgw_name</replaceable> osd 'allow rwx' mds allow mon \
+ 'allow profile mds' \
+ -o /var/lib/ceph/mds/ceph-mds.<replaceable>rgw_name</replaceable>/keyring
+systemctl enable ceph-mds@mds.<replaceable>rgw_name</replaceable>
+systemctl start ceph-mds@mds.<replaceable>rgw_name</replaceable></screen>
+  </step>
+ </procedure>
+</appendix>

@@ -1,0 +1,835 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_iscsi.xml" version="5.0" xml:id="cha.ceph.as.iscsi">
+
+ <title>iSCSI Gatewayのインストール</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>編集</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  iSCSIは、クライアント(「イニシエータ」<emphasis/>)から、リモートサーバ上のSCSIストレージデバイス(「ターゲット」<emphasis/>)にSCSIコマンドを送信できるようにするSAN (ストレージエリアネットワーク)プロトコルです。SUSE Enterprise Storageには、Cephのストレージ管理をiSCSIプロトコル経由でMicrosoft Windows*、VMware* vSphereなどの異種クライアントから利用できるようにする機能が含まれています。マルチパスiSCSIアクセスによってこれらのクライアントの可用性とスケーラビリティが向上すると同時に、標準化されたiSCSIプロトコルがクライアントとSUSE Enterprise Storage Cluster間に追加のセキュリティ分離層も提供します。この設定機能は<systemitem>lrbd</systemitem>という名前です。Cephストレージ管理者は、<systemitem>lrbd</systemitem>を使用して、シンプロビジョニングおよび複製された高可用性ボリュームを定義できます。これらのボリュームでは、Ceph RBD (RADOS Block Device)により、読み込み専用スナップショット、読み書きクローン、および自動サイズ調整がサポートされます。これにより、単一の<systemitem>lrbd</systemitem>ゲートウェイホスト、またはマルチパスフェールオーバーをサポートする複数のゲートウェイホストを通じてボリュームをエクスポートできます。iSCSIプロトコルによってボリュームを他のSCSIブロックデバイスと同じように利用できるようになり、Linux、Microsoft Windows、およびVMwareホストはiSCSIプロトコルを使用してボリュームに接続できます。つまり、SUSE Enterprise Storageの顧客は、従来のSANの特徴と利点をすべて備えた完全なブロックストレージインフラストラクチャサブシステムをCeph上で効果的に実行でき、将来の増加に対応できます。
+ </para>
+ <para>
+  この章では、CephクラスタインフラストラクチャをiSCSI Gatewayと共に設定し、クライアントホストがiSCSIプロトコルを使ってリモート保存データをローカルストレージデバイスとして使用できるようにするための情報について詳しく説明します。
+ </para>
+ <sect1 xml:id="ceph.iscsi.iscsi">
+  <title>iSCSIブロックストレージ</title>
+
+  <para>
+   iSCSIは、IP (インターネットプロトコル)を使用するSCSI (Small Computer System Interface)コマンドセットを実装したもので、RFC 3720で規定されています。iSCSIはサービスとして実装され、クライアント(イニシエータ)はTCPポート3260でセッションを経由してサーバ(ターゲット)と通信します。iSCSIターゲットのIPアドレスとポートをiSCSIポータルと呼び、1つ以上のポータルを通じてターゲットを公開できます。ターゲットと1つ以上のポータルの組み合わせをTPG (ターゲットポータルグループ)と呼びます。
+  </para>
+
+  <para>
+   iSCSIの基礎となるデータリンク層プロトコルは一般的にEthernetです。具体的には、最新のiSCSIインフラストラクチャは、最適なスループットのために10ギガビットEthernetまたはより高速なネットワークを使用します。iSCSI GatewayとバックエンドのCephクラスタ間の接続には、10ギガビットEthernetを強くお勧めします。
+  </para>
+
+  <sect2 xml:id="ceph.iscsi.iscsi.target">
+   <title>LinuxカーネルiSCSIターゲット</title>
+   <para>
+    LinuxカーネルiSCSIターゲットは元々、プロジェクトの発端となったドメインとWebサイトの名前にちなんでLIO for linux-iscsi.orgと呼ばれていました。しばらくの間、競合するiSCSIターゲット実装がLinuxプラットフォームで4つも利用可能な状態が続いていましたが、最終的にはLIOがiSCSIの単一のリファレンスターゲットとして普及しました。LIOのメインラインカーネルコードは、シンプルではあるものの若干あいまいな「ターゲット」という名前を用いて、「ターゲットコア」と、さまざまなフロントエンド/バックエンドターゲットモジュールを区別しています。
+   </para>
+   <para>
+    最も一般的に用いられているフロントエンドモジュールはまず間違いなくiSCSIです。ただし、LIOはFC (ファイバチャネル)、FCoE (ファイバチャネルオーバーEthernet)、およびその他の複数のフロントエンドプロトコルもサポートしています。現在のところ、SUSE Enterprise StorageによってサポートされているのはiSCSIプロトコルのみです。
+   </para>
+   <para>
+    最もよく使用されるターゲットバックエンドモジュールは、ターゲットホスト上で利用可能なブロックデバイスを単に再エクスポートできるモジュールです。このモジュールはiblockという名前です。ただし、LIOには、RBDイメージへの並列化マルチパスI/Oアクセスをサポートする、RBD固有のバックエンドモジュールもあります。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.iscsi.initiators">
+   <title>iSCSIイニシエータ</title>
+   <para>
+    このセクションでは、Linux、Microsoft Windows、およびVMwareの各プラットフォームで使用されているiSCSIイニシエータについて簡単に紹介します。
+   </para>
+   <sect3>
+    <title>Linux</title>
+    <para>
+     Linuxプラットフォームの標準のイニシエータは<systemitem>open-iscsi</systemitem>です。<systemitem>open-iscsi</systemitem>はデーモン<systemitem>iscsid</systemitem>を起動し、ユーザはこのデーモンを使用して特定のポータル上のiSCSIターゲットを検出してターゲットにログインし、iSCSIボリュームをマップできます。<systemitem>iscsid</systemitem>はSCSIの中間層と通信して、カーネル内ブロックデバイスを作成します。これにより、カーネルはこのブロックデバイスをシステムの他のSCSIブロックデバイスと同じように扱うことができます。<systemitem>open-iscsi</systemitem>イニシエータをデバイスマッパーマルチパス(<systemitem>dm-multipath</systemitem>)機能と組み合わせて展開することで、高可用性iSCSIブロックデバイスを提供できます。
+    </para>
+   </sect3>
+   <sect3>
+    <title>Microsoft WindowsとHyper-V</title>
+    <para>
+     Microsoft WindowsオペレーティングシステムのデフォルトのiSCSIイニシエータは、Microsoft iSCSIイニシエーターです。このiSCSIサービスはGUI (グラフィカルユーザインタフェース)を使用して設定でき、高可用性のためにマルチパスI/Oをサポートしています。
+    </para>
+   </sect3>
+   <sect3>
+    <title>VMware</title>
+    <para>
+     VMware vSphereおよびESXのデフォルトのiSCSIイニシエータは、VMware ESXソフトウェアiSCSIイニシエータ<systemitem>vmkiscsi</systemitem>です。これが有効な場合、vSphere Clientから、または<command>vmkiscsi-tool</command>コマンドを使用して設定できます。その後、vSphere iSCSIストレージアダプタを介してVMFSに接続されたストレージボリュームをフォーマットし、他のVMストレージデバイスと同じように使用できます。VMwareイニシエータも、高可用性のためにマルチパスI/Oをサポートしています。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.lrbd">
+  <title>lrbdに関する一般情報</title>
+
+  <para>
+   <systemitem>lrbd</systemitem>は、RADOS Block Deviceの利点とiSCSIのユビキタスな汎用性を組み合わせたものです。iSCSIターゲットホスト(<systemitem>lrbd</systemitem>ゲートウェイ)上で<systemitem>lrbd</systemitem>を使用することで、Cephクライアントプロトコルに対応していなくても、ブロックストレージを利用する必要があるすべてのアプリケーションがCephの利点を享受できます。代わりに、ユーザはiSCSIまたは他のターゲットフロントエンドプロトコルを使用してLIOターゲットに接続できます。これにより、そのターゲットがすべてのI/OをRBDストレージ操作に変換します。
+  </para>
+
+  <figure>
+   <title>1つのiSCSI Gatewayで構成されるCephクラスタ</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <systemitem>lrbd</systemitem>は本質的に高可用性であり、マルチパス操作をサポートしています。したがって、ダウンストリームのイニシエータホストは、複数のiSCSI Gatewayを使用して高可用性とスケーラビリティの両方を実現できます。複数のゲートウェイで構成されるiSCSI設定で通信する場合、イニシエータはiSCSI要求を複数のゲートウェイに負荷分散できます。ゲートウェイに障害が発生したり、一時的にアクセス不可能であったり、保守のために無効になっていたりする場合、I/Oは別のゲートウェイ経由で透過的に継続されます。
+  </para>
+
+  <figure>
+   <title>複数のiSCSI Gatewayで構成されるCephクラスタ</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.deploy">
+  <title>展開に関する考慮事項</title>
+
+  <para>
+   SUSE Enterprise Storageと<systemitem>lrbd</systemitem>の最小設定は以下のコンポーネントで構成されます。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Ceph Storage Cluster。Cephクラスタは、それぞれが8つ以上のOSD (オブジェクトストレージデーモン)をホストする少なくとも4台の物理サーバで構成されます。このような設定では、3つのOSDノードがモニタ(MON)ホストとしての役割も持ちます。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     LIO iSCSIターゲットを実行する1つのiSCSIターゲットサーバ。<systemitem>lrbd</systemitem>で設定します。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     1つのiSCSIイニシエータホスト。<systemitem>open-iscsi</systemitem> (Linux)、Microsoft iSCSIイニシエーター(Microsoft Windows)、または互換性があるその他のiSCSIイニシエータ実装を実行します。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   SUSE Enterprise Storageと<systemitem>lrbd</systemitem>の推奨運用設定は以下で構成されます。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Ceph Storage Cluster。運用Cephクラスタは任意の数(通常は11以上)のOSDノードで構成されます。一般的にはそれぞれが10～12のOSD (オブジェクトストレージデーモン)を実行し、少なくとも3つの専用のMONホストを持ちます。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     LIO iSCSIターゲットを実行する複数のiSCSIターゲットサーバ。<systemitem>lrbd</systemitem>で設定します。iSCSIのフェールオーバーと負荷分散を行うには、これらのサーバで、<systemitem>target_core_rbd</systemitem>モジュールをサポートするカーネルを実行する必要があります。更新パッケージはSUSE Linux Enterprise Server保守チャネルから入手できます。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     任意の数のiSCSIイニシエータホスト。<systemitem>open-iscsi</systemitem> (Linux)、Microsoft iSCSIイニシエーター(Microsoft Windows)、または互換性があるその他のiSCSIイニシエータ実装を実行します。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.install">
+  <title>インストールと環境設定</title>
+
+  <para>
+   このセクションでは、SUSE Enterprise StorageにiSCSI Gatewayをインストールして設定する手順について説明します。
+  </para>
+
+  <sect2>
+   <title>CephクラスタへのiSCSI Gatewayの展開</title>
+   <para>
+    iSCSI Gatewayは、Cephクラスタの展開プロセス中に展開することも、DeepSeaを使用して既存のクラスタに追加することもできます。
+   </para>
+   <para>
+    クラスタ展開プロセス中にiSCSI Gatewayを組み込むには、<xref linkend="policy.role.assignment"/>を参照してください。
+   </para>
+   <para>
+    iSCSI Gatewayを既存のクラスタに追加するには、<xref linkend="salt.adding.services"/>を参照してください。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>RBDイメージの作成</title>
+   <para>
+    RBDイメージはCephストア内に作成され、その後iSCSIにエクスポートされます。この目的のため、専用のRADOSプールを使用することをお勧めします。Ceph <command>rbd</command>コマンドラインユーティリティを使用してStorage Clusterに接続できる任意のホストからボリュームを作成できます。このためには、クライアントが少なくとも最小限のceph.conf configurationファイルとCephX認証資格情報を持っている必要があります。
+   </para>
+   <para>
+    以降iSCSI経由でエクスポートするために新しいボリュームを作成するには、<command>rbd create</command>コマンドを使用して、ボリュームサイズをメガバイト単位で指定します。たとえば、<literal>iscsi</literal>という名前のプールに<literal>testvol</literal>という名前の100GBのボリュームを作成するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>root # </prompt>rbd --pool iscsi create --size=102400 testvol</screen>
+   <para>
+    上のコマンドは、デフォルトのフォーマット2でRBDボリュームを作成します。
+   </para>
+   <note>
+    <para>
+     SUSE Enterprise Storage 3より、デフォルトのボリュームフォーマットは2になり、フォーマット1は非推奨になっています。ただし、<option>--image-format 1</option>オプションを使用すると、引き続き非推奨のフォーマット1のボリュームを作成できます。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.rbd.export">
+   <title>iSCSI経由でのRBDイメージのエクスポート</title>
+   <para>
+    iSCSI経由でRBDイメージをエクスポートするには、<systemitem>lrbd</systemitem>ユーティリティを使用します。<systemitem>lrbd</systemitem>では、iSCSIターゲット設定(JSONフォーマット)を作成、確認、および変更できます。
+   </para>
+   <tip>
+    <title>openATTICへの変更のインポート</title>
+    <para>
+     <command>lrbd</command>コマンドを使用してiSCSI Gateway設定に加えた変更は、DeepSeaとopenATTICでは参照できません。手動による変更をインポートするには、iSCSI Gateway設定をファイルにエクスポートする必要があります。
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>lrbd -o /tmp/lrbd.conf
+</screen>
+    <para>
+     その後、ファイルをSalt Masterにコピーして、DeepSeaとopenATTICが参照できるようにします。
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>scp /tmp/lrbd.conf ses5master:/srv/salt/ceph/igw/cache/lrbd.conf
+</screen>
+    <para>
+     最後に、<filename>/srv/pillar/ceph/stack/global.yml</filename>を編集して以下を設定します。
+    </para>
+<screen>
+igw_config: default-ui
+</screen>
+   </tip>
+   <para>
+    設定を編集するには、<command>lrbd -e</command>または<command>lrbd --edit</command>を使用します。このコマンドは、<literal>EDITOR</literal>環境変数で定義されたデフォルトのエディタを起動します。<option>-e</option>に加えて<option>-E</option>オプションも設定することで、この動作を上書きできます。
+   </para>
+   <para>
+    以下に設定例を示します。条件は次のとおりです。
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <literal>iscsi1.example.com</literal>および<literal>iscsi2.example.com</literal>という名前の2つのiSCSI Gatewayホスト
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      IQN (iSCSI修飾名) <literal>iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol</literal>を持つ1つのiSCSIターゲットを定義する
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      1つのiSCSI LU (論理ユニット)を持つ
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      RADOSプール<literal>rbd</literal>で<literal>testvol</literal>という名前のRBDイメージを利用する
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      「east」および「west」という名前の2つのポータル経由でターゲットをエクスポートする
+     </para>
+    </listitem>
+   </itemizedlist>
+<screen>{
+    "auth": [
+        {
+            "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol",
+            "authentication": "none"
+        }
+    ],
+    "targets": [
+        {
+            "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol",
+            "hosts": [
+                {
+                    "host": "iscsi1.example.com",
+                    "portal": "east"
+                },
+                {
+                    "host": "iscsi2.example.com",
+                    "portal": "west"
+                }
+            ]
+        }
+    ],
+    "portals": [
+        {
+            "name": "east",
+            "addresses": [
+                "192.168.124.104"
+            ]
+        },
+        {
+            "name": "west",
+            "addresses": [
+                "192.168.124.105"
+            ]
+        }
+    ],
+    "pools": [
+        {
+            "pool": "rbd",
+            "gateways": [
+                {
+                    "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol",
+                    "tpg": [
+                        {
+                            "image": "testvol"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+    }</screen>
+   <para>
+    設定でホスト名を参照する場合、そのホスト名がiSCSI Gatewayの<command>uname -n</command>コマンドの出力に一致している必要があることに注意してください。
+   </para>
+   <para>
+    編集したJSONは、プールあたり1つのRADOSオブジェクトの拡張属性(xattr)に保存されます。このオブジェクトは、JSONを編集したゲートウェイホストのほか、同じCephクラスタに接続しているすべてのゲートウェイホストで利用できます。<systemitem>lrbd</systemitem>ゲートウェイにローカルに保存される設定情報はありません。
+   </para>
+   <para>
+    設定を有効にするには、Cephクラスタ内に保存して、以下のいずれかを(<systemitem class="username">root</systemitem>として)実行します。
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      コマンドラインから<command>lrbd</command>コマンドを実行する(追加オプションは指定しない)
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    または
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <command>service lrbd restart</command>を使用して<systemitem>lrbd</systemitem>サービスを再起動する
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    <systemitem>lrbd</systemitem>「サービス」はバックグラウンドデーモンを一切操作しません。代わりに、<command>lrbd</command>コマンドを起動します。このタイプのサービスを「ワンショット」サービスと呼びます。
+   </para>
+   <para>
+    また、システム起動時の<systemitem>lrbd</systemitem>の自動設定を有効にする必要もあります。そのためには、<command>systemctl enable lrbd</command>コマンドを実行します。
+   </para>
+   <para>
+    上の設定は、ゲートウェイが1つのシンプルなセットアップを反映しています。<systemitem>lrbd</systemitem>の設定をさらに複雑化および強化できます。<systemitem>lrbd</systemitem> RPMパッケージには幅広い設定例が付属しています。これらを参照するには、インストール後に<filename>/usr/share/doc/packages/lrbd/samples</filename>ディレクトリの内容を確認します。これらのサンプルは<link xlink:href="https://github.com/SUSE/lrbd/tree/master/samples"/>からも入手できます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.rbd.optional">
+   <title>オプション設定</title>
+   <para>
+    環境によっては以下の設定が役立つ場合があります。イメージ用としては、<option>uuid</option>、<option>lun</option>、<option>retries</option>、<option>sleep</option>、および<option>retry_errors</option>の属性があります。最初の2つ(<option>uuid</option>および<option>lun</option>)では、特定のイメージの「uuid」または「lun」をハードコーディングできます。1つのイメージに対していずれか1つを指定できます。<option>retries</option>、<option>sleep</option>、および<option>retry_errors</option>は、rbdイメージのマップ試行を制御します。
+   </para>
+<screen>"pools": [
+    {
+        "pool": "rbd",
+        "gateways": [
+        {
+        "host": "igw1",
+        "tpg": [
+                    {
+                        "image": "archive",
+                        "uuid": "12345678-abcd-9012-efab-345678901234",
+                        "lun": "2",
+                        "retries": "3",
+                        "sleep": "4",
+                        "retry_errors": [ 95 ],
+                        [...]
+                    }
+                ]
+            }
+        ]
+    }
+]</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.rbd.advanced">
+   <title>詳細設定</title>
+   <para>
+    高度なパラメータを使用して<systemitem>lrbd</systemitem>を設定し、設定したパラメータをその後LIO I/Oターゲットに渡すことができます。パラメータはiSCSIコンポーネントとバッキングストアコンポーネントに分かれており、それぞれ<systemitem>lrbd</systemitem>設定の「targets」セクションと「tpg」セクションで指定できます。
+   </para>
+   <warning>
+    <para>
+     これらのパラメータをデフォルト設定から変更することは推奨しません。
+    </para>
+   </warning>
+<screen>"targets": [
+    {
+        [...]
+        "tpg_default_cmdsn_depth": "64",
+        "tpg_default_erl": "0",
+        "tpg_login_timeout": "10",
+        "tpg_netif_timeout": "2",
+        "tpg_prod_mode_write_protect": "0",
+    }
+]</screen>
+   <para>
+    次に各オプションについて説明します。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>tpg_default_cmdsn_depth</term>
+     <listitem>
+      <para>
+       CmdSN (コマンドシーケンス番号)のデフォルトの深さ。特定の時点でiSCSIイニシエータが未処理の状態にしておくことができる要求の量を制限します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_default_erl</term>
+     <listitem>
+      <para>
+       デフォルトのエラー回復レベル。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_login_timeout</term>
+     <listitem>
+      <para>
+       ログインタイムアウトの値(秒)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_netif_timeout</term>
+     <listitem>
+      <para>
+       NICの障害タイムアウト(秒)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_prod_mode_write_protect</term>
+     <listitem>
+      <para>
+       1に設定すると、LUNへの書き込みを防止します。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+<screen>"pools": [
+    {
+        "pool": "rbd",
+        "gateways": [
+        {
+        "host": "igw1",
+        "tpg": [
+                    {
+                        "image": "archive",
+                        "backstore_block_size": "512",
+                        "backstore_emulate_3pc": "1",
+                        "backstore_emulate_caw": "1",
+                        "backstore_emulate_dpo": "0",
+                        "backstore_emulate_fua_read": "0",
+                        "backstore_emulate_fua_write": "1",
+                        "backstore_emulate_model_alias": "0",
+                        "backstore_emulate_rest_reord": "0",
+                        "backstore_emulate_tas": "1",
+                        "backstore_emulate_tpu": "0",
+                        "backstore_emulate_tpws": "0",
+                        "backstore_emulate_ua_intlck_ctrl": "0",
+                        "backstore_emulate_write_cache": "0",
+                        "backstore_enforce_pr_isids": "1",
+                        "backstore_fabric_max_sectors": "8192",
+                        "backstore_hw_block_size": "512",
+                        "backstore_hw_max_sectors": "8192",
+                        "backstore_hw_pi_prot_type": "0",
+                        "backstore_hw_queue_depth": "128",
+                        "backstore_is_nonrot": "1",
+                        "backstore_max_unmap_block_desc_count": "1",
+                        "backstore_max_unmap_lba_count": "8192",
+                        "backstore_max_write_same_len": "65535",
+                        "backstore_optimal_sectors": "8192",
+                        "backstore_pi_prot_format": "0",
+                        "backstore_pi_prot_type": "0",
+                        "backstore_queue_depth": "128",
+                        "backstore_unmap_granularity": "8192",
+                        "backstore_unmap_granularity_alignment": "4194304"
+                    }
+                ]
+            }
+        ]
+    }
+]</screen>
+   <para>
+    次に各オプションについて説明します。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>backstore_block_size</term>
+     <listitem>
+      <para>
+       基礎となるデバイスのブロックサイズ。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_3pc</term>
+     <listitem>
+      <para>
+       1に設定すると、サードパーティコピーが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_caw</term>
+     <listitem>
+      <para>
+       1に設定すると、Compare and Writeが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_dpo</term>
+     <listitem>
+      <para>
+       1に設定すると、Disable Page Outがオンになります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_fua_read</term>
+     <listitem>
+      <para>
+       1に設定すると、Force Unit Access読み込みが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_fua_write</term>
+     <listitem>
+      <para>
+       1に設定すると、Force Unit Access書き込みが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_model_alias</term>
+     <listitem>
+      <para>
+       1に設定すると、モデルのエイリアスに対してバックエンドデバイス名が使用されます。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_rest_reord</term>
+     <listitem>
+      <para>
+       0に設定すると、Queue Algorithm ModifierにRestricted Reorderingが設定されます。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_tas</term>
+     <listitem>
+      <para>
+       1に設定すると、Task Aborted状態が有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_tpu</term>
+     <listitem>
+      <para>
+       1に設定すると、Thin Provisioning Unmapが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_tpws</term>
+     <listitem>
+      <para>
+       1に設定すると、Thin Provisioning Write Sameが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_ua_intlck_ctrl</term>
+     <listitem>
+      <para>
+       1に設定すると、Unit Attention Interlockが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_write_cache</term>
+     <listitem>
+      <para>
+       1に設定すると、Write Cache Enableが有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_enforce_pr_isids</term>
+     <listitem>
+      <para>
+       1に設定すると、永続的な予約のISIDが強制されます。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_fabric_max_sectors</term>
+     <listitem>
+      <para>
+       ファブリックが一度に転送できる最大セクタ数。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_block_size</term>
+     <listitem>
+      <para>
+       ハードウェアのブロックサイズ(バイト単位)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_max_sectors</term>
+     <listitem>
+      <para>
+       ハードウェアが一度に転送できる最大セクタ数。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_pi_prot_type</term>
+     <listitem>
+      <para>
+       ゼロ以外の場合、基礎となるハードウェアでDIF保護が有効になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_queue_depth</term>
+     <listitem>
+      <para>
+       ハードウェアのキューの深さ。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_is_nonrot</term>
+     <listitem>
+      <para>
+       1に設定すると、バックストアは非ローテーションデバイスになります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_max_unmap_block_desc_count</term>
+     <listitem>
+      <para>
+       UNMAPのブロック記述子の最大数。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_max_unmap_lba_count</term>
+     <listitem>
+      <para>
+       UNMAPのLBAの最大数。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_max_write_same_len</term>
+     <listitem>
+      <para>
+       WRITE_SAMEの最大長。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_optimal_sectors</term>
+     <listitem>
+      <para>
+       最適な要求サイズ(セクタ単位)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_pi_prot_format</term>
+     <listitem>
+      <para>
+       DIF保護フォーマット。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_pi_prot_type</term>
+     <listitem>
+      <para>
+       DIF保護タイプ。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_queue_depth</term>
+     <listitem>
+      <para>
+       キューの深さ。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_unmap_granularity</term>
+     <listitem>
+      <para>
+       UNMAPの細分性。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_unmap_granularity_alignment</term>
+     <listitem>
+      <para>
+       UNMAPの細分性の配置。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    ターゲットについては、<option>tpg</option>属性でカーネルパラメータを調整できます。注意して使用してください。
+   </para>
+<screen>"targets": [
+{
+    "host": "igw1",
+    "target": "iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk",
+    "tpg_default_cmdsn_depth": "64",
+    "tpg_default_erl": "0",
+    "tpg_login_timeout": "10",
+    "tpg_netif_timeout": "2",
+    "tpg_prod_mode_write_protect": "0",
+    "tpg_t10_pi": "0"
+}</screen>
+   <tip>
+    <para>
+     静的に割り当てられたLUNをサイトが必要な場合、各LUNに番号を割り当てます。
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="iscsi.tcmu">
+  <title><systemitem>tcmu-runner</systemitem>を使用したRADOS Block Deviceイメージのエクスポート</title>
+
+  <para>
+   バージョン5から、SUSE Enterprise Storageにはユーザ空間のRBDバックエンド<systemitem>tcmu-runner</systemitem>が付属しています(詳細については、<command>man 8 tcmu-runner</command>を参照してください)。
+  </para>
+
+  <warning>
+   <title>技術プレビュー</title>
+   <para>
+    <systemitem>tcmu-runner</systemitem>ベースのiSCSI Gatewayの展開は現在のところ技術プレビューです。<systemitem>lrbd</systemitem>を使用したカーネルベースのiSCSI Gatewayの展開方法については、<xref linkend="cha.ceph.as.iscsi"/>を参照してください。
+   </para>
+  </warning>
+
+  <para>
+   カーネルベースの<systemitem>lrbd</systemitem>のiSCSI Gatewayの展開と異なり、<systemitem>tcmu-runner</systemitem>ベースのiSCSI Gatewayの展開では、マルチパスI/OやSCSIの永続的な予約はサポートされません。
+  </para>
+
+  <para>
+   DeepSeaおよびopenATTICは現在のところ<systemitem>tcmu-runner</systemitem>による展開をサポートしていないため、インストール、展開、およびモニタリングは手動で管理する必要があります。
+  </para>
+
+  <sect2 xml:id="iscsi.tcmu.install">
+   <title>インストール</title>
+   <para>
+    iSCSI Gatewayノードで、SUSE Enterprise Storage 5のメディアから<systemitem>tcmu-runner-handler-rbd</systemitem>パッケージを、パッケージ依存関係<systemitem>libtcmu1</systemitem>および<systemitem>tcmu-runner</systemitem>と共にインストールします。設定のために<systemitem>targetcli-fb</systemitem>パッケージをインストールします。<systemitem>targetcli-fb</systemitem>パッケージは、<systemitem>targetcli</systemitem>パッケージの「non-fb」バージョンとは互換性がないことに注意してください。
+   </para>
+   <para>
+    <systemitem>tcmu-runner</systemitem> <systemitem class="daemon">systemd</systemitem>サービスが実行されていることを確認します。
+   </para>
+<screen><prompt>root # </prompt>systemctl enable tcmu-runner
+tcmu-gw:~ # systemctl status tcmu-runner
+● tcmu-runner.service - LIO Userspace-passthrough daemon
+  Loaded: loaded (/usr/lib/systemd/system/tcmu-runner.service; static; vendor
+  preset: disabled)
+    Active: active (running) since ...</screen>
+  </sect2>
+
+  <sect2 xml:id="iscsi.tcmu.depl">
+   <title>設定と展開</title>
+   <para>
+    既存のCephクラスタ上にRADOS Block Deviceイメージを作成します。次の例では、「rbd」プールにある「tcmu-lu」という名前の10Gのイメージを使用します。
+   </para>
+   <para>
+    RADOS Block Deviceイメージを作成した後、<command>targetcli</command>を実行して、tcmu-runner RBDハンドラ(プラグイン)が利用可能であることを確認します。
+   </para>
+<screen><prompt>root # </prompt>targetcli
+targetcli shell version 2.1.fb46
+Copyright 2011-2013 by Datera, Inc and others.
+For help on commands, type 'help'.
+
+/&gt; ls
+o- / ................................... [...]
+  o- backstores ........................ [...]
+...
+  | o- user:rbd ......... [Storage Objects: 0]</screen>
+   <para>
+    RBDイメージのバックストア設定エントリを作成します。
+   </para>
+<screen>/&gt; cd backstores/user:rbd
+/backstores/user:rbd&gt; create tcmu-lu 10G /rbd/tcmu-lu
+Created user-backed storage object tcmu-lu size 10737418240.</screen>
+   <para>
+    iSCSIトランスポート設定エントリを作成します。次の例では、<command>targetcli</command>によってターゲットIQN「iqn.2003-01.org.linux-iscsi.tcmu-gw.x8664:sn.cb3d2a3a」が自動的に生成され、固有のiSCSIターゲットIDとして使用できるようになります。
+   </para>
+<screen>/backstores/user:rbd&gt; cd /iscsi
+/iscsi&gt; create
+Created target iqn.2003-01.org.linux-iscsi.tcmu-gw.x8664:sn.cb3d2a3a.
+Created TPG 1.
+Global pref auto_add_default_portal=true
+Created default portal listening on all IPs (0.0.0.0), port 3260.</screen>
+   <para>
+    ターゲットに接続するiSCSIイニシエータのACLエントリを作成します。次の例では、イニシエータIQN「iqn.1998-01.com.vmware:esxi-872c4888」が使用されています。
+   </para>
+<screen>/iscsi&gt; cd
+iqn.2003-01.org.linux-iscsi.tcmu-gw.x8664:sn.cb3d2a3a/tpg1/acls/
+/iscsi/iqn.20...a3a/tpg1/acls&gt; create iqn.1998-01.com.vmware:esxi-872c4888</screen>
+   <para>
+    最後に、前に作成したRBDバックストア設定をiSCSIターゲットにリンクします。
+   </para>
+<screen>/iscsi/iqn.20...a3a/tpg1/acls&gt; cd ../luns
+/iscsi/iqn.20...a3a/tpg1/luns&gt; create /backstores/user:rbd/tcmu-lu
+Created LUN 0.
+Created LUN 0-&gt;0 mapping in node ACL iqn.1998-01.com.vmware:esxi-872c4888</screen>
+   <para>
+    シェルを終了して既存の設定を保存します。
+   </para>
+<screen>/iscsi/iqn.20...a3a/tpg1/luns&gt; exit
+Global pref auto_save_on_exit=true
+Last 10 configs saved in /etc/target/backup.
+Configuration saved to /etc/target/saveconfig.json</screen>
+  </sect2>
+
+  <sect2 xml:id="iscsi.tcmu.use">
+   <title>使用法</title>
+   <para>
+    iSCSIイニシエータ(クライアント)ノードから、上で設定したIQNとホスト名を使用して、新しくプロビジョニングされたiSCSIターゲットに接続します。
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

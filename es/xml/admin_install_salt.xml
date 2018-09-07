@@ -1,0 +1,1087 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_install_salt.xml" version="5.0" xml:id="ceph.install.saltstack">
+ <title>Distribución con DeepSea/Salt</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>sí</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <note>
+  <title><command>ceph-deploy</command> se ha eliminado en SUSE Enterprise Storage 5</title>
+  <para>
+   La herramienta de distribución de clúster <command>ceph-deploy</command> quedó obsoleta en SUSE Enterprise Storage 4 y se ha eliminado por completo para sustituirse por DeepSea a partir de SUSE Enterprise Storage 5.
+  </para>
+ </note>
+ <para>
+  La combinación de Salt y DeepSea es una <emphasis>pila</emphasis> de componentes que ayudan a distribuir y gestionar la infraestructura de servidor. Tiene mucha capacidad de ampliación, es rápida y es relativamente fácil de poner en ejecución. Lea las consideraciones siguientes antes de empezar a distribuir el clúster con Salt:
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    Los <emphasis>minions de Salt</emphasis> son los nodos que se controlan mediante un nodo dedicado denominado master de Salt. Los minions de Salt tienen funciones, por ejemplo Ceph OSD, Ceph Monitor, Ceph Manager, Object Gateway, iSCSI Gateway o NFS Ganesha.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Un master de Salt ejecuta su propio minion de Salt. Esto es necesario para ejecutar tareas con privilegios, como la creación, autorización y copia de claves en minions, de forma que los minions remotos nunca tengan que ejecutar tareas con privilegios.
+   </para>
+   <tip>
+    <title>uso compartido de varias funciones por servidor</title>
+    <para>
+     Conseguirá el mejor rendimiento del clúster de Ceph si cada función se distribuye en un nodo independiente. Pero las distribuciones reales requieren en ocasiones que se comparta un nodo para varias funciones. Para evitar problemas de rendimiento y en el procedimiento de actualización, no distribuya las funciones de Ceph OSD, servidor de metadatos o Ceph Monitor al master de Salt.
+    </para>
+   </tip>
+  </listitem>
+  <listitem>
+   <para>
+    Los minions de Salt deben resolver correctamente el nombre de host del master de Salt en la red. Por defecto, buscan el nombre de host <systemitem>salt</systemitem>, pero puede especificar cualquier otro nombre de host al que se pueda acceder por la red en el archivo <filename>/etc/salt/minion</filename>, consulte la <xref linkend="ceph.install.stack"/>.
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="cha.ceph.install.relnotes">
+  <title>Lectura de las notas de la versión</title>
+
+  <para>
+   En las notas de la versión puede encontrar información adicional sobre los cambios realizados desde la versión previa de SUSE Enterprise Storage. Consulte las notas de versión para comprobar lo siguiente:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     si el hardware necesita consideraciones especiales,
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     si los paquetes de software usados han cambiado de forma significativa,
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     si es necesario tomar precauciones especiales para la instalación.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Las notas de la versión también proporcionan información que no pudo publicarse en el manual a tiempo y notas acerca de problemas conocidos.
+  </para>
+
+  <para>
+   Después de instalar el paquete <package>release-notes-ses</package>, encontrará las notas de la versión en el directorio <filename>/usr/share/doc/release-notes</filename> o en línea en <link xlink:href="https://www.suse.com/releasenotes/"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="deepsea.description">
+  <title>Introducción a DeepSea</title>
+
+  <para>
+   El objetivo de DeepSea es ahorrar tiempo al administrador y llevar a cabo operaciones complejas en un clúster de Ceph con toda confianza.
+  </para>
+
+  <para>
+   Ceph es una solución de software muy configurable. Aumenta tanto la libertad como la responsabilidad de los administradores del sistema.
+  </para>
+
+  <para>
+   La configuración mínima de Ceph es adecuada con propósitos de demostración, pero no muestra las funciones más útiles de Ceph que se pueden disfrutar si hay un gran número de nodos.
+  </para>
+
+  <para>
+   DeepSea recopila y almacena datos acerca de servidores individuales, como las direcciones y los nombres de dispositivo. Para un sistema de almacenamiento distribuido como Ceph, puede haber cientos de esos elementos para recopilar y almacenar. Recopilar la información e introducir los datos manualmente en una herramienta de gestión de configuraciones es una labor tremendamente laboriosa y propensa a errores.
+  </para>
+
+  <para>
+   Los pasos necesarios para preparar los servidores, recopilar la configuración y configurar y distribuir Ceph son prácticamente los mismos. Sin embargo, eso no soluciona la gestión de funciones independientes. En las operaciones del día a día, es fundamental contar con la capacidad de añadir hardware fácilmente a una función determinada y eliminarlo sin problemas.
+  </para>
+
+  <para>
+   DeepSea resuelve este asunto con la estrategia siguiente: consolida las decisiones del administrador en un único archivo. Las decisiones incluyen la asignación del clúster, la asignación de la función y la asignación del perfil. Y DeepSea recopila cada conjunto de tareas en un único objetivo. Cada objetivo es una <emphasis>fase</emphasis>:
+  </para>
+
+  <itemizedlist xml:id="deepsea.stage.description">
+   <title>Descripción de las fases de DeepSea</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">Fase 0</emphasis>: la <emphasis role="bold">preparación.</emphasis> Durante esta fase se aplican todas las actualizaciones necesarias y puede que el sistema se rearranque.
+    </para>
+    <important>
+     <title>vuelva a ejecutar la fase 0 siempre que se rearranque el master de Salt</title>
+     <para>
+      Si durante la fase 0, el master de Salt se rearranca para cargar la nueva versión del kernel, debe volver a ejecutar la fase 0; de lo contrario, no se asignará un destino a los minions.
+     </para>
+    </important>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Fase 1</emphasis>: el <emphasis role="bold">descubrimiento.</emphasis> Aquí se detecta todo el hardware del clúster y se recopila la información necesaria para la configuración de Ceph. Para obtener detalles sobre la configuración, consulte la <xref linkend="deepsea.pillar.salt.configuration"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Fase 2</emphasis>: la <emphasis role="bold">configuración.</emphasis> Debe preparar los datos de la configuración con un formato concreto.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Fase 3</emphasis>: la <emphasis role="bold">distribución.</emphasis> Se crea un clúster de Ceph básico con los servicios de Ceph obligatorios. Consulte una lista en la <xref linkend="storage.intro.core.nodes"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Fase 4</emphasis>: los <emphasis role="bold">servicios.</emphasis> Las funciones adicionales de Ceph, como iSCSI Object Gateway y CephFS, se pueden instalar en esta fase. Todos son opcionales.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Fase 5</emphasis>: la etapa de eliminación. Esta fase no es obligatoria y durante la configuración inicial no suele ser necesaria. En esta fase, se eliminan las funciones de los minions y la configuración del clúster. Debe ejecutar esta fase si necesita eliminar un nodo de almacenamiento del clúster. Para obtener información detallada, consulte el <xref linkend="salt.node.removing"/>.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Encontrará una introducción más detallada sobre DeepSea en <link xlink:href="https://github.com/suse/deepsea/wiki"/>.
+  </para>
+
+  <sect2 xml:id="deepsea.organisation.locations">
+   <title>Organización y ubicaciones importantes</title>
+   <para>
+    Salt tiene algunas ubicaciones estándar y varias convenciones de denominación que se emplean en el nodo máster:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><filename>/srv/pillar</filename>
+     </term>
+     <listitem>
+      <para>
+       En este directorio se almacenan datos de configuración para los minions del clúster. <emphasis>Pillar</emphasis> es una interfaz que proporciona valores de configuración globales para todos los minions del clúster.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/</filename>
+     </term>
+     <listitem>
+      <para>
+       En este directorio se almacenan archivos de estado de Salt (también denominados archivos <emphasis>sls</emphasis>). Los archivos de estado son descripciones con formato de los estados en los que debe estar el clúster. Para obtener más información, consulte la <link xlink:href="https://docs.saltstack.com/en/latest/topics/tutorials/starting_states.html">documentación de Salt</link>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/module/runners</filename>
+     </term>
+     <listitem>
+      <para>
+       En este directorio se almacenan los guiones Python conocidos como runners. Los runners se ejecutan en el nodo master.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/_modules</filename>
+     </term>
+     <listitem>
+      <para>
+       En este directorio se almacenan los guiones Python denominados módulos. Los módulos se aplican a todos los minions del clúster.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/pillar/ceph</filename>
+     </term>
+     <listitem>
+      <para>
+       Este directorio lo utiliza DeepSea para guardar los datos de configuración recopilados.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/ceph</filename>
+     </term>
+     <listitem>
+      <para>
+       En este directorio usado por DeepSea se almacenan archivos sls que pueden tener distintos formatos. Todos los subdirectorios contienen archivos sls, pero cada subdirectorio contiene solo un tipo de archivo sls. Por ejemplo, <filename>/srv/salt/ceph/stage</filename> contiene archivos de organización que se ejecutan mediante <command>salt-run state.orchestrate</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ds.minion.targeting">
+   <title>Asignación de destino de los minions</title>
+   <para>
+    Los comandos de DeepSea se ejecutan a través de la infraestructura de Salt. Cuando se utiliza el comando <command>salt</command>, es preciso especificar un conjunto de minions de Salt a los que afectará el comando. El conjunto de minions se describe como un <emphasis>target</emphasis> (destino) para el comando <command>Salt</command>. En las secciones siguientes se describen métodos posibles para asignar el destino de los minions.
+   </para>
+   <sect3 xml:id="ds.minion.targeting.name">
+    <title>Coincidencia del nombre del minion</title>
+    <para>
+     Puede asignar destino para un minion o un grupo de minions haciendo coincidir sus nombres. El nombre de un minion suele ser el nombre de host corto del nodo donde se ejecuta el minion. Este método de asignación de destinos es general de Salt y no está relacionado con DeepSea. Es posible usar comodines, expresiones regulares o listas para limitar el rango de los nombres de minion. A continuación se muestra la sintaxis general:
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> example.module</screen>
+    <tip>
+     <title>clúster solo de Ceph</title>
+     <para>
+      Si todos los minions de Salt del entorno pertenecen al clúster de Ceph, puede sustituir con seguridad <replaceable>target</replaceable> por <literal>'*'</literal> para incluir <emphasis>todos</emphasis> los minions registrados.
+     </para>
+    </tip>
+    <para>
+     Para obtener todos los minions del dominio example.net (suponiendo que los nombres de los minions sean idénticos a sus nombres de host "completos"):
+    </para>
+<screen><prompt>root@master # </prompt>salt '*.example.net' test.ping</screen>
+    <para>
+     Para obtener los minions entre "web1" y "web5":
+    </para>
+<screen><prompt>root@master # </prompt>salt 'web[1-5]' test.ping</screen>
+    <para>
+     Para obtener los minions "web1 prod" y "web1-devel" con una expresión regular:
+    </para>
+<screen><prompt>root@master # </prompt>salt -E 'web1-(prod|devel)' test.ping</screen>
+    <para>
+     Para obtener una lista sencilla de minions:
+    </para>
+<screen><prompt>root@master # </prompt>salt -L 'web1,web2,web3' test.ping</screen>
+    <para>
+     Para obtener todos los minions del clúster:
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds.minion.targeting.grain">
+    <title>Asignación de destino con un grain "deepsea"</title>
+    <para>
+     En un entorno heterogéneo gestionado mediante Salt donde SUSE Enterprise Storage se distribuya en un subconjunto de nodos junto con otras soluciones de clúster, es buena idea "marcar" los minions relevantes aplicándoles un grain "deepsea". De este modo, puede asignar fácilmente minions de DeepSea en entornos donde sea difícil obtener los nombres de los minions haciéndolos coincidir.
+    </para>
+    <para>
+     Para aplicar el grain "deepsea" a un grupo de minions, ejecute:
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> grains.append deepsea default</screen>
+    <para>
+     Para eliminar el grain "deepsea" de un grupo de minions, ejecute:
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> grains.delval deepsea destructive=True</screen>
+    <para>
+     Después de aplicar el grain "deepsea" a los minions relevantes, puede asignarlos como destino de la siguiente forma:
+    </para>
+<screen><prompt>root@master # </prompt>salt -G 'deepsea:*' test.ping</screen>
+    <para>
+     El comando siguiente es equivalente:
+    </para>
+<screen><prompt>root@master # </prompt>salt -C 'G@deepsea:*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds.minion.targeting.dsminions">
+    <title>Definición de la opción <option>deepsea_minions</option></title>
+    <para>
+     En las distribuciones de DeepSea, es obligatorio definir el destino de la opción <option>deepsea_minions</option>. DeepSea lo usa para dar instrucciones a los minions durante la ejecución de las fases (consulte <xref linkend="deepsea.stage.description"/> para obtener más información).
+    </para>
+    <para>
+     Para definir o cambiar la opción <option>deepsea_minions</option>, edite el archivo <filename>/srv/pillar/ceph/deepsea_minions.sls</filename> en el master de Salt y añada o sustituya la línea siguiente:
+    </para>
+<screen>deepsea_minions: <replaceable>target</replaceable></screen>
+    <tip>
+     <title>destino <option>deepsea_minions</option></title>
+     <para>
+      Como <replaceable>target</replaceable> (destino) para la opción <option>deepsea_minions</option>, puede utilizar cualquier método: tanto <xref linkend="ds.minion.targeting.name" xrefstyle="select: title"/> como <xref linkend="ds.minion.targeting.grain" xrefstyle="select: title"/>.
+     </para>
+     <para>
+      Para obtener todos los minions de Salt del clúster:
+     </para>
+<screen>deepsea_minions: '*'</screen>
+     <para>
+      Para obtener todos los minions con el grain "deepsea":
+     </para>
+<screen>deepsea_minions: 'G@deepsea:*'</screen>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>Información adicional</title>
+    <para>
+     Puede utilizar métodos más avanzados para asignar destinos a los minions con la infraestructura de Salt. Consulte <link xlink:href="https://docs.saltstack.com/en/latest/topics/targeting/"/> para obtener una descripción de todas las técnicas de asignación de destinos.
+    </para>
+    <para>
+     Asimismo, la página man "deepsea minions" ofrece más detalles sobre la asignación de destinos de DeepSea (<command>man 7 deepsea_minions</command>).
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.install.stack">
+  <title>Distribución del clúster</title>
+
+  <para>
+   El proceso de distribución del clúster tiene varias fases. En primer lugar, debe preparar todos los nodos del clúster configurando Salt y, a continuación, distribuir y configurar Ceph.
+  </para>
+
+  <tip>
+   <title>distribución de nodos de monitor sin definir perfiles de OSD</title>
+   <para>
+    Si necesita omitir la definición de perfiles de OSD y distribuir primero los nodos de monitor, puede hacerlo definiendo la variable <option>DEV_ENV</option>. De esta forma puede distribuir monitores sin la presencia del directorio <filename>profile/</filename>, además de distribuir un clúster con al menos <emphasis>un</emphasis> nodo de almacenamiento, monitor y gestión.
+   </para>
+   <para>
+    Para definir la variable de entorno, puede habilitarla globalmente definiéndola en el archivo <filename>/srv/pillar/ceph/stack/global.yml</filename>, o bien definirla solo para la sesión actual de shell:
+   </para>
+<screen><prompt>root@master # </prompt>export DEV_ENV=true</screen>
+  </tip>
+
+  <para>
+   El siguiente procedimiento describe los detalles para preparar el clúster.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Instale y registre SUSE Linux Enterprise Server 12 SP3 junto con la extensión SUSE Enterprise Storage en cada nodo del clúster.
+    </para>
+   </step>
+   <step>
+    <para>
+     Verifique que los productos adecuados están instalados y registrados mostrando los repositorios de software existentes. La lista será similar a esta:
+    </para>
+<screen>
+ <prompt>root@minion &gt; </prompt>zypper lr -E
+#  | Alias   | Name                              | Enabled | GPG Check | Refresh
+---+---------+-----------------------------------+---------+-----------+--------
+ 4 | [...]   | SUSE-Enterprise-Storage-5-Pool    | Yes     | (r ) Yes  | No
+ 6 | [...]   | SUSE-Enterprise-Storage-5-Updates | Yes     | (r ) Yes  | Yes
+ 9 | [...]   | SLES12-SP3-Pool                   | Yes     | (r ) Yes  | No
+11 | [...]   | SLES12-SP3-Updates                | Yes     | (r ) Yes  | Yes
+</screen>
+   </step>
+   <step>
+    <para>
+     Configure los ajustes de red, incluida la resolución de nombre DNS adecuada en cada nodo. El master de Salt y todos los minions de Salt deben resolverse entre sí mediante sus nombres de host. Para obtener más información acerca de cómo configurar una red, consulte <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_basicnet_yast.html"/>. Para obtener más información sobre cómo configurar un servidor DNS, consulte <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/cha_dns.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configure, habilite e inicie el servidor de sincronización horaria NTP:
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable ntpd.service
+<prompt>root@master # </prompt>systemctl start ntpd.service</screen>
+    <para>
+     Encontrará más información sobre la configuración de NTP en <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_netz_xntp_yast.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Compruebe si se está ejecutando el servicio AppArmor e inhabilítelo en todos los nodos del clúster. Inicie el módulo AppArmor de YaST, seleccione <guimenu>Settings</guimenu> (Configuración) y desactive la casilla de verificación <guimenu>Enable Apparmor</guimenu> (Habilitar Apparmor). Confirme haciendo clic en <guimenu>Done</guimenu> (Terminado).
+    </para>
+    <para>
+     Tenga en cuenta que SUSE Enterprise Storage <emphasis>no</emphasis> funcionará si AppArmor está habilitado.
+    </para>
+   </step>
+   <step>
+    <para>
+     Instale los paquetes <literal>salt-master</literal> y <literal>salt-minion</literal> en el nodo master de Salt:
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master salt-minion</screen>
+    <para>
+     Compruebe que el servicio <systemitem>salt-master</systemitem> esté habilitado y se haya iniciado, y si no lo estuviera, habilítelo e inícielo:
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     Si va a utilizar un cortafuegos, asegúrese de que el nodo master de Salt tiene los puertos 4505 y 4506 abiertos para todos los nodos minion de Salt. Si los puertos están cerrados, puede abrirlos con el comando <command>yast2 firewall</command> permitiendo el servicio <guimenu>SaltStack</guimenu>.
+    </para>
+    <warning>
+     <title>las fases de DeepSea fallan con un cortafuegos</title>
+     <para>
+      Las fases de distribución de DeepSea fallan si el cortafuegos está activo (e incluso solo si está configurado). Para superar las fases correctamente, debe desactivar el cortafuegos ejecutando
+     </para>
+<screen>
+<prompt>root@master # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+     <para>
+      o definir el valor "False" (Falso) en la opción <option>FAIL_ON_WARNING</option> en <filename>/srv/pillar/ceph/stack/global.yml</filename>:
+     </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+    </warning>
+   </step>
+   <step>
+    <para>
+     Instale el paquete <literal>salt-minion</literal> en todos los nodos minion.
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+    <para>
+     Asegúrese de que el <emphasis>nombre completo</emphasis> de todos los demás nodos pueden resolver el nombre de cada nodo en la dirección IP pública.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configure todos los minions (incluido el minion master) para que se conecten con el principal. Si el nombre de host <literal>salt</literal> no puede acceder al master de Salt, edite el archivo <filename>/etc/salt/minion</filename> o cree un archivo nuevo <filename>/etc/salt/minion.d/master.conf</filename> con el siguiente contenido:
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     Si realiza cambios en los archivos de configuración mencionados anteriormente, reinicie el servicio Salt en todos los minions de Salt:
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Compruebe que el servicio <systemitem>salt-minion</systemitem> está habilitado e iniciado en todos los nodos. Habilítelo e inícielo si fuera necesario:
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl enable salt-minion.service
+<prompt>root@minion &gt; </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Verifique la huella digital de cada minion de Salt y acepte todas las claves salt del master de Salt si las huellas coinciden.
+    </para>
+    <para>
+     Para ver la huella digital de cada minion:
+    </para>
+<screen><prompt>root@minion &gt; </prompt>salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Después de recopilar las huellas digitales de todos los minions de Salt, muestre las huellas de todas las claves de minion no aceptadas del master de Salt:
+    </para>
+<screen><prompt>root@master # </prompt>salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Si la huella digital de los minions coinciden, acéptelas:
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     Verifique que las claves se han aceptado:
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step xml:id="deploy.wiping.disk">
+    <para>
+     Antes de distribuir SUSE Enterprise Storage, asegúrese de que todos los discos que se han utilizado como OSD por los clústeres anteriores están vacíos y sin particiones. Para ello, deberá borrar manualmente la tabla de particiones de todos los discos. No olvide sustituir la "X" con la letra de disco correcta:
+    </para>
+    <substeps>
+     <step>
+      <para>
+       Detenga todos los procesos que utilicen el disco específico.
+      </para>
+     </step>
+     <step>
+      <para>
+       Verifique si hay montada alguna partición del disco y, de ser así, desmóntela.
+      </para>
+     </step>
+     <step>
+      <para>
+       Si el disco está gestionado mediante LVM, desactive y suprima toda la infraestructura de LVM. Consulte <link xlink:href="https://www.suse.com/documentation/sles-12/stor_admin/data/cha_lvm.html"/> para obtener más información.
+      </para>
+     </step>
+     <step>
+      <para>
+       Si el disco es parte de MD RAID, desactive el dispositivo RAID. Consulte <link xlink:href="https://www.suse.com/documentation/sles-12/stor_admin/data/part_software_raid.html"/> para obtener más información.
+      </para>
+     </step>
+     <step>
+      <tip>
+       <title>rearranque del servidor</title>
+       <para>
+        Si recibe mensajes de error de tipo "la partición está en uso" o "el kernel no se puede actualizar con la nueva tabla de particiones" durante los pasos siguientes, rearranque el servidor.
+       </para>
+      </tip>
+      <para>
+       Limpie el principio de cada partición:
+      </para>
+<screen>for partition in /dev/sdX[0-9]*
+do
+  dd if=/dev/zero of=$partition bs=4096 count=1 oflag=direct
+done</screen>
+     </step>
+     <step>
+      <para>
+       Limpie la tabla de particiones:
+      </para>
+<screen>sgdisk -Z --clear -g /dev/sdX</screen>
+     </step>
+     <step>
+      <para>
+       Limpie las tablas de particiones de copia de seguridad:
+      </para>
+<screen>size=`blockdev --getsz /dev/sdX`
+position=$((size/4096 - 33))
+dd if=/dev/zero of=/dev/sdX bs=4M count=33 seek=$position oflag=direct</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     Instale DeepSea en el nodo master de Salt:
+    </para>
+<screen><prompt>root@master # </prompt>zypper in deepsea</screen>
+   </step>
+   <step>
+    <para>
+     Compruebe que el archivo <filename>/srv/pillar/ceph/master_minion.sls</filename> del master de Salt apunta a su master de Salt. Si es posible acceder a su master de Salt a través de otros nombres de host, utilice el adecuado para el clúster de almacenamiento. Si ha utilizado el nombre de host por defecto para el master de Salt (<emphasis>salt</emphasis>) en el dominio <emphasis>ses</emphasis>, el archivo tiene el aspecto siguiente:
+    </para>
+<screen>master_minion: salt.ses</screen>
+   </step>
+  </procedure>
+
+  <para>
+   Ahora, distribuya y configure Ceph. A menos que se especifique lo contrario, todos los pasos son obligatorios.
+  </para>
+
+  <note>
+   <title>convenciones de comandos de salt</title>
+   <para>
+    Existen dos maneras posibles de ejecutar <command>salt-run state.orch</command>: una es con <literal>stage.&lt;número de fase&gt;</literal>, la otra es con el nombre de la fase. Ambas notaciones tienen el mismo efecto y elegir un comando u otro es puramente preferencial.
+   </para>
+  </note>
+
+  <procedure xml:id="ds.depl.stages">
+   <title>Ejecución de fases de distribución</title>
+   <step>
+    <para>
+     Incluya los minions de Salt que pertenezcan al clúster de Ceph que va a distribuir. Consulte la <xref linkend="ds.minion.targeting.name"/> para obtener más información sobre cómo asignar destinos a los minions.
+    </para>
+   </step>
+   <step>
+    <para>
+     Prepare el clúster. Consulte <xref linkend="deepsea.stage.description"/> para obtener más información.
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    <para>
+     O bien
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.prep</screen>
+    <note>
+     <title>ejecución o supervisión de fases mediante la interfaz de línea de comandos de DeepSea</title>
+     <para>
+      Con la interfaz de línea de comandos de DeepSea puede realizar un seguimiento en tiempo real del progreso de la ejecución de las fases, ya sea ejecutando la interfaz en modo de supervisión, o bien ejecutando las fases directamente a través de dicha interfaz. Para obtener información detallada, consulte la <xref linkend="deepsea.cli"/>.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     <emphasis>Opcional:</emphasis> cree subvolúmenes de Btrfs para <filename>/var/lib/ceph/</filename>. Este paso solo se debe ejecutar antes de que se hayan ejecutado las fases siguientes de DeepSea. Para migrar los directorios existentes, o para obtener más información, consulte el <xref linkend="storage.tips.ceph_btrfs_subvol"/>.
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.migrate.subvolume</screen>
+   </step>
+   <step>
+    <para>
+     La fase de descubrimiento recopila datos de todos los minions y crea fragmentos de configuración que se almacenan en el directorio <filename>/srv/pillar/ceph/proposals</filename>. Los datos se almacenan en formato de YAML en archivos *.sls o *.yml.
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.1</screen>
+    <para>
+     O bien
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.discovery</screen>
+   </step>
+   <step>
+    <para>
+     Después de que el comando anterior finalice correctamente, cree un archivo <filename>policy.cfg</filename> en <filename>/srv/pillar/ceph/proposals</filename>. Para obtener información detallada, consulte la <xref linkend="policy.configuration"/>.
+    </para>
+    <tip>
+     <para>
+      Si necesita cambiar la configuración de red del clúster, edite <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename> y ajuste las líneas que comienzan con <literal>cluster_network:</literal> y <literal>public_network:</literal>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     La fase de configuración analiza el archivo <filename>policy.cfg</filename> y combina los archivos incluidos en su formato final. El contenido relacionado con el clúster y la función se coloca en <filename>/srv/pillar/ceph/cluster</filename>, mientras que el contenido específico de Ceph se guarda en <filename>/srv/pillar/ceph/stack/default</filename>.
+    </para>
+    <para>
+     Ejecute el comando siguiente para activar la fase de configuración:
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+    <para>
+     O bien
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.configure</screen>
+    <para>
+     El paso de configuración puede tardar varios segundos. Cuando finalice el comando, podrá ver los datos de Pillar de los minions especificados (por ejemplo, <literal>ceph_minion1</literal>, <literal>ceph_minion2</literal>, etc.) ejecutando:
+    </para>
+<screen><prompt>root@master # </prompt>salt 'ceph_minion*' pillar.items</screen>
+    <note>
+     <title>sobrescritura de valores por defecto</title>
+     <para>
+      Tan pronto como finalice el comando, puede ver la configuración por defecto y cambiarla para adaptarla a sus necesidades. Para obtener información detallada, consulte el <xref linkend="ceph.deploy.ds.custom"/>.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Ahora se ejecuta la fase de distribución. En esta fase, se valida Pillar y los monitores y los daemons de OSD se inician en los nodos de almacenamiento. Ejecute lo siguiente para iniciar la fase:
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3</screen>
+    <para>
+     O bien
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.deploy
+    </screen>
+    <para>
+     El comando puede tardar varios minutos. Si se produce un error, debe solucionar el problema y volver a ejecutar las fases anteriores. Cuando el comando se ejecute correctamente, ejecute lo siguiente para comprobar el estado:
+    </para>
+<screen><prompt>root@master # </prompt>ceph -s</screen>
+   </step>
+   <step>
+    <para>
+     El último paso de la distribución del clúster de Ceph es la fase <emphasis>services</emphasis>. Aquí se crea una instancia de cualquiera de los servicios admitidos actualmente: iSCSI Gateway, CephFS, Object Gateway, openATTIC y NFS Ganesha. En esta fase, se crean los repositorios necesarios, los anillos de claves de autorización y los servicios de inicio. Para iniciar la fase, ejecute lo siguiente:
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+    <para>
+     O bien
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.services</screen>
+    <para>
+     Según la configuración, puede que la ejecución del comando tarde varios minutos.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deepsea.cli">
+  <title>Interfaz de línea de comandos de DeepSea</title>
+
+  <para>
+   DeepSea también proporciona una interfaz de línea de comandos que permite al usuario supervisar o ejecutar fases mientras observa el progreso de la ejecución en tiempo real.
+  </para>
+
+  <para>
+   Para ver el progreso de la ejecución de una fase, se admiten dos modos:
+  </para>
+
+  <itemizedlist xml:id="deepsea.cli.modes">
+   <title>Modos de la interfaz de línea de comandos de DeepSea</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">Modo de supervisión:</emphasis> muestra el progreso de la ejecución de una fase de DeepSea activada por el comando <command>salt-run</command> emitido en otra sesión de terminal.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Modo autónomo:</emphasis> ejecuta una fase de DeepSea y proporciona una visualización en tiempo real de los pasos incluidos mientras se ejecutan.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <important>
+   <title>comandos de la interfaz de línea de comandos de DeepSea</title>
+   <para>
+    Los comandos de la interfaz de línea de comandos de DeepSea solo se pueden ejecutar en el nodo master de Salt con privilegios de usuario <systemitem class="username">root</systemitem>.
+   </para>
+  </important>
+
+  <sect2 xml:id="deepsea.cli.monitor">
+   <title>Interfaz de línea de comandos de DeepSea: modo de monitor</title>
+   <para>
+    El monitor de progreso ofrece una visualización detallada en tiempo real de lo que sucede durante la ejecución de las fases. Para ello, usa los comandos <command>salt-run state.orch</command> de otras sesiones de terminal.
+   </para>
+   <para>
+    Debe iniciar el monitor antes de ejecutar cualquier comando <command>salt-run state.orch</command> para que el monitor pueda detectar el inicio de la ejecución de la fase.
+   </para>
+   <para>
+    Si inicia el monitor después de emitir el comando <command>salt-run state.orch</command>, no se mostrará ningún progreso de la ejecución.
+   </para>
+   <para>
+    El modo de monitor se puede iniciar ejecutando el comando siguiente:
+   </para>
+<screen><prompt>root@master # </prompt>deepsea monitor</screen>
+   <para>
+    Para obtener más información sobre las opciones de línea de comandos disponibles para el comando <command>deepsea monitor</command>, consulte su página man:
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-monitor</screen>
+  </sect2>
+
+  <sect2 xml:id="deepsea.cli.standalone">
+   <title>Interfaz de línea de comandos de DeepSea: modo autónomo</title>
+   <para>
+    En el modo autónomo, la interfaz de línea de comandos de DeepSea se puede usar para ejecutar una fase de DeepSea y mostrar su ejecución en tiempo real.
+   </para>
+   <para>
+    El comando para ejecutar una fase de DeepSea desde la interfaz de línea de comandos tiene el formato siguiente:
+   </para>
+<screen><prompt>root@master # </prompt>deepsea stage run <replaceable>stage-name</replaceable></screen>
+   <para>
+    donde <replaceable>stage-name</replaceable> corresponde a la forma a la que se hace referencia a los archivos de estado de organización de Salt. Por ejemplo, a la fase <emphasis role="bold">deploy</emphasis>, que corresponde al directorio situado en <filename>/srv/salt/ceph/stage/deploy</filename>, se hace referencia como <emphasis role="bold">ceph.stage.deploy</emphasis>.
+   </para>
+   <para>
+    Este comando es una alternativa a los comandos basados en Salt para ejecutar las fases de DeepSea (o cualquier archivo de estado de organización de DeepSea).
+   </para>
+   <para>
+    El comando <command>deepsea stage run ceph.stage.0</command> es equivalente a <command>salt-run state.orch ceph.stage.0</command>.
+   </para>
+   <para>
+    Para obtener más información sobre las opciones de línea de comandos disponibles aceptadas por el comando <command>deepsea stage run</command>, consulte su página man:
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-stage run</screen>
+   <para>
+    En la ilustración siguiente se muestra un ejemplo de la interfaz de línea de comandos de DeepSea cuando se ejecuta <emphasis role="underline">Stage 2</emphasis>:
+   </para>
+   <figure>
+    <title>Pantalla de progreso de la ejecución de fase en la interfaz de línea de comandos de DeepSea</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="deepsea.cli.run.alias">
+    <title>Alias de <command>stage run</command> de la interfaz de línea de comandos de DeepSea</title>
+    <para>
+     Para usuarios avanzados de Salt, también se admite un alias para ejecutar una fase de DeepSea que toma el comando de Salt que se usa para ejecutar una fase; por ejemplo, <command>salt-run state.orch <replaceable>stage-name</replaceable></command>, como un comando de la interfaz de línea de comandos de DeepSea.
+    </para>
+    <para>
+     Ejemplo:
+    </para>
+<screen><prompt>root@master # </prompt>deepsea salt-run state.orch <replaceable>stage-name</replaceable></screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deepsea.pillar.salt.configuration">
+  <title>Configuración y personalización</title>
+
+  <sect2 xml:id="policy.configuration">
+   <title>El archivo <filename>policy.cfg</filename></title>
+   <para>
+    El archivo de configuración <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> se utiliza para determinar las funciones de los nodos de clúster individuales. Por ejemplo, qué nodo actúa como un OSD o cuál actúa como monitor. Edite <filename>policy.cfg</filename> para reflejar la configuración de clúster que desee. El orden de las secciones es arbitrario, pero el contenido de las líneas incluidas sobrescribe las claves que coincidan con el contenido de las líneas anteriores.
+   </para>
+   <tip>
+    <title>ejemplos de <filename>policy.cfg</filename></title>
+    <para>
+     Encontrará varios ejemplos de archivos de directiva completos en el directorio <filename>/usr/share/doc/packages/deepsea/examples/</filename>.
+    </para>
+   </tip>
+   <sect3 xml:id="policy.cluster.assignment">
+    <title>Asignación de clúster</title>
+    <para>
+     En la sección <emphasis role="bold">cluster</emphasis>, se seleccionan los minions para el clúster. Puede seleccionar todos los minions o crear una lista negra o una lista blanca de minions. A continuación, se muestran ejemplos para un clúster denominado <emphasis role="bold">ceph</emphasis>.
+    </para>
+    <para>
+     Para incluir <emphasis role="bold">todos</emphasis> los minions, añada las líneas siguientes:
+    </para>
+<screen>cluster-ceph/cluster/*.sls</screen>
+    <para>
+     Para añadir un minion concreto a una <emphasis role="bold">lista blanca</emphasis>:
+    </para>
+<screen>cluster-ceph/cluster/abc.domain.sls</screen>
+    <para>
+     O un grupo de minions (se pueden usar comodines):
+    </para>
+<screen>cluster-ceph/cluster/mon*.sls</screen>
+    <para>
+     Para añadir minions a una <emphasis role="bold">lista negra</emphasis>, defínalos como <literal>unassigned</literal>:
+    </para>
+<screen>cluster-unassigned/cluster/client*.sls</screen>
+   </sect3>
+   <sect3 xml:id="policy.role.assignment">
+    <title>Asignación de funciones</title>
+    <para>
+     En esta sección se proporciona información sobre cómo asignar "funciones" a los nodos del clúster. En este contexto, una función es el servicio que debe ejecutar en el nodo, como Ceph Monitor, Object Gateway, iSCSI Gateway u openATTIC. Ninguna función se asigna automáticamente y solo las funciones que se añadan a <command>policy.cfg</command> se distribuirán.
+    </para>
+    <para>
+     La asignación sigue este patrón:
+    </para>
+<screen>role-<replaceable>ROLE_NAME</replaceable>/<replaceable>PATH</replaceable>/<replaceable>FILES_TO_INCLUDE</replaceable></screen>
+    <para>
+     Donde los elementos tienen el significado y los valores siguientes:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>ROLE_NAME</replaceable> es uno de los siguientes elementos: "master", "admin", "mon", "mgr", "mds", "igw", "rgw", "ganesha" o "openattic".
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>PATH</replaceable> es una vía relativa a los archivos .sls o .yml. En el caso de los archivos .sls, normalmente es <filename>cluster</filename>, mientras que los archivos .yml se encuentran en <filename>stack/default/ceph/minions</filename>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>FILES_TO_INCLUDE</replaceable> son los archivos de estado de Salt o los archivos de configuración YAML. Normalmente, son nombres de host de los minions de Salt; por ejemplo, <filename>ses5min2.yml</filename>. Es posible usar comodines para obtener resultados más específicos.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     A continuación se muestra un ejemplo de cada función:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <emphasis>master</emphasis>: el nodo tiene anillos de claves de administración para todos los clústeres de Ceph. Actualmente, solo se admite un único clúster de Ceph. Como la función <emphasis>master</emphasis> es obligatoria, añada siempre una línea similar a la siguiente:
+      </para>
+<screen>role-master/cluster/master*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>admin</emphasis>: el minion dispondrá de un anillo de claves de administración. Debe definir la función de la siguiente forma:
+      </para>
+<screen>role-admin/cluster/abc*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mon</emphasis>: el minion proporcionará el servicio de supervisión al clúster de Ceph. Esta función requiere las direcciones de los minions asignados. A partir de SUSE Enterprise Storage 5, las direcciones públicas se calculan de forma dinámica y ya no son necesarias en Pillar de Salt.
+      </para>
+<screen>role-mon/cluster/mon*.sls</screen>
+      <para>
+       El ejemplo asigna la función de supervisión a un grupo de minions.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mgr</emphasis>: el daemon de Ceph Manager que recopila toda la información de estado de todo el clúster. Distribúyalo en todos los minions en los que tenga previsto distribuir la función de monitor de Ceph.
+      </para>
+<screen>role-mgr/cluster/mgr*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mds</emphasis>: el minion proporcionará el servicio de metadatos para admitir CephFS.
+      </para>
+<screen>role-mds/cluster/mds*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>igw</emphasis>: el minion actuará como pasarela iSCSI Gateway. Esta función requiere las direcciones de los minions asignados, así que debe incluir también los archivos del directorio <filename>stack</filename>:
+      </para>
+<screen>role-igw/stack/default/ceph/minions/xyz.domain.yml
+role-igw/cluster/*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>rgw</emphasis>: el minion actuará como pasarela Object Gateway:
+      </para>
+<screen>role-rgw/cluster/rgw*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>openattic</emphasis>: el minion actuará como servidor de openATTIC:
+      </para>
+<screen>role-openattic/cluster/openattic*.sls</screen>
+      <para>
+       Para obtener más información, consulte: <xref linkend="ceph.oa"/>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>ganesha</emphasis>: el minion actuará como servidor de NFS Ganesha. La función "ganesha" requiere que la función "rgw" o "mds" esté en el clúster, o de lo contrario fallará la validación en la fase 3.
+      </para>
+      <para>
+       Para instalar correctamente NFS Ganesha, se requiere configuración adicional. Si desea utilizar NFS Ganesha, lea el <xref linkend="cha.as.ganesha"/> antes de ejecutar las fases 2 y 4. Sin embargo, es posible instalar NFS Ganesha más adelante.
+      </para>
+      <para>
+       En algunas ocasiones, puede ser útil definir funciones personalizadas para nodos de  NFS Ganesha. Para obtener información, consulte: <xref linkend="ceph.nfsganesha.customrole"/>.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <note>
+     <title>varias funciones de nodos del clúster</title>
+     <para>
+      Puede asignar varias funciones a un único nodo. Por ejemplo, puede asignar las funciones de servidor de metadatos a los nodos de monitor:
+     </para>
+<screen>role-mds/cluster/mon[1,2]*.sls</screen>
+    </note>
+   </sect3>
+   <sect3 xml:id="policy.common.configuration">
+    <title>Configuración común</title>
+    <para>
+     La sección de configuración común incluye archivos de configuración generados durante el <emphasis>descubrimiento (fase 1)</emphasis>. Estos archivos de configuración almacenan parámetros como <literal>fsid</literal> o <literal>public_network</literal>. Para incluir la configuración común de Ceph necesaria, añada las líneas siguientes:
+    </para>
+<screen>config/stack/default/global.yml
+config/stack/default/ceph/cluster.yml</screen>
+   </sect3>
+   <sect3 xml:id="policy.profile.assignment">
+    <title>Asignación de perfil</title>
+    <para>
+     En Ceph, una función de almacenamiento única no sería suficiente para describir las numerosas configuraciones de disco disponibles con el mismo hardware. La fase 1 de DeepSea generará una propuesta de perfil de almacenamiento por defecto. Esta propuesta será por defecto un perfil <literal>bluestore</literal> e intentará proponer la configuración de mayor rendimiento para la configuración de hardware determinada. Por ejemplo, se preferirán diarios externos a un único disco que contenga objetos y metadatos. El almacenamiento de estado sólido se priorizará sobre los discos rotatorios. Los perfiles se asignan en <filename>policy.cfg</filename>, igual que las funciones.
+    </para>
+    <para>
+     La propuesta por defecto se encuentra en el árbol de directorios por defecto del perfil. Para incluirlo, añada estas dos líneas a <filename>policy.cfg</filename>.
+    </para>
+<screen>profile-default/cluster/*.sls
+profile-default/stack/default/ceph/minions/*.yml</screen>
+    <para>
+     También puede crear un perfil de almacenamiento personalizado a su gusto utilizando el runner de propuestas. Este runner ofrece tres métodos: help, peek y populate.
+    </para>
+    <para>
+     <command>salt-run proposal.help</command> imprime el texto de ayuda del runner sobre los distintos argumentos que acepta.
+    </para>
+    <para>
+     <command>salt-run proposal.peek</command> muestra la propuesta generada según los argumentos pasados.
+    </para>
+    <para>
+     <command>salt-run proposal.populate</command> escribe la propuesta en el subdirectorio <filename>/srv/pillar/ceph/proposals</filename>. Pasa <option>name=myprofile</option> para asignar un nombre al perfil de almacenamiento. Esto dará como resultado un subdirectorio profile-myprofile.
+    </para>
+    <para>
+     Para todos los demás argumentos, consulte el resultado de <command>salt-run proposal.help</command>.
+    </para>
+   </sect3>
+   <sect3 xml:id="ds.profile.osd.encrypted">
+    <title>Distribución de OSD cifrados</title>
+    <para>
+     A partir de SUSE Enterprise Storage 5, los OSD se distribuyen por defecto mediante BlueStore, en lugar de mediante FileStore. Aunque BlueStore admite el cifrado, los Ceph OSD se distribuyen sin cifrar por defecto. En él se presupone que tanto los datos como los discos WAL/DB que se van a usar para la distribución de los OSD están limpios y no tienen particiones. Si el disco se ha utilizado anteriormente, bórrelo con el procedimiento descrito en el <xref linkend="deploy.wiping.disk"/>.
+    </para>
+    <para>
+     Para utilizar OSD cifrados para la distribución nueva, use el runner <literal>proposal.populate</literal> con el argumento <option>encryption=dmcrypt</option>:
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run proposal.populate encryption=dmcrypt
+</screen>
+   </sect3>
+   <sect3 xml:id="deepsea.policy.filtering">
+    <title>Filtrado de elementos</title>
+    <para>
+     A veces no resulta práctico incluir todos los archivos de un directorio concreto con comodines *.sls. El analizador del archivo <filename>policy.cfg</filename> comprende los siguientes filtros:
+    </para>
+    <warning>
+     <title>técnicas avanzadas</title>
+     <para>
+      En esta sección se describen técnicas de filtrado para usuarios avanzados. Si no se utiliza correctamente, el filtrado puede causar problemas, por ejemplo en caso de cambios de numeración del nodo.
+     </para>
+    </warning>
+    <variablelist>
+     <varlistentry>
+      <term>slice=[start:end]</term>
+      <listitem>
+       <para>
+        Utilice el filtro slice para incluir solo los elementos desde <emphasis>start</emphasis> hasta <emphasis>end-1</emphasis>. Tenga en cuenta que los elementos del directorio indicado se ordenan alfanuméricamente. La línea siguiente incluye del tercer al quinto archivo del subdirectorio <filename>role-mon/cluster/</filename>:
+       </para>
+<screen>role-mon/cluster/*.sls slice[3:6]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>re=regexp</term>
+      <listitem>
+       <para>
+        Utilice el filtro de expresión regular para incluir solo los elementos que coincidan con las expresiones indicadas. Por ejemplo:
+       </para>
+<screen>role-mon/cluster/mon*.sls re=.*1[135]\.subdomainX\.sls$</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="deepsea.example.policy_cfg">
+    <title>Archivo <filename>policy.cfg</filename> de ejemplo</title>
+    <para>
+     A continuación se muestra un ejemplo de un archivo <filename>policy.cfg</filename> básico:
+    </para>
+<screen>## Cluster Assignment
+cluster-ceph/cluster/*.sls <co xml:id="co.policy.1"/>
+
+## Roles
+# ADMIN
+role-master/cluster/examplesesadmin.sls <co xml:id="co.policy.2"/>
+role-admin/cluster/sesclient*.sls <co xml:id="co.policy.3"/>
+
+# MON
+role-mon/cluster/ses-example-[123].sls <co xml:id="co.policy.5"/>
+
+# MGR
+role-mgr/cluster/ses-example-[123].sls <co xml:id="co.policy.mgr"/>
+
+# MDS
+role-mds/cluster/ses-example-4.sls <co xml:id="co.policy.6"/>
+
+# IGW
+role-igw/stack/default/ceph/minions/ses-example-4.yml <co xml:id="co.policy.7"/>
+role-igw/cluster/ses-example-4.sls <co xml:id="co.policy.10"/>
+
+# RGW
+role-rgw/cluster/ses-example-4.sls <co xml:id="co.policy.11"/>
+
+# openATTIC
+role-openattic/cluster/openattic*.sls <co xml:id="co.policy.oa"/>
+
+# COMMON
+config/stack/default/global.yml <co xml:id="co.policy.8"/>
+config/stack/default/ceph/cluster.yml <co xml:id="co.policy.13"/>
+
+## Profiles
+profile-default/cluster/*.sls <co xml:id="co.policy.9"/>
+profile-default/stack/default/ceph/minions/*.yml <co xml:id="co.policy.12"/></screen>
+    <calloutlist>
+     <callout arearefs="co.policy.1">
+      <para>
+       Indica que todos los minions están incluidos en el clúster de Ceph. Si tiene minions que no desea incluir en el clúster de Ceph, utilice:
+      </para>
+<screen>cluster-unassigned/cluster/*.sls
+cluster-ceph/cluster/ses-example-*.sls</screen>
+      <para>
+       La primera línea marca todos los minions como no asignados. La segunda línea anula los minions que coinciden con "ses-example-*.sls" y los asigna al clúster de Ceph.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.2">
+      <para>
+       El minion denominado "examplesesadmin" tiene la función "master". Por cierto, esto significa que obtendrá las claves de administración para el clúster.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.3">
+      <para>
+       Todos los minions que coincidan con "sesclient*" obtendrán también las claves de administración.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.5">
+      <para>
+       Todos los minions que coincidan con "ses-example-[123]" (posiblemente tres minions: ses-example-1, ses-example-2 y ses-example-3) se configurarán como nodos MON.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.mgr">
+      <para>
+       Todos los minions que coincidan con "ses-example-[123]" (todos los nodos MON del ejemplo) se configurarán como nodos MGR.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.6">
+      <para>
+       El minion "ses-example-4" tendrá la función de servidor de metadatos.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.7">
+      <para>
+       Asegúrese de que DeepSea conozca la dirección IP del nodo de IGW.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.10">
+      <para>
+       El minion "ses-example-4" tendrá la función de IGW.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.11">
+      <para>
+       El minion "ses-example-4" tendrá la función de RGW.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.oa">
+      <para>
+       Indica que se va a distribuir la interfaz de usuario openATTIC para administrar el clúster de Ceph. Consulte el <xref linkend="ceph.oa"/> para obtener más información.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.8">
+      <para>
+       Significa que se aceptan los valores por defecto para los parámetros de configuración comunes, como <option>fsid</option> y <option>public_network</option>.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.13">
+      <para>
+       Significa que se aceptan los valores por defecto para los parámetros de configuración comunes, como <option>fsid</option> y <option>public_network</option>.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.9">
+      <para>
+       Se indica a DeepSea que use el perfil de hardware por defecto para cada minion. Elegir el perfil de hardware por defecto significa que queremos que todos los discos adicionales (que no sean el disco raíz) sean OSD.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.12">
+      <para>
+       Se indica a DeepSea que use el perfil de hardware por defecto para cada minion. Elegir el perfil de hardware por defecto significa que queremos que todos los discos adicionales (que no sean el disco raíz) sean OSD.
+      </para>
+     </callout>
+    </calloutlist>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>Archivo <filename>ceph.conf</filename> personalizado</title>
+   <para>
+    Si es necesario establecer valores personalizados en el archivo de configuración <filename>ceph.conf</filename>, consulte el <xref linkend="ds.custom.cephconf"/> para obtener más detalles.
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

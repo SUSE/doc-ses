@@ -1,0 +1,671 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tips.xml" version="5.0" xml:id="storage.tips">
+ <title>技巧与提示</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>yes</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  本章提供可帮助您增强 Ceph 集群性能的信息，以及有关如何设置集群的提示。
+ </para>
+ <sect1 xml:id="tips.scrubbing">
+  <title>调整整理 (Scrub)</title>
+
+  <para>
+   默认情况下，Ceph 每天会执行浅层整理 (light scrub)（有关详细信息，请参见<xref linkend="scrubbing"/>），每周会执行深层整理 (deep scrub)。<emphasis>浅层</emphasis>整理 (light scrub) 会检查对象大小及校验和，以确保归置组存储的是相同的对象数据。<emphasis>深层</emphasis>整理 (deep scrub) 会检查对象的内容及其副本，以确保实际内容相同。在整理 (scrub) 期间检查数据完整性会增加集群上的 I/O 负载。
+  </para>
+
+  <para>
+   默认设置允许 Ceph OSD 在不合适的时间（如负载较重时）启动整理 (scrub)。当整理 (scrub) 操作与客户操作发生冲突时，可能会出现延迟和性能不佳情况。Ceph 提供了数个整理 (scrub) 设置，可将整理 (scrub) 限制在低负载或非高峰时段执行。
+  </para>
+
+  <para>
+   如果集群在日间负载高而在夜间负载低，请考虑将整理 (scrub) 限制在夜间执行，例如在晚上 11 点到早上 6 点期间执行。
+  </para>
+
+<screen>
+[osd]
+osd_scrub_begin_hour = 23
+osd_scrub_end_hour = 6
+</screen>
+
+  <para>
+   如果使用时间限制无法有效决定整理 (scrub) 时间表，请考虑使用 <option>osd_scrub_load_threshold</option> 选项。其默认值为 0.5，但也可针对低负载情况进行相应调整：
+  </para>
+
+<screen>
+[osd]
+osd_scrub_load_threshold = 0.25
+</screen>
+ </sect1>
+ <sect1 xml:id="tips.stopping_osd_without_rebalancing">
+  <title>在不重新平衡的情况下停止 OSD</title>
+
+  <para>
+   进行定期维护时，您可能需要停止 OSD。如果您不希望 CRUSH 自动重新平衡集群，以免出现大量数据传输，请先将集群设为 <literal>noout</literal>：
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd set noout
+</screen>
+
+  <para>
+   当集群设为 <literal>noout</literal> 时，您便可开始在需要执行维护工作的故障域中停止 OSD：
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl stop ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   有关详细信息，请参见<xref linkend="ceph.operating.services.individual"/>。
+  </para>
+
+  <para>
+   完成维护工作后，再次启动 OSD：
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl start ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   OSD 服务启动后，取消集群的 <literal>noout</literal> 设置：
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd unset noout
+</screen>
+ </sect1>
+ <sect1 xml:id="Cluster_Time_Setting">
+  <title>节点时间同步</title>
+
+  <para>
+   Ceph 要求特定节点之间的时间保持精确的同步。您应该使用自己的 NTP 服务器设置节点。尽管您可以将所有 ntpd 实例指向远程公共时间服务器，但不建议对 Ceph 采用这种做法。如果采用这种配置，集群中的每个节点都会借助自己的 NTP 守护进程通过因特网来持续与三到四台时间服务器通讯，而这些服务器全部都相距很远。此解决方案在很大程度上带来了延迟方面的变数，使得难以甚至无法将时钟偏差保持在 0.05 秒以下（Ceph monitor 要求这种精度）。
+  </para>
+
+  <para>
+   因此，应该使用一台计算机作为整个集群的 NTP 服务器。这样，NTP 服务器 ntpd 实例可以指向远程（公共）NTP 服务器，或者可以有自己的时间源。然后，所有节点上的 ntpd 实例将指向这台本地服务器。此类解决方案有多种优势，例如，避免不必要的网络流量和时钟偏差，减轻公共 NTP 服务器上的负载。有关如何设置 NTP 服务器的详细信息，请参见<link xlink:href="https://www.suse.com/documentation/sled11/book_sle_admin/data/cha_netz_xntp.html">《SUSE Linux Enterprise Server 管理指南》</link>。
+  </para>
+
+  <para>
+   要更改集群上的时间，请执行以下操作：
+  </para>
+
+  <important>
+   <title>设置时间</title>
+   <para>
+    您可能会遇到需要将时间往回调的情况，例如，当时间从夏令时改成标准时间时就需要如此。不建议将时间回调的幅度超过集群的关闭时长。将时间往前调不会造成任何问题。
+   </para>
+  </important>
+
+  <procedure>
+   <title>集群上的时间同步</title>
+   <step>
+    <para>
+     停止正在访问 Ceph 集群的所有客户端，尤其是使用 iSCSI 的客户端。
+    </para>
+   </step>
+   <step>
+    <para>
+     关闭 Ceph 集群。在每个节点上，运行：
+    </para>
+<screen>systemctl stop ceph.target</screen>
+    <note>
+     <para>
+      如果您使用了 Ceph 和 SUSE OpenStack Cloud，则还需停止 SUSE OpenStack Cloud。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     校验 NTP 服务器的设置是否正确，即所有 ntpd 守护进程是否可从本地网络中的一个或多个源获取时间。
+    </para>
+   </step>
+   <step>
+    <para>
+     在 NTP 服务器上设置正确的时间。
+    </para>
+   </step>
+   <step>
+    <para>
+     确认 NTP 正在运行且在正常工作，然后在所有节点上运行：
+    </para>
+<screen>status ntpd.service</screen>
+    <para>
+     或者
+    </para>
+<screen>ntpq -p</screen>
+   </step>
+   <step>
+    <para>
+     启动所有监视节点，并校验是否不存在时钟偏差：
+    </para>
+<screen>systemctl start <replaceable>target</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     启动所有 OSD 节点。
+    </para>
+   </step>
+   <step>
+    <para>
+     启动其他 Ceph 服务。
+    </para>
+   </step>
+   <step>
+    <para>
+     启动 SUSE OpenStack Cloud（如果有）。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="storage.bp.cluster_mntc.unbalanced">
+  <title>检查不均衡的数据写入</title>
+
+  <para>
+   如果数据均衡写入 OSD，则认为集群是平衡的。集群中的每个 OSD 都分配了<emphasis>权重</emphasis>。权重是一个相对数字，告知 Ceph 应写入相关 OSD 的数据量。权重越高，要写入的数据就越多。如果 OSD 的权重为零，则不会向其写入任何数据。如果某个 OSD 的权重相对于其他 OSD 而言较高，则大部分数据将会写入这个 OSD，致使集群变得不平衡。
+  </para>
+
+  <para>
+   不平衡集群的性能较差；如果某个权重较高的 OSD 突然崩溃，则大量的数据就需要转移到其他 OSD，这也会导致集群速度变慢。
+  </para>
+
+  <para>
+   为避免此问题，应该定期检查 OSD 中的数据写入量。如果写入量介于给定规则组所指定 OSD 组容量的 30% 到 50% 之间，则您需要重新设置 OSD 的权重。检查各个磁盘，找出其中哪些磁盘的填满速度比其他磁盘更快（或者一般情况下速度更慢），并降低其权重。对于数据写入量不足的 OSD 可以采用相同的思路：可以提高其权重，让 Ceph 将更多的数据写入其中。在下面的示例中，您将确定 ID 为 13 的 OSD 的权重，并将权重从 3 重新设置为 3.05：
+  </para>
+
+<screen>$ ceph osd tree | grep osd.13
+ 13  3                   osd.13  up  1
+
+ $ ceph osd crush reweight osd.13 3.05
+ reweighted item id 13 name 'osd.13' to 3.05 in crush map
+
+ $ ceph osd tree | grep osd.13
+ 13  3.05                osd.13  up  1</screen>
+
+  <para/>
+
+  <tip>
+   <title>按使用率重新设置 OSD 的权重</title>
+   <para>
+    <command>ceph osd reweight-by-utilization</command>
+    <replaceable>阈值</replaceable>命令可自动完成降低严重过度使用的 OSD 的权重的过程。默认情况下，此命令将对达到平均使用率的 120% 的 OSD 降低权重，但是，如果您指定了阈值，则命令会改用该百分比。
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage.tips.ceph_btrfs_subvol">
+  <title>/var/lib/ceph 的 Btrfs 子卷</title>
+
+  <para>
+   SUSE Linux Enterprise 默认安装在 Btrfs 分区上。应该从 Btrfs 快照和回滚操作中排除目录 <filename>/var/lib/ceph</filename>，当 MON 在节点上运行时更应如此。DeepSea 提供了 <literal>fs</literal> 运行程序，可为此路径设置子卷。
+  </para>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.req-new">
+   <title>全新安装的要求</title>
+   <para>
+    如果您是首次安装集群，则必须满足以下要求才能使用 DeepSea 运行程序：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Salt 和 DeepSea 已根据本文档正确安装且正常运行。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      已调用 <command>salt-run state.orch ceph.stage.0</command> 将所有 Salt 和 DeepSea 模块同步到 Minion。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Ceph 尚未安装，因此 ceph.stage.3 尚未运行，且 <filename>/var/lib/ceph</filename> 尚不存在。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.req-existing">
+   <title>现有安装的要求</title>
+   <para>
+    如果已安装集群，则必须满足以下要求才能使用 DeepSea 运行程序：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      已将节点升级到 SUSE Enterprise Storage，并且集群受 DeepSea 的控制。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Ceph 集群已启动且正常运行。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      升级过程已将 Salt 和 DeepSea 模块同步到所有 Minion 节点。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.automatic">
+   <title>自动安装</title>
+   <procedure>
+    <step>
+     <para>
+      在 Salt Master 上运行：
+     </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> state.orch ceph.migrate.subvolume</screen>
+     <para>
+      对于不存在 <filename>/var/lib/ceph</filename> 目录的节点，此命令一次将在一个节点上执行以下操作：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        创建 <filename>/var/lib/ceph</filename>，作为 <literal>@/var/lib/ceph</literal> Btrfs 子卷。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        挂载新子卷并相应地更新 <filename>/etc/fstab</filename>。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        对 <filename>/var/lib/ceph</filename> 禁用写入时复制。
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      对于已安装 Ceph 的节点，此命令一次将在一个节点上执行以下操作：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        终止正在运行的 Ceph 进程。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        卸载节点上的 OSD。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        创建 <literal>@/var/lib/ceph</literal> Btrfs 子卷，并迁移现有的 <filename>/var/lib/ceph</filename> 数据。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        挂载新子卷并相应地更新 <filename>/etc/fstab</filename>。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        对 <filename>/var/lib/ceph/*</filename> 禁用写入时复制，并忽略 <filename>/var/lib/ceph/osd/*</filename>。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        重新挂载 OSD。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        重启动 Ceph 守护进程。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.manually">
+   <title>手动安装</title>
+   <para>
+    此过程使用新的 <literal>fs</literal> 运行程序。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      在所有节点上检查 <filename>/var/lib/ceph</filename> 的状态，并列显有关如何继续操作的建议：
+     </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> fs.inspect_var</screen>
+     <para>
+      此操作会返回以下命令之一：
+     </para>
+<screen>salt-run fs.create_var
+salt-run fs.migrate_var
+salt-run fs.correct_var_attrs</screen>
+    </step>
+    <step>
+     <para>
+      运行上一步中返回的命令。
+     </para>
+     <para>
+      如果某个节点上出错，针对其他节点的执行进程也会停止，并且运行程序会尝试还原已执行的更改。请查阅出现问题的 Minion 上的日志文件，以确定问题所在。解决问题后，可以重新运行运行程序。
+     </para>
+    </step>
+   </procedure>
+   <para>
+    命令 <command>salt-run fs.help</command> 提供 <literal>fs</literal> 模块的所有运行程序和模块命令列表。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage.bp.srv_maint.fds_inc">
+  <title>增加文件描述符</title>
+
+  <para>
+   对于 OSD 守护进程而言，读/写操作对保持 Ceph 集群平衡至关重要。这些守护进程通常需要同时打开许多文件进行读取和写入。在 OS 级别，同时打开的文件的最大数目称为“文件描述符的最大数目”。
+  </para>
+
+  <para>
+   为防止 OSD 用尽文件描述符，您可以覆盖 OS 默认值，并在 <filename>/etc/ceph/ceph.conf</filename> 中指定该数字，例如：
+  </para>
+
+<screen>max_open_files = 131072</screen>
+
+  <para>
+   更改 <option>max_open_files</option> 之后，需在相关的 Ceph 节点上重启动 OSD 服务。
+  </para>
+ </sect1>
+ <sect1 xml:id="bp.osd_on_exisitng_partitions">
+  <title>如何对包含 OSD 日记的 OSD 使用现有分区</title>
+
+  <important>
+   <para>
+    本节介绍一个仅供存储专家和开发人员研究的高级主题。所述的方法主要用于解决使用非标准 OSD 日记大小的情况。如果 OSD 分区小于 10GB，则其初始权重将舍入为 0，因而不会在其上放置任何数据，所以您应该提高其权重。我们不会处理日记过满的情况。
+   </para>
+  </important>
+
+  <para>
+   如果您要使用现有的磁盘分区作为 OSD 节点，则需要将 OSD 日记和数据分区列入 GPT 分区表中。
+  </para>
+
+  <para>
+   需要将正确的分区类型设置为 OSD 分区，使 <systemitem>udev</systemitem> 能够正确识别这些分区；并将分区的所有权设置为 <literal>ceph:ceph</literal>。
+  </para>
+
+  <para>
+   例如，要设置日记分区 <filename>/dev/vdb1</filename> 和数据分区 <filename>/dev/vdb2</filename> 的分区类型，请运行以下命令：
+  </para>
+
+<screen>sudo sgdisk --typecode=1:45b0969e-9b03-4f30-b4c6-b4b80ceff106 /dev/vdb
+sudo sgdisk --typecode=2:4fbd7e29-9d25-41b8-afd0-062c0ceff05d /dev/vdb</screen>
+
+  <tip>
+   <para>
+    Ceph 分区表类型列于 <filename>/usr/lib/udev/rules.d/95-ceph-osd.rules</filename> 中：
+   </para>
+<screen>cat /usr/lib/udev/rules.d/95-ceph-osd.rules
+# OSD_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+
+# JOURNAL_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+[...]</screen>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage.admin.integration">
+  <title>与虚拟化软件集成</title>
+
+  <sect2 xml:id="storage.bp.integration.kvm">
+   <title>在 Ceph 集群中存储 KVM 磁盘</title>
+   <para>
+    您可以为 KVM 驱动的虚拟机创建磁盘映像，将该映像存储在 Ceph 存储池中，选择性地将现有映像的内容转换到该映像，然后使用 <command>qemu-kvm</command> 运行虚拟机，以利用集群中存储的磁盘映像。有关详细信息，请参见<xref linkend="cha.ceph.kvm"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.integration.libvirt">
+   <title>在 Ceph 集群中存储 <systemitem class="library">libvirt</systemitem> 磁盘</title>
+   <para>
+    类似于 KVM（请参见<xref linkend="storage.bp.integration.kvm"/>），您可以使用 Ceph 来存储 <systemitem class="library">libvirt</systemitem> 驱动的虚拟机。这样做的好处是可以运行任何支持 <systemitem class="library">libvirt</systemitem> 的虚拟化解决方案，例如 KVM、Xen 或 LXC。有关详细信息，参见<xref linkend="cha.ceph.libvirt"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.integration.xen">
+   <title>在 Ceph 集群中存储 Xen 磁盘</title>
+   <para>
+    使用 Ceph 存储 Xen 磁盘的方法之一是按<xref linkend="cha.ceph.libvirt"/>中所述利用 <systemitem class="library">libvirt</systemitem>。
+   </para>
+   <para>
+    另一种方法是让 Xen 直接与 <systemitem>rbd</systemitem> 块设备驱动程序通讯：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      如果尚未为 Xen 准备磁盘映像，请新建一个：
+     </para>
+<screen>rbd create myimage --size 8000 --pool mypool</screen>
+    </step>
+    <step>
+     <para>
+      列出存储池 <literal>mypool</literal> 中的映像，并检查您的新映像是否在该存储池中：
+     </para>
+<screen>rbd list mypool</screen>
+    </step>
+    <step>
+     <para>
+      通过将 <literal>myimage</literal> 映像映射到 <systemitem>rbd</systemitem> 内核模块来创建一个新的块设备：
+     </para>
+<screen>sudo rbd map --pool mypool myimage</screen>
+     <tip>
+      <title>用户名和身份验证</title>
+      <para>
+       要指定用户名，请使用 <option>--id <replaceable>用户名</replaceable></option>。此外，如果您使用了 <systemitem>cephx</systemitem> 身份验证，则还必须指定机密。该机密可能来自密钥环，或某个包含机密的文件：
+      </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+      <para>
+       或者
+      </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      列出所有映射的设备：
+     </para>
+<screen><command>rbd showmapped</command>
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    </step>
+    <step>
+     <para>
+      现在，可以将 Xen 配置为使用此设备作为运行虚拟机所用的磁盘。例如，可将下行添加到 <command>xl</command> 样式的域配置文件：
+     </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage.bp.net.firewall">
+  <title>Ceph 的防火墙设置</title>
+
+  <warning>
+   <title>使用防火墙时 DeepSea 阶段失败</title>
+   <para>
+    当防火墙处于活动状态（甚至只是配置了防火墙）时，DeepSea 部署阶段会失败。要正确通过该阶段，需要运行以下命令关闭防火墙
+   </para>
+<screen>
+<prompt>root@master # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+   <para>
+    或在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 中将 <option>FAIL_ON_WARNING</option> 选项设为“False”：
+   </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+  </warning>
+
+  <para>
+   建议使用 SUSE 防火墙保护网络集群通讯。可以通过选择 <menuchoice><guimenu>YaST</guimenu><guimenu>安全性和用户</guimenu><guimenu>防火墙</guimenu><guimenu>允许的服务</guimenu></menuchoice>来编辑防火墙的配置。
+  </para>
+
+  <para>
+   下面列出了 Ceph 相关服务以及这些服务通常使用的端口号：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>Ceph Monitor</term>
+    <listitem>
+     <para>
+      启用 <guimenu>Ceph MON</guimenu> 服务或端口 6789 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Ceph OSD 或元数据服务器</term>
+    <listitem>
+     <para>
+      启用 <guimenu>Ceph OSD/MDS</guimenu> 服务或端口 6800-7300 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>iSCSI 网关</term>
+    <listitem>
+     <para>
+      打开端口 3260 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>对象网关</term>
+    <listitem>
+     <para>
+      打开对象网关通讯所用的端口。此端口在 <filename>/etc/ceph.conf</filename> 内以 <literal>rgw frontends =</literal> 开头的行中设置。HTTP 的默认端口为 80，HTTPS (TCP) 的默认端口为 443。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NFS Ganesha</term>
+    <listitem>
+     <para>
+      默认情况下，NFS Ganesha 使用端口 2049（NFS 服务、TCP）和 875 （rquota 支持、TCP）。有关更改默认 NFS Ganesha 端口的详细信息，请参见<xref linkend="ganesha.nfsport"/>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>基于 Apache 的服务，例如 openATTIC、SMT 或 SUSE Manager</term>
+    <listitem>
+     <para>
+      打开用于 HTTP 的端口 80，用于 HTTPS (TCP) 的端口 443。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>SSH</term>
+    <listitem>
+     <para>
+      打开端口 22 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NTP</term>
+    <listitem>
+     <para>
+      打开端口 123 (UDP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Salt</term>
+    <listitem>
+     <para>
+      打开端口 4505 和 4506 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Grafana</term>
+    <listitem>
+     <para>
+      打开端口 3000 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Prometheus</term>
+    <listitem>
+     <para>
+      打开端口 9100 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="storage.bp.network_test">
+  <title>测试网络性能</title>
+
+  <para>
+   为方便测试网络性能，DeepSea <literal>net</literal> 运行程序提供了以下命令。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     向所有节点发出简单 ping：
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.ping
+Succeeded: 9 addresses from 9 minions average rtt 1.35 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     向所有节点发出大规模 ping：
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.jumbo_ping
+Succeeded: 9 addresses from 9 minions average rtt 2.13 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     带宽测试：
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.iperf
+Fastest 2 hosts:
+    |_
+      - 192.168.58.106
+      - 2981 Mbits/sec
+    |_
+      - 192.168.58.107
+      - 2967 Mbits/sec
+Slowest 2 hosts:
+    |_
+      - 192.168.58.102
+      - 2857 Mbits/sec
+    |_
+      - 192.168.58.103
+      - 2842 Mbits/sec</screen>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="storage.bd.replacing_disk">
+  <title>更换存储磁盘</title>
+
+  <para>
+   如果您需要更换 Ceph 集群中的存储磁盘，可在集群具有完全运作能力时更换。更换操作会导致数据传输量暂时性增加。
+  </para>
+
+  <para>
+   如果整个磁盘都有故障，Ceph 至少需要重新写入与故障磁盘容量相同的数据量。如果正常取下磁盘然后重新装上，以免更换过程中出现冗余损失，重新写入的数据量将增大到两倍。如果新磁盘与更换掉的磁盘大小不同，将导致重新分发某些额外数据，甚至超出所有 OSD 的用量。
+  </para>
+ </sect1>
+</chapter>

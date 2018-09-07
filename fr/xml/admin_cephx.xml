@@ -1,0 +1,589 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_cephx.xml" version="5.0" xml:id="cha.storage.cephx">
+ <title>Authentification avec <systemitem class="service">cephx</systemitem></title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>modification</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>oui</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Pour identifier les clients et les protéger contre les attaques de l'homme du milieu, Ceph fournit son système d'authentification <systemitem class="service">cephx</systemitem>. Dans ce contexte, les <emphasis>clients</emphasis> désignent soit des humains (comme l'administrateur), soit des services/daemons liés à Ceph, par exemple des OSD, des moniteurs ou des instances Object Gateway.
+ </para>
+ <note>
+  <para>
+   Le protocole <systemitem class="service">cephx</systemitem> ne gère pas le chiffrement dans le transport de données, tel que TLS/SSL.
+  </para>
+ </note>
+ <sect1 xml:id="storage.cephx.arch">
+
+
+  <title>Architecture d'authentification</title>
+
+  <para>
+   <systemitem class="service">cephx</systemitem> utilise des clés secrètes partagées pour l'authentification, ce qui signifie que le client et la grappe de moniteur possèdent une copie de la clé secrète du client. Le protocole d'authentification permet aux deux parties de se prouver qu'elles possèdent une copie de la clé sans vraiment la révéler. Cela permet une authentification mutuelle, ce qui signifie que la grappe est « certaine » que l'utilisateur possède la clé secrète et que l'utilisateur est certain que la grappe possède également une copie de la clé secrète.
+  </para>
+
+  <para>
+   La fonctionnalité d'évolutivité des clés de Ceph évite d'avoir une interface centralisée vers le magasin d'objets Ceph. Cela signifie que les clients Ceph peuvent interagir directement avec les OSD. Pour protéger les données, Ceph fournit son système d'authentification <systemitem class="service">cephx</systemitem>, qui authentifie les clients Ceph.
+  </para>
+
+  <para>
+   Chaque moniteur peut authentifier les clients et distribuer les clés, il n'y a donc pas de point de défaillance unique ou de goulot d'étranglement lors de l'utilisation de <systemitem class="service">cephx</systemitem>. Le moniteur renvoie une structure de données d'authentification qui contient une clé de session permettant d'obtenir des services Ceph. Cette clé de session est elle-même chiffrée avec la clé secrète permanente du client de sorte que seul celui-ci peut demander des services aux moniteurs Ceph. Le client utilise ensuite la clé de session pour demander les services souhaités au moniteur, et celui-ci fournit au client un ticket qui authentifiera le client auprès des OSD qui traitent réellement les données. Les moniteurs Ceph et les OSD partagent un secret de sorte que le client peut utiliser le ticket fourni par le moniteur avec n'importe quel serveur OSD ou de métadonnées de la grappe. Les tickets <systemitem class="service">cephx</systemitem> expirent de sorte qu'un attaquant ne peut pas utiliser un ticket périmé ou une clé de session périmée obtenus de façon illégitime. Cette forme d'authentification empêche les attaquants ayant accès au support de communication de créer des messages illégitimes sous l'identité d'un autre client ou de modifier les messages légitimes d'un autre client, tant que la clé secrète du client n'est pas révélée avant son expiration.
+  </para>
+
+  <para>
+   Pour utiliser <systemitem class="service">cephx</systemitem>, un administrateur doit configurer tout d'abord les clients/utilisateurs. Dans le diagramme suivant, l'utilisateur <systemitem class="username">client.admin</systemitem> appelle <command>ceph auth get-or-create-key</command> à partir de la ligne de commande afin de générer un nom d'utilisateur et une clé secrète. Le sous-système <command>auth</command> de Ceph génère le nom et la clé de l'utilisateur, stocke une copie avec le ou les moniteurs et transmet le secret de l'utilisateur à l'utilisateur <systemitem class="username">client.admin</systemitem>. Cela signifie que le client et le moniteur partagent une clé secrète.
+  </para>
+
+  <figure>
+   <title>Authentification <systemitem class="service">cephx</systemitem> de base</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Pour s'authentifier auprès du moniteur, le client transmet le nom d'utilisateur au moniteur. Le moniteur génère une clé de session et la chiffre avec la clé secrète associée au nom d'utilisateur, puis transmet le ticket chiffré au client. Le client déchiffre ensuite les données avec la clé secrète partagée pour récupérer la clé de session. La clé de session identifie l'utilisateur pour la session en cours. Le client demande alors un ticket lié à l'utilisateur et signé par la clé de session. Le moniteur génère un ticket, le chiffre avec la clé secrète de l'utilisateur et le transmet au client. Le client déchiffre le ticket et l'utilise pour signer les requêtes envoyées aux OSD et aux serveurs de métadonnées dans toute la grappe.
+  </para>
+
+  <figure>
+   <title>Authentification <systemitem class="service">cephx</systemitem></title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Le protocole <systemitem class="service">cephx</systemitem> authentifie les communications en cours entre la machine cliente et les serveurs Ceph. Chaque message envoyé entre un client et un serveur après l'authentification initiale est signé à l'aide d'un ticket que les moniteurs, les OSD et les serveurs de métadonnées peuvent vérifier avec leur secret partagé.
+  </para>
+
+  <figure>
+   <title>Authentification <systemitem class="service">cephx</systemitem> - MDS et OSD</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <important>
+   <para>
+    La protection offerte par cette authentification est comprise entre le client Ceph et les hôtes de la grappe Ceph. L'authentification n'est pas étendue au-delà du client Ceph. Si l'utilisateur accède au client Ceph à partir d'un hôte distant, l'authentification Ceph n'est pas appliquée à la connexion entre l'hôte de l'utilisateur et l'hôte client.
+   </para>
+  </important>
+ </sect1>
+ <sect1 xml:id="storage.cephx.keymgmt">
+
+
+  <title>Gestion des clés</title>
+
+  <para>
+   Cette section décrit les utilisateurs du client Ceph ainsi que leurs procédures d'authentification et d'autorisation auprès de la grappe de stockage Ceph. Les <emphasis>utilisateurs</emphasis> sont des individus ou des acteurs du système, tels que des applications qui s'appuient sur les clients Ceph pour interagir avec les daemons de la grappe de stockage Ceph.
+  </para>
+
+  <para>
+   Lorsque Ceph s'exécute avec l'authentification et l'autorisation activées (ce qui est le cas par défaut), vous devez indiquer un nom d'utilisateur et un trousseau contenant la clé secrète de l'utilisateur indiqué (généralement par le biais de la ligne de commande). Si vous n'indiquez pas de nom d'utilisateur, Ceph emploie <systemitem class="username">client.admin</systemitem> comme nom d'utilisateur par défaut. Si vous n'indiquez pas de trousseau de clés, Ceph recherche le paramètre de trousseau de clés dans le fichier de configuration Ceph. Par exemple, si vous exécutez la commande <command>ceph health</command> sans indiquer de nom d'utilisateur ou de trousseau de clés, Ceph l'interprète comme suit :
+  </para>
+
+<screen>ceph -n client.admin --keyring=/etc/ceph/ceph.client.admin.keyring health</screen>
+
+  <para>
+   Vous pouvez également utiliser la variable d'environnement <literal>CEPH_ARGS</literal> pour ne pas avoir à saisir une nouvelle fois le nom d'utilisateur et le secret.
+  </para>
+
+  <sect2 xml:id="storage.cephx.keymgmt.backgrnd">
+   <title>Informations de base</title>
+   <para>
+    Quel que soit le type de client Ceph (par exemple, périphérique de traitement par blocs, stockage d'objets, système de fichiers, API native), Ceph stocke toutes les données en tant qu'objets dans des <emphasis>réserves</emphasis>. Les utilisateurs Ceph doivent avoir accès aux réserves pour lire et écrire des données. De plus, les utilisateurs Ceph doivent posséder des autorisations d'exécution pour utiliser les commandes d'administration de Ceph. Les concepts suivants vous aideront à comprendre la gestion des utilisateurs Ceph.
+   </para>
+   <sect3>
+    <title>Utilisateur</title>
+    <para>
+     Un utilisateur est un acteur individuel ou un acteur système, tel qu'une application. La création d'utilisateurs vous permet de contrôler qui (ou quoi) peut accéder à votre grappe de stockage Ceph, à ses réserves et aux données des réserves.
+    </para>
+    <para>
+     Ceph utilise des <emphasis>types</emphasis> d'utilisateurs. Pour les besoins de gestion des utilisateurs, le type est toujours <literal>client</literal>. Ceph identifie les utilisateurs dans le format point (.) délimité, constitué du type d'utilisateur et de l'ID utilisateur. Par exemple, <literal>TYPE.ID</literal>, <literal>client.admin</literal> ou <literal>client.user1</literal>. Le typage de l'utilisateur se justifie, car les moniteurs, les OSD et les serveurs de métadonnées Ceph emploient également le protocole cephx, mais ne sont pas clients. La distinction du type d'utilisateur permet de distinguer les utilisateurs clients des autres utilisateurs, en rationalisant le contrôle d'accès, la surveillance des utilisateurs et la traçabilité.
+    </para>
+    <note>
+     <para>
+      Un utilisateur de grappe de stockage Ceph n'est pas identique à un utilisateur de stockage d'objets Ceph ou à un utilisateur de système de fichiers Ceph. La passerelle Ceph Object Gateway s'appuie sur un utilisateur de grappe de stockage Ceph pour communiquer entre le daemon passerelle et la grappe de stockage, mais la passerelle dispose de sa propre fonctionnalité de gestion des utilisateurs pour les utilisateurs finaux. Le système de fichiers Ceph utilise la sémantique POSIX. L'espace utilisateur qui lui est associé est distinct d'un utilisateur de grappe de stockage Ceph.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Autorisation et fonctions</title>
+    <para>
+     Ceph utilise le terme « fonctions » (« capabilities » ou « caps » en anglais) pour décrire l'autorisation d'un utilisateur authentifié à exploiter les moniteurs, les OSD et les serveurs de métadonnées. Les fonctions peuvent également limiter l'accès aux données ou à un espace de noms au sein d'une réserve. Un administrateur Ceph définit les fonctions d'un utilisateur lors de la création ou de la mise à jour de celui-ci.
+    </para>
+    <para>
+     La syntaxe d'une fonction obéit au format suivant :
+    </para>
+<screen><replaceable>daemon-type</replaceable> 'allow <replaceable>capability</replaceable>' [...]</screen>
+    <para>
+     Voici une liste des fonctions pour chaque type de service :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Fonctions du moniteur</term>
+      <listitem>
+       <para>
+        Inclut <literal>r</literal>, <literal>w</literal>, <literal>x</literal> et <literal>allow profile <replaceable>fonction</replaceable></literal>.
+       </para>
+<screen>mon 'allow rwx'
+mon 'allow profile osd'</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Fonctions OSD</term>
+      <listitem>
+       <para>
+        Inclut <literal>r</literal>, <literal>w</literal>, <literal>x</literal>, <literal>class-read</literal>, <literal>class-write</literal> et <literal>profile osd</literal>. En outre, les fonctions OSD autorisent également les paramètres de réserve et d'espace de noms.
+       </para>
+<screen>osd 'allow <replaceable>capability</replaceable>' [pool=<replaceable>poolname</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Fonction MDS</term>
+      <listitem>
+       <para>
+        Requiert seulement <literal>allow</literal> ou zéro paramètre.
+       </para>
+<screen>mds 'allow'</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Les entrées suivantes décrivent chaque fonction :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>allow</term>
+      <listitem>
+       <para>
+        Précède les paramètres d'accès d'un daemon. Implique <literal>rw</literal> pour MDS uniquement.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>r</term>
+      <listitem>
+       <para>
+        Donne à l'utilisateur un accès en lecture. Requis avec les moniteurs pour récupérer l'assignation CRUSH.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>w</term>
+      <listitem>
+       <para>
+        Donne à l'utilisateur un accès en écriture aux objets.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>x</term>
+      <listitem>
+       <para>
+        Donne à l'utilisateur les moyens d'appeler des méthodes de classe (lire et écrire) et d'effectuer des opérations <literal>auth</literal> sur les moniteurs.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-read</term>
+      <listitem>
+       <para>
+        Donne à l'utilisateur la possibilité d'appeler des méthodes de lecture de classe. Sous-ensemble de <literal>x</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-write</term>
+      <listitem>
+       <para>
+        Donne à l'utilisateur la possibilité d'appeler des méthodes d'écriture de classe. Sous-ensemble de <literal>x</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>*</term>
+      <listitem>
+       <para>
+        Fournit à l'utilisateur des autorisations de lecture, d'écriture et d'exécution pour un daemon/une réserve en particulier, et autorise l'utilisateur à exécuter des commandes d'administration.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile osd</term>
+      <listitem>
+       <para>
+        Donne à un utilisateur les autorisations de connexion à d'autres OSD ou moniteurs en tant qu'OSD. Conféré aux OSD pour leur permettre de gérer le trafic de réplication et le rapport d'état.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile mds</term>
+      <listitem>
+       <para>
+        Donne à un utilisateur les autorisations de connexion à d'autres MDS ou moniteurs en tant que MDS.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-osd</term>
+      <listitem>
+       <para>
+        Donne à un utilisateur les autorisations de démarrage d'un OSD. Délégué aux outils de déploiement afin qu'ils disposent des autorisations d'ajout de clés lors du démarrage d'un OSD.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-mds</term>
+      <listitem>
+       <para>
+        Donne à un utilisateur les autorisations de démarrage d'un serveur de métadonnées. Délégué aux outils de déploiement afin qu'ils disposent des autorisations d'ajout de clés lors du démarrage d'un serveur de métadonnées.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>Réserves</title>
+    <para>
+     Une réserve est une partition logique dans laquelle les utilisateurs stockent des données. Dans les déploiements Ceph, il est courant de créer une réserve en tant que partition logique pour des types de données similaires. Par exemple, lors du déploiement de Ceph en tant que serveur dorsal pour OpenStack, un déploiement type comporterait des réserves pour les volumes, les images, les sauvegardes et les machines virtuelles, ainsi que des utilisateurs, tels que <systemitem class="username">client.glance</systemitem> ou <systemitem class="username">client.cinder</systemitem>.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.usermgmt">
+   <title>Gestion des utilisateurs</title>
+   <para>
+    La fonctionnalité de gestion des utilisateurs permet aux administrateurs de grappe Ceph de créer, mettre à jour et supprimer des utilisateurs directement dans la grappe Ceph.
+   </para>
+   <para>
+    Lorsque vous créez ou supprimez des utilisateurs dans la grappe Ceph, vous devrez distribuer les clés aux clients pour pouvoir les ajouter aux trousseaux de clés. Reportez-vous à la <xref linkend="storage.cephx.keymgmt.keyringmgmt"/> pour plus d'informations.
+   </para>
+   <sect3>
+    <title>Liste des utilisateurs</title>
+    <para>
+     Pour dresser la liste des utilisateurs de votre grappe, exécutez la commande suivante :
+    </para>
+<screen>ceph auth list</screen>
+    <para>
+     Ceph dresse la liste de tous les utilisateurs de votre grappe. Par exemple, dans une grappe de deux noeuds, la commande <command>ceph auth list</command> produit une liste similaire à celle-ci :
+    </para>
+<screen>installed auth entries:
+
+osd.0
+        key: AQCvCbtToC6MDhAATtuT70Sl+DymPCfDSsyV4w==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+osd.1
+        key: AQC4CbtTCFJBChAAVq5spj0ff4eHZICxIOVZeA==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+client.admin
+        key: AQBHCbtT6APDHhAA5W00cBchwkQjh3dkKsyPjw==
+        caps: [mds] allow
+        caps: [mon] allow *
+        caps: [osd] allow *
+client.bootstrap-mds
+        key: AQBICbtTOK9uGBAAdbe5zcIGHZL3T/u2g6EBww==
+        caps: [mon] allow profile bootstrap-mds
+client.bootstrap-osd
+        key: AQBHCbtT4GxqORAADE5u7RkpCN/oo4e5W0uBtw==
+        caps: [mon] allow profile bootstrap-osd</screen>
+    <note>
+     <title>notation TYPE.ID</title>
+     <para>
+      La notation <literal>TYPE.ID</literal> s'applique aux utilisateurs ; par exemple, <literal>osd.0</literal> définit un utilisateur du type <literal>osd</literal> et avec l'ID <literal>0</literal>. <literal>client.admin</literal> est un utilisateur du type <literal>client</literal> et avec l'ID <literal>admin</literal>. Notez également que chaque entrée possède une entrée <literal>key: <replaceable>valeur</replaceable></literal> et une ou plusieurs entrées <literal>caps:</literal>.
+     </para>
+     <para>
+      L'option <option>-o <replaceable>nom_fichier</replaceable></option> avec <command>ceph auth list</command> vous permet d'enregistrer la sortie dans un fichier.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Obtention d'informations sur les utilisateurs</title>
+    <para>
+     Pour récupérer un utilisateur, une clé et des fonctions spécifiques, exécutez la commande suivante :
+    </para>
+<screen>ceph auth get <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen>ceph auth get client.admin
+exported keyring for client.admin
+[client.admin]
+	key = AQA19uZUqIwkHxAAFuUwvq0eJD4S173oFRxe0g==
+	caps mds = "allow"
+	caps mon = "allow *"
+ caps osd = "allow *"</screen>
+    <para>
+     Les développeurs peuvent également exécuter la commande suivante :
+    </para>
+<screen>ceph auth export <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     La commande <command>auth export</command> ressemble beaucoup à la commande <command>auth get</command>, mais permet également d'afficher l'ID d'authentification interne.
+    </para>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.useradd">
+    <title>Ajout d'utilisateurs</title>
+    <para>
+     L'ajout d'un utilisateur crée un nom d'utilisateur (<literal>TYPE.ID</literal>), une clé secrète et toutes les fonctionnalités incluses dans la commande destinée à créer l'utilisateur.
+    </para>
+    <para>
+     La clé d'un utilisateur permet à l'utilisateur de s'authentifier auprès de la grappe de stockage Ceph. Les fonctions de l'utilisateur autorisent celui-ci à lire, écrire ou exécuter sur les moniteurs Ceph (mon), les OSD Ceph (osd) ou les serveurs de métadonnées Ceph (mds).
+    </para>
+    <para>
+     Quelques commandes permettent d'ajouter un utilisateur :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>ceph auth add</command>
+      </term>
+      <listitem>
+       <para>
+        Cette commande est la méthode canonique pour ajouter un utilisateur. Elle crée l'utilisateur, génère une clé et ajoute les éventuelles fonctions indiquées.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create</command>
+      </term>
+      <listitem>
+       <para>
+        Cette commande est souvent la façon la plus pratique de créer un utilisateur, car elle renvoie un keyfile avec le nom d'utilisateur (entre parenthèses) et la clé. Si l'utilisateur existe déjà, cette commande renvoie simplement le nom d'utilisateur et la clé dans le format du keyfile. L'option <option>-o <replaceable>nom_fichier</replaceable> </option> vous permet d'enregistrer la sortie dans un fichier.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create-key</command>
+      </term>
+      <listitem>
+       <para>
+        Cette commande est un moyen pratique de créer un utilisateur et de renvoyer la clé de l'utilisateur (uniquement). Cela est utile pour les clients qui n'ont besoin que de la clé (<systemitem class="library">libvirt</systemitem>, par exemple). Si l'utilisateur existe déjà, cette commande renvoie simplement la clé. L'option <option>-o <replaceable>nom_fichier</replaceable> </option> vous permet d'enregistrer la sortie dans un fichier.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Lors de la création d'utilisateurs clients, vous pouvez définir un utilisateur sans fonction. Un utilisateur sans fonction peut s'authentifier, mais rien de plus. Un tel client ne peut pas extraire une assignation de grappe depuis le moniteur. Cependant, vous pouvez créer un utilisateur sans fonctions si vous souhaitez différer l'ajout de fonctions à une date ultérieure en utilisant la commande <command>ceph auth caps</command>.
+    </para>
+    <para>
+     Un utilisateur normal possède au moins des autorisations de lecture sur le moniteur Ceph et des autorisations de lecture et écriture sur les OSD Ceph. De plus, les autorisations OSD d'un utilisateur sont souvent limitées à l'accès à une réserve particulière.
+    </para>
+<screen><prompt>root # </prompt>ceph auth add client.john mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.paul mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.george mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o george.keyring
+<prompt>root # </prompt>ceph auth get-or-create-key client.ringo mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o ringo.key</screen>
+    <important>
+     <para>
+      Si vous fournissez à un utilisateur des autorisations d'accès OSD <emphasis>sans</emphasis> limiter l'accès à des réserves en particulier, l'utilisateur aura accès à <emphasis>toutes</emphasis> les réserves de la grappe.
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>Modification des fonctions utilisateur</title>
+    <para>
+     La commande <command>ceph auth caps</command> vous permet d'indiquer un utilisateur et de modifier ses fonctions. La définition de nouvelles fonctionnalités écrase les fonctions en cours. Pour afficher les fonctions actuelles, exécutez <command>ceph auth get <replaceable>TYPE D'UTILISATEUR</replaceable>.<replaceable>USERID</replaceable></command>. Pour ajouter des fonctions, vous devez également indiquer les fonctions existants lors de l'utilisation du formulaire suivant :
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable> <replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]' [<replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]']</screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.john
+<prompt>root # </prompt>ceph auth caps client.john mon 'allow r' osd 'allow rw pool=prague'
+<prompt>root # </prompt>ceph auth caps client.paul mon 'allow rw' osd 'allow rwx pool=prague'
+<prompt>root # </prompt>ceph auth caps client.brian-manager mon 'allow *' osd 'allow *'</screen>
+    <para>
+     Pour supprimer une fonction, vous avez la possibilité de la réinitialiser. Si vous souhaitez que l'utilisateur n'ait pas accès à un daemon particulier précédemment défini, indiquez une chaîne vide :
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps client.ringo mon ' ' osd ' '</screen>
+   </sect3>
+   <sect3>
+    <title>Suppression d'utilisateurs</title>
+    <para>
+     Pour supprimer un utilisateur, exécutez <command>auth ceph del</command> :
+    </para>
+<screen><prompt>root # </prompt>ceph auth del <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     où <replaceable>TYPE</replaceable> correspond à <literal>client</literal>, <literal>osd</literal>, <literal>LUN</literal> ou <literal>mds</literal>, et <replaceable>ID</replaceable> correspond au nom d'utilisateur ou à l'ID du daemon.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Impression de la clé d'une utilisateur</title>
+    <para>
+     Pour imprimer la clé d'authentification de l'utilisateur vers la sortie standard, exécutez la commande suivante :
+    </para>
+<screen><prompt>root # </prompt>ceph auth print-key <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     où <replaceable>TYPE</replaceable> correspond à <literal>client</literal>, <literal>osd</literal>, <literal>LUN</literal> ou <literal>mds</literal>, et <replaceable>ID</replaceable> correspond au nom d'utilisateur ou à l'ID du daemon.
+    </para>
+    <para>
+     L'impression de la clé d'un utilisateur est utile lorsque vous devez renseigner le logiciel client avec la clé d'un utilisateur (telle que <systemitem class="library">libvirt</systemitem>), comme dans l'exemple suivant :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mount -t ceph host:/ mount_point \
+-o name=client.user,secret=`ceph auth print-key client.user`</screen>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.userimp">
+    <title>Importation d'utilisateurs</title>
+    <para>
+     Pour importer un ou plusieurs utilisateurs, exécutez <command>ceph auth import</command> et indiquez un trousseau de clés :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <note>
+     <para>
+      La grappe de stockage Ceph ajoute de nouveaux utilisateurs, leurs clés et leurs fonctions, puis les met à jour.
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.keyringmgmt">
+   <title>Gestion des trousseaux de clés</title>
+   <para>
+    Lorsque vous accédez à Ceph via un client Ceph, le client recherche un trousseau de clés local. Ceph prédéfinit le paramètre de trousseau de clés avec les quatre noms de trousseau de clés suivants par défaut de sorte que vous n'avez pas besoin de les définir dans votre fichier de configuration Ceph, sauf si vous souhaitez remplacer les valeurs par défaut :
+   </para>
+<screen>/etc/ceph/<replaceable>cluster</replaceable>.<replaceable>name</replaceable>.keyring
+/etc/ceph/<replaceable>cluster</replaceable>.keyring
+/etc/ceph/keyring
+/etc/ceph/keyring.bin</screen>
+   <para>
+    La métavariable <replaceable>cluster</replaceable> correspond à votre nom de grappe Ceph tel qu'il est défini par le nom du fichier de configuration Ceph. <filename>ceph.conf</filename> signifie que le nom de la grappe est <literal>ceph</literal>, donc <literal>ceph.keyring</literal>. La métavariable <replaceable>name</replaceable> correspond au type d'utilisateur et à l'ID utilisateur, par exemple <literal>client.admin</literal>, par conséquent <literal>ceph.client.admin.keyring</literal>.
+   </para>
+   <para>
+    Après avoir créé un utilisateur (par exemple <systemitem class="username">client.ringo</systemitem>), vous devez obtenir la clé et l'ajouter à un trousseau de clés sur un client Ceph afin que l'utilisateur puisse accéder à la grappe de stockage Ceph.
+   </para>
+   <para>
+    La <xref linkend="storage.cephx.keymgmt"/> explique comment lister, obtenir, ajouter, modifier et supprimer des utilisateurs directement dans la grappe de stockage Ceph. Toutefois, Ceph fournit également l'utilitaire <command>ceph authtool</command> pour vous permettre de gérer des trousseaux de clés à partir d'un client Ceph.
+   </para>
+   <sect3>
+    <title>Création d'un trousseau de clés</title>
+    <para>
+     Les procédures de la <xref linkend="storage.cephx.keymgmt"/> qui permettent de créer des utilisateurs vous obligent à fournir des clés d'utilisateur aux clients Ceph afin qu'ils puissent récupérer la clé de l'utilisateur indiqué et s'authentifier avec la grappe de stockage Ceph. Les clients Ceph accèdent aux trousseaux de clés pour rechercher un nom d'utilisateur et récupérer la clé correspondante :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool --create-keyring /path/to/keyring</screen>
+    <para>
+     Lorsque vous créez un trousseau de clés avec plusieurs utilisateurs, nous vous recommandons de reprendre le nom de la grappe (par exemple, <replaceable>grappe</replaceable>.keyring) pour le nom de fichier du trousseau de clés et l'enregistrer dans le répertoire <filename>/etc/ceph</filename> de sorte que le paramètre par défaut de la configuration du trousseau de clés récupère le nom du fichier sans que vous ayez à l'indiquer dans la copie locale de votre fichier de configuration Ceph. Par exemple, créez <filename>ceph.keyring</filename> en exécutant la commande suivante :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring</screen>
+    <para>
+     Lorsque vous créez un trousseau de clés avec un seul utilisateur, nous vous recommandons de sélectionner le nom de la grappe, le type d'utilisateur et le nom d'utilisateur afin de l'enregistrer dans l'annuaire <filename>/etc/ceph</filename>. Par exemple, <filename>ceph.client.admin.keyring</filename> pour l'utilisateur <systemitem class="username">client.admin</systemitem>.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Ajout d'un utilisateur à un trousseau de clés</title>
+    <para>
+     Lorsque vous ajoutez un utilisateur à la grappe de stockage Ceph (voir <xref linkend="storage.cephx.keymgmt.usermgmt.useradd"/>), vous pouvez récupérer l'utilisateur, la clé et les fonctions, et enregistrer l'utilisateur dans un trousseau de clés.
+    </para>
+    <para>
+     Si vous souhaitez associer un utilisateur par trousseau de clés, la commande <command>ceph auth get</command> suivie de l'option <option>-o</option> enregistrera la sortie dans le format du fichier de trousseau de clés. Par exemple, pour créer un trousseau de clés pour l'utilisateur <systemitem class="username">client.admin</systemitem>, exécutez la commande suivante :
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.admin -o /etc/ceph/ceph.client.admin.keyring</screen>
+    <para>
+     Lorsque vous souhaitez importer des utilisateurs vers un trousseau de clés, vous pouvez utiliser <command>ceph-authtool</command> afin d'indiquer le trousseau de destination et le trousseau source :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring \
+  --import-keyring /etc/ceph/ceph.client.admin.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>Création d'un utilisateur</title>
+    <para>
+     La commande <command>ceph auth add</command> de Ceph permet de créer un utilisateur directement dans la grappe de stockage Ceph. Cependant, vous pouvez également créer un utilisateur, des clés et des fonctionnalités directement dans un trousseau de clés du client Ceph. Vous pouvez ensuite importer l'utilisateur vers la grappe de stockage Ceph :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -n client.ringo --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.keyring</screen>
+    <para>
+     Vous pouvez également créer un trousseau de clés et lui ajouter un nouvel utilisateur simultanément :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx' --gen-key</screen>
+    <para>
+     Dans les scénarios précédents, le nouvel utilisateur <systemitem class="username">client.ringo</systemitem> réside uniquement dans le trousseau de clés. Pour ajouter le nouvel utilisateur à la grappe de stockage Ceph, vous devez encore ajouter celui-ci à la grappe :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth add client.ringo -i /etc/ceph/ceph.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>Modification d'utilisateurs</title>
+    <para>
+     Pour modifier les fonctionnalités d'un enregistrement utilisateur dans un trousseau de clés, indiquez le trousseau de clés et l'utilisateur suivis des fonctionnalités :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx'</screen>
+    <para>
+     Pour mettre à jour l'utilisateur modifié dans l'environnement de grappe Ceph, vous devez importer les modifications du trousseau de clés dans l'entrée utilisateur de la grappe Ceph :
+    </para>
+<screen><prompt>root # </prompt>ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <para>
+     Reportez-vous à la <xref linkend="storage.cephx.keymgmt.usermgmt.userimp"/> pour plus d'informations sur la mise à jour d'un utilisateur de grappe de stockage Ceph à partir d'un trousseau de clés.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.cmdline">
+   <title>Utilisation de la ligne de commande</title>
+   <para>
+    La commande <command>ceph</command> prend en charge les options suivantes liées à la manipulation du nom et du secret de l'utilisateur :
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><option>--id</option> ou <option>--user</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph identifie les utilisateurs avec un type et un ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>, tel que <systemitem class="username">client.admin</systemitem> ou <systemitem class="username">client.user1</systemitem>). Les options <option>id</option>, <option>name</option> et <option>- n</option> vous permettent d'indiquer la partie ID du nom d'utilisateur (par exemple, <systemitem class="username">admin</systemitem> ou <systemitem class="username">user1</systemitem>). Vous pouvez indiquer l'utilisateur avec --id et omettre le type. Par exemple, pour indiquer l'utilisateur client.foo, entrez la commande suivante :
+      </para>
+<screen><prompt>root # </prompt>ceph --id foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph --user foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--name</option> ou <option>-n</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph identifie les utilisateurs avec un type et un ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>, tel que <systemitem class="username">client.admin</systemitem> ou <systemitem class="username">client.user1</systemitem>). Les options <option>--name</option> et <option>-n</option> vous donnent les moyens d'indiquer le nom d'utilisateur complet. Vous devez indiquer le type d'utilisateur (généralement <literal>client</literal>) avec l'ID utilisateur :
+      </para>
+<screen><prompt>root # </prompt>ceph --name client.foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph -n client.foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--keyring</option>
+     </term>
+     <listitem>
+      <para>
+       Chemin d'accès au trousseau de clés contenant un ou plusieurs noms et secrets d'utilisateur. L'option <option>--secret</option> fournit la même fonctionnalité, mais elle est inopérante avec Object Gateway, qui utilise <option>--secret</option> dans un but différent. Vous pouvez récupérer un trousseau de clés avec <command>ceph auth get-or-create</command> et le stocker localement. Il s'agit d'une approche privilégiée, car vous pouvez changer de noms d'utilisateur indépendamment du chemin d'accès aux trousseaux de clés :
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo rbd map --id foo --keyring /path/to/keyring mypool/myimage</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

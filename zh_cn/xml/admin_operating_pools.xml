@@ -1,0 +1,1067 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_operating_pools.xml" version="5.0" xml:id="ceph.pools">
+ <title>管理存储池</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>yes</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Ceph 将数据存储在存储池中。存储池是用于存储对象的逻辑组。如果您先部署集群而不创建存储池，Ceph 会使用默认存储池来存储数据。存储池为您提供：
+ </para>
+ <itemizedlist mark="bullet" spacing="normal">
+  <listitem>
+   <para>
+    <emphasis>恢复能力</emphasis>：您可以设置允许多少个 OSD 发生故障而不会丢失数据。对于副本池，它是对象的所需副本数。创建新存储池时，会将默认副本数设置为 3。因为典型配置会存储一个对象和一个额外的副本，所以您需要将副本数设置为 2。对于纠删码池，该计数为编码块数（在纠删码配置中，设置为 <emphasis>m=2</emphasis>）。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>归置组</emphasis>：用于跨 OSD 将数据存储在某个存储池中的内部数据结构。CRUSH 地图中定义了 Ceph 将数据存储到 PG 中的方式。您可以设置存储池的归置组数。典型配置为每个 OSD 使用约 100 个归置组，以提供最佳平衡而又不会耗费太多计算资源。设置多个存储池时，请务将存储池和集群作为整体考虑，确保设置合理的归置组数。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>CRUSH 规则</emphasis>：在存储池中存储数据时，映射到存储池的 CRUSH 规则组可让 CRUSH 识别将对象及其副本（对于纠删码池，则为块）放置在集群中的规则。您可为存储池创建自定义 CRUSH 规则。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>快照</emphasis>：使用 <command>ceph osd pool mksnap</command> 创建快照时，可高效创建特定存储池的快照。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>设置所有权</emphasis>：您可将某用户 ID 设置为存储池的所有者。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <para>
+  要将数据组织到存储池中，可以列出、创建和删除存储池。您还可以查看每个存储池的用量统计数字。
+ </para>
+ <sect1 xml:id="ceph.pools.associate">
+  <title>将存储池与应用关联</title>
+
+  <para>
+   在使用存储池之前，需要将它们与应用关联。将与 CephFS 搭配使用或由对象网关自动创建的存储池会自动关联。需要使用 <command>rbd</command> 工具初始化要与 RBD 搭配使用的存储池（有关详细信息，请参见<xref linkend="ceph.rbd.commands"/>）。
+  </para>
+
+  <para>
+   对于其他情况，可以手动将自由格式的应用名称与存储池关联：
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd pool application enable <replaceable>pool_name</replaceable> <replaceable>application_name</replaceable></screen>
+
+  <tip>
+   <title>默认应用名称</title>
+   <para>
+    CephFS 使用应用名称 <literal>cephfs</literal>，RADOS 块设备使用 <literal>rbd</literal>，对象网关使用 <literal>rgw</literal>。
+   </para>
+  </tip>
+
+  <para>
+   一个存储池可以与多个应用关联，每个应用都可具有自己的元数据。可使用以下命令显示给定存储池的应用元数据：
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd pool application get <replaceable>pool_name</replaceable></screen>
+ </sect1>
+ <sect1 xml:id="ceph.pools.operate">
+  <title>操作存储池</title>
+
+  <para>
+   本节介绍对存储池执行基本任务的特定信息。您可以了解如何列出、创建和删除存储池，以及如何显示存储池统计数字或管理存储池快照。
+  </para>
+
+  <sect2>
+   <title>列出存储池</title>
+   <para>
+    要列出集群的存储池，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd lspools
+0 rbd, 1 photo_collection, 2 foo_pool,</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph.pools.operate.add_pool">
+   <title>创建存储池</title>
+   <para>
+    要创建副本存储池，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool create <replaceable>pool_name</replaceable> <replaceable>pg_num</replaceable> <replaceable>pgp_num</replaceable> replicated <replaceable>crush_ruleset_name</replaceable> \
+<replaceable>expected_num_objects</replaceable></screen>
+   <para>
+    要创建纠删码池，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool create <replaceable>pool_name</replaceable> <replaceable>pg_num</replaceable> <replaceable>pgp_num</replaceable> erasure <replaceable>erasure_code_profile</replaceable> \
+ <replaceable>crush_ruleset_name</replaceable> <replaceable>expected_num_objects</replaceable></screen>
+   <para>
+    如果超出每个 OSD 的归置组限制，则 <command>ceph osd pool create</command> 可能会失败。该限制通过 <option>mon_max_pg_per_osd</option> 选项设置。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>pool_name</term>
+     <listitem>
+      <para>
+       存储池的名称，必须唯一。必须指定此选项。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pg_num</term>
+     <listitem>
+      <para>
+       存储池的归置组总数。必须指定此选项。默认值是 8。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pgp_num</term>
+     <listitem>
+      <para>
+       用于归置数据的归置组总数。此数量应该与归置组总数相等，归置组拆分情况除外。必须指定此选项。默认值是 8。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pgp_type</term>
+     <listitem>
+      <para>
+       存储池类型，可以是 <emphasis>replicated</emphasis>（用于保留对象的多个副本，以便从失败的 OSD 恢复）或 <emphasis>erasure</emphasis>（用于获得某种通用 RAID5 功能）。副本池需要的原始存储较多，但可实现所有 Ceph 操作。纠删码池需要的原始存储较少，但只实现一部分可用的操作。默认值是“replicated”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>crush_ruleset_name</term>
+     <listitem>
+      <para>
+       此存储池的 crush 规则组的名称。如果所指定的规则组不存在，则创建副本池的操作将会失败，并显示 -ENOENT。但副本池将使用指定的名称创建新的纠删规则组。对于纠删码池，默认值是“erasure-code”。对于副本池，将选取 Ceph 配置变量 <option>osd_osd_pool_default_crush_replicated_ruleset</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>erasure_code_profile=profile</term>
+     <listitem>
+      <para>
+       仅适用于纠删码池。使用纠删码配置。该配置必须是 <command>osd erasure-code-profile set</command> 所定义的现有配置。
+      </para>
+      <para>
+       创建存储池时，请将归置组数设置为合理的值（例如 100）。还需考虑每个 OSD 的归置组总数。归置组在计算方面的开销很高，因此如果您的许多存储池都包含很多归置组（例如有 50 个池，每个池各有 100 个归置组），性能将会下降。下降点的恢复视 OSD 主机性能而定。
+      </para>
+      <para>
+       有关计算存储池的合适归置组数量的详细信息，请参见<link xlink:href="http://docs.ceph.com/docs/master/rados/operations/placement-groups/">归置组</link>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>expected_num_objects</term>
+     <listitem>
+      <para>
+       此存储池的预期对象数。如果设置此值，PG 文件夹拆分发生于存储池创建时。这可避免因运行时文件夹拆分导致的延迟影响。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2>
+   <title>设置存储池配额</title>
+   <para>
+    您可以设置存储池配额，限定每个存储池的最大字节数和/或最大对象数。
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool set-quota <replaceable>pool-name</replaceable> <replaceable>max_objects</replaceable> <replaceable>obj-count</replaceable> <replaceable>max_bytes</replaceable> <replaceable>bytes</replaceable></screen>
+   <para>
+    例如：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool set-quota data max_objects 10000</screen>
+   <para>
+    要删除配额，请将其值设置为 0。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.pools.operate.del_pool">
+   <title>删除存储池</title>
+   <warning>
+    <title>删除存储池的操作不可逆</title>
+    <para>
+     存储池中可能包含重要数据。删除存储池会导致存储池中的所有数据消失，且无法恢复。
+    </para>
+   </warning>
+   <para>
+    不小心删除存储池十分危险，因此 Ceph 实施了两个机制来防止删除存储池。要删除存储池，必须先禁用这两个机制。
+   </para>
+   <para>
+    第一个机制是 <literal>NODELETE</literal> 标志。每个存储池都有这个标志，其默认值是“false”。要确定某个存储池的此标志值，请运行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool get <replaceable>pool_name</replaceable> nodelete</screen>
+   <para>
+    如果命令输出 <literal>nodelete: true</literal>，则只有在使用以下命令更改该标志后，才能删除存储池：
+   </para>
+<screen>ceph osd pool set <replaceable>pool_name</replaceable> nodelete false</screen>
+   <para>
+    第二个机制是集群范围的配置参数 <option>mon allow pool delete</option>，其默认值为“false”。这表示默认不能删除存储池。显示的错误讯息是：
+   </para>
+<screen>Error EPERM: pool deletion is disabled; you must first set the
+mon_allow_pool_delete config option to true before you can destroy a pool</screen>
+   <para>
+    若要规避此安全设置删除存储池，可以临时将 <option>mon allow pool delete</option> 设置为“true”，删除存储池，然后将该参数恢复为“false”：
+   </para>
+<screen><prompt>root # </prompt>ceph tell mon.* injectargs --mon-allow-pool-delete=true
+<prompt>root # </prompt>ceph osd pool delete pool_name pool_name --yes-i-really-really-mean-it
+<prompt>root # </prompt>ceph tell mon.* injectargs --mon-allow-pool-delete=false</screen>
+   <para>
+    <command>injectargs</command> 命令会显示以下讯息：
+   </para>
+<screen>injectargs:mon_allow_pool_delete = 'true' (not observed, change may require restart)</screen>
+   <para>
+    这主要用于确认该命令已成功执行。它不是错误。
+   </para>
+   <para>
+    如果为您创建的存储池创建了自己的规则组和规则，则应该考虑在不再需要该存储池时删除规则组和规则。如果您创建了仅对不再存在的存储池具有许可权限的用户，则应该考虑也删除那些用户。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>重命名存储池</title>
+   <para>
+    要重命名存储池，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool rename <replaceable>current-pool-name</replaceable> <replaceable>new-pool-name</replaceable></screen>
+   <para>
+    如果重命名了存储池，且为经过身份验证的用户使用了按存储池功能，则必须用新的存储池名称更新用户的功能。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>显示存储池统计数字</title>
+   <para>
+    要显示存储池的用量统计数字，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>rados df
+pool name  category  KB  objects   lones  degraded  unfound  rd  rd KB  wr  wr KB
+cold-storage    -   228   1         0      0          0       0   0      1   228
+data            -    1    4         0      0          0       0   0      4    4
+hot-storage     -    1    2         0      0          0       15  10     5   231
+metadata        -    0    0         0      0          0       0   0      0    0
+pool1           -    0    0         0      0          0       0   0      0    0
+rbd             -    0    0         0      0          0       0   0      0    0
+total used          266268          7
+total avail       27966296
+total space       28232564</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph.pools.values">
+   <title>设置存储池的值</title>
+   <para>
+    要设置存储池的值，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool set <replaceable>pool-name</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+   <para>
+    您可以设置以下键的值：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>size</term>
+     <listitem>
+      <para>
+       设置存储池中对象的副本数。有关更多详细信息，请参见<xref linkend="ceph.pools.options.num_of_replicas"/>。仅用于副本池。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>min_size</term>
+     <listitem>
+      <para>
+       设置 I/O 所需的最小副本数。有关更多详细信息，请参见<xref linkend="ceph.pools.options.num_of_replicas"/>。仅用于副本池。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>crash_replay_interval</term>
+     <listitem>
+      <para>
+       允许客户端重放已确认但未提交的请求的秒数。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pg_num</term>
+     <listitem>
+      <para>
+       存储池的归置组数。如果将 OSD 添加到集群，则应该提高归置组的值，有关详细信息，请参见<xref linkend="storage.bp.cluster_mntc.add_pgnum"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pgp_num</term>
+     <listitem>
+      <para>
+       计算数据归置时要使用的归置组的有效数量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>crush_ruleset</term>
+     <listitem>
+      <para>
+       用于在集群中映射对象归置的规则组。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hashpspool</term>
+     <listitem>
+      <para>
+       为给定存储池设置 (1) 或取消设置 (0) HASHPSPOOL 标志。启用此标志会更改算法，以采用更佳的方式将 PG 分配到 OSD 之间。对之前 HASHPSPOOL 标志设为 0 的存储池启用此标志后，集群会开始回填，以使所有 PG 都可再次正确归置。请注意，这可能会在集群上产生相当高的 I/O 负载，因此对高负载生产集群必须进行妥善规划。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>nodelete</term>
+     <listitem>
+      <para>
+       防止删除存储池。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>nopgchange</term>
+     <listitem>
+      <para>
+       防止更改存储池的 <option>pg_num</option> 和 <option>pgp_num</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>nosizechange</term>
+     <listitem>
+      <para>
+       防止更改存储池的大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>write_fadvise_dontneed</term>
+     <listitem>
+      <para>
+       对给定存储池设置/取消设置 <literal>WRITE_FADVISE_DONTNEED</literal> 标志。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>noscrub、nodeep-scrub</term>
+     <listitem>
+      <para>
+       禁用（深层）整理 (scrub) 特定存储池的数据以解决临时高 I/O 负载问题。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_type</term>
+     <listitem>
+      <para>
+       对快速缓存池启用命中集跟踪。请参见<link xlink:href="http://en.wikipedia.org/wiki/Bloom_filter">布隆过滤器</link>以了解更多信息。此选项可用的值如下：<literal>bloom</literal>、<literal>explicit_hash</literal>、<literal>explicit_object</literal>。默认值是 <literal>bloom</literal>，其他值仅用于测试。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_count</term>
+     <listitem>
+      <para>
+       要为快速缓存池存储的命中集数。该数值越高，<systemitem>ceph-osd</systemitem> 守护进程耗用的 RAM 越多。默认值是 <literal>0</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_period</term>
+     <listitem>
+      <para>
+       快速缓存池的命中集期间的时长（以秒为单位）。该数值越高，<systemitem>ceph-osd</systemitem> 守护进程耗用的 RAM 越多。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_fpp</term>
+     <listitem>
+      <para>
+       布隆命中集类型的误报率。请参见<link xlink:href="http://en.wikipedia.org/wiki/Bloom_filter">布隆过滤器</link>以了解更多信息。有效范围是 0.0 - 1.0，默认值是 <literal>0.05</literal>
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>use_gmt_hitset</term>
+     <listitem>
+      <para>
+       为快速缓存分层创建命中集时，强制 OSD 使用 GMT（格林威治标准时间）时戳。这可确保在不同时区中的节点返回相同的结果。默认值是 <literal>1</literal>。不应该更改此值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_target_dirty_ratio</term>
+     <listitem>
+      <para>
+       在快速缓存分层代理将已修改（脏）对象清理到后备存储池之前，包含此类对象的快速缓存池百分比。默认值是 <literal>.4</literal>
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_target_dirty_high_ratio</term>
+     <listitem>
+      <para>
+       在快速缓存分层代理将已修改（脏）对象清理到速度更快的后备存储池之前，包含此类对象的快速缓存池百分比。默认值是 <literal>.6</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_target_full_ratio</term>
+     <listitem>
+      <para>
+       在快速缓存分层代理将未修改（干净）对象从快速缓存池逐出之前，包含此类对象的快速缓存池百分比。默认值是 <literal>.8</literal>
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>target_max_bytes</term>
+     <listitem>
+      <para>
+       触发 <option>max_bytes</option> 阈值后，Ceph 将会开始清理或逐出对象。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>target_max_objects</term>
+     <listitem>
+      <para>
+       触发 <option>max_objects</option> 阈值时，Ceph 将开始清理或逐出对象。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_grade_decay_rate</term>
+     <listitem>
+      <para>
+       两次连续的 <literal>hit_set</literal> 之间的温度降低率。默认值是 <literal>20</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_search_last_n</term>
+     <listitem>
+      <para>
+       计算温度时在 <literal>hit_set</literal> 中对出现的项最多计 <literal>N</literal> 次。默认值是 <literal>1</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_min_flush_age</term>
+     <listitem>
+      <para>
+       在快速缓存分层代理将对象从快速缓存池清理到存储池之前的时间（秒）。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_min_evict_age</term>
+     <listitem>
+      <para>
+       在快速缓存分层代理将对象从快速缓存池中逐出之前的时间（秒）。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>fast_read</term>
+     <listitem>
+      <para>
+       如果对纠删码池启用此标志，则读取请求会向所有分片发出子读取命令，并一直等到接收到足够解码的分片，才会为客户端提供服务。对于 <emphasis>jerasure</emphasis> 和 <emphasis>isa</emphasis> 纠删插件，前 <literal>K</literal> 个副本返回时，就会使用从这些副本解码的数据立即处理客户端的请求。这有助于获得一些资源以提高性能。目前，此标志仅支持用于纠删码池。默认值是 <literal>0</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>scrub_min_interval</term>
+     <listitem>
+      <para>
+       集群负载低时整理 (scrub) 存储池的最小间隔（秒）。默认值 <literal>0</literal> 表示使用来自 Ceph 配置文件的 <option>osd_scrub_min_interval</option> 值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>scrub_max_interval</term>
+     <listitem>
+      <para>
+       不论集群负载如何都整理 (scrub) 存储池的最大间隔（秒）。默认值 <literal>0</literal> 表示使用来自 Ceph 配置文件的 <option>osd_scrub_max_interval</option> 值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>deep_scrub_interval</term>
+     <listitem>
+      <para>
+       <emphasis>深层</emphasis>整理 (scrub) 存储池的间隔（秒）。默认值 <literal>0</literal> 表示使用来自 Ceph 配置文件的 <option>osd_deep_scrub</option> 值。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2>
+   <title>获取存储池的值</title>
+   <para>
+    要获取存储池中的值，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool get <replaceable>pool-name</replaceable> <replaceable>key</replaceable></screen>
+   <para>
+    您可以获取<xref linkend="ceph.pools.values"/>中所列键以及下列键的值：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>pg_num</term>
+     <listitem>
+      <para>
+       存储池的归置组数。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pgp_num</term>
+     <listitem>
+      <para>
+       计算数据归置时要使用的归置组的有效数量。有效范围小于或等于 <literal>pg_num</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ceph.pools.options.num_of_replicas">
+   <title>设置对象副本数</title>
+   <para>
+    要设置副本存储池上的对象副本数，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool set <replaceable>poolname</replaceable> size <replaceable>num-replicas</replaceable></screen>
+   <para>
+    <replaceable>num-replicas</replaceable> 包括对象本身。例如，如果您想用对象和对象的两个副本组成对象的三个实例，请指定 3。
+   </para>
+   <para>
+    如果将 <replaceable>num-replicas</replaceable> 设置为 2，数据将只有<emphasis>一个</emphasis>副本。例如，如果您丢失了一个对象实例，则需要在恢复期间确定自上次<link xlink:href="http://ceph.com/docs/master/rados/configuration/osd-config-ref/#scrubbing">整理 (scrub)</link> 后，另一个副本没有损坏。
+   </para>
+   <para>
+    将存储池设置为具有一个副本意味着存储池中的数据对象只有<emphasis>一个</emphasis>实例。如果 OSD 发生故障，您将丢失数据。如果要短时间存储临时数据，可能就会用到只有一个副本的存储池。
+   </para>
+   <para>
+    为存储池设置三个以上副本只能小幅提高可靠性，但在极少数情况下可能适用。请记住，副本越多，存储对象副本所需的磁盘空间就越多。如果您需要终极数据安全性，则建议使用纠删码池。有关详细信息，请参见<xref linkend="cha.ceph.erasure"/>。
+   </para>
+   <warning>
+    <title>建议使用两个以上副本</title>
+    <para>
+     强烈建议不要只使用 2 个副本。如果一个 OSD 发生故障，恢复期间的高负载很可能会导致第二个 OSD 也发生故障。
+    </para>
+   </warning>
+   <para>
+    例如：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool set data size 3</screen>
+   <para>
+    可针对每个存储池执行此命令。
+   </para>
+   <note>
+    <para>
+     对象可以接受降级模式下副本数量低于 <literal>pool size</literal> 的 I/O。要设置 I/O 所需副本的最小数目，应该使用 <literal>min_size</literal> 设置。例如：
+    </para>
+<screen><prompt>root # </prompt>ceph osd pool set data min_size 2</screen>
+    <para>
+     这可确保数据池中没有对象会接收到副本数量低于 <literal>min_size</literal> 的 I/O。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2>
+   <title>获取对象副本数</title>
+   <para>
+    要获取对象副本数，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd dump | grep 'replicated size'</screen>
+   <para>
+    Ceph 将列出存储池，并高亮显示 <literal>replicated size</literal> 属性。Ceph 默认会创建对象的两个副本（共三个副本，或者大小为 3）。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.cluster_mntc.add_pgnum">
+   <title>增加归置组数</title>
+   <para>
+    创建新存储池时，需指定存储池的归置组数（请参见<xref linkend="ceph.pools.operate.add_pool"/>）。将更多 OSD 添加至集群后，出于性能和数据持久性原因，通常还需要增加归置组数。对于每个归置组，OSD 和监视器节点始终都需要用到内存、网络和 CPU，在恢复期间需求量甚至更大。因此，最大限度地减少归置组数可节省相当大的资源量。
+   </para>
+   <warning>
+    <title><option>pg_num</option> 的值过高</title>
+    <para>
+     更改存储池的 <option>pg_num</option> 值时，新的归置组数有可能会超出允许的限制。例如
+    </para>
+<screen><prompt>root # </prompt>ceph osd pool set rbd pg_num 4096
+ Error E2BIG: specified pg_num 3500 is too large (creating 4096 new PGs \
+ on ~64 OSDs exceeds per-OSD max of 32)</screen>
+    <para>
+     该限制可防止归置组过度拆分，它从 <option>mon_osd_max_split_count</option> 值衍生。
+    </para>
+   </warning>
+   <para>
+    为已调整大小的集群确定合适的新归置组数是一项复杂的任务。一种方法是不断增加归置组数，直到达到集群性能的最佳状态。要确定增加后的新归置组数，需要获取 <option>mon_osd_max_split_count</option> 参数的值，并将它与当前的归置组数相加。要了解基本原理，请查看下面的脚本：
+   </para>
+<screen><prompt>cephadm &gt; </prompt>max_inc=`ceph daemon mon.a config get mon_osd_max_split_count 2&gt;&amp;1 \
+  | tr -d '\n ' | sed 's/.*"\([[:digit:]]\+\)".*/\1/'`
+<prompt>cephadm &gt; </prompt>pg_num=`ceph osd pool get rbd pg_num | cut -f2 -d: | tr -d ' '`
+<prompt>cephadm &gt; </prompt>echo "current pg_num value: $pg_num, max increment: $max_inc"
+<prompt>cephadm &gt; </prompt>next_pg_num="$(($pg_num+$max_inc))"
+<prompt>cephadm &gt; </prompt>echo "allowed increment of pg_num: $next_pg_num"</screen>
+   <para>
+    确定新的归置组数之后，使用以下命令来增加该数量：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool set <replaceable>pool_name</replaceable> pg_num <replaceable>next_pg_num</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.cluster_mntc.add_pool">
+   <title>添加存储池</title>
+   <para>
+    在您首次部署集群之后，Ceph 会使用默认存储池来存储数据。之后，您可以使用以下命令创建新的存储池：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool create</screen>
+   <para>
+    有关创建集群存储池的详细信息，请参见<xref linkend="ceph.pools.operate.add_pool"/>。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="pools.migration">
+  <title>存储池迁移</title>
+
+  <para>
+   创建存储池（请参见<xref linkend="ceph.pools.operate.add_pool"/>）时，您需要指定存储池的初始参数，例如存储池类型或归置组数量。如果您在存储池内放置数据后，又决定更改任何初始参数，则需要将存储池数据迁移到参数适合您的部署的另一个存储池中。
+  </para>
+
+  <para>
+   迁移存储池的方法有多种。建议使用<emphasis>快速缓存层</emphasis>，因为该方法是透明的，能够减少集群停机时间并避免复制所有存储池的数据。
+  </para>
+
+  <sect2 xml:id="pool.migrate.cache_tier">
+   <title>使用快速缓存层迁移</title>
+   <para>
+    该方法的原理十分简单，只需将需要迁移的存储池按相反的顺序加入快速缓存层中即可。有关快速缓存层的详细信息，请参见<xref linkend="cha.ceph.tiered"/>。例如，要将名为“testpool”的副本池迁移到纠删码池，请执行以下步骤：
+   </para>
+   <procedure>
+    <title>将副本池迁移到纠删码池</title>
+    <step>
+     <para>
+      创建一个名为“newpool”的新纠删码池：
+     </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd pool create newpool 4096 4096 erasure default
+</screen>
+     <para>
+      您现在有两个池，即装满数据的原始副本池“testpool”和新的空纠删码池“newpool”：
+     </para>
+     <figure>
+      <title>迁移前的存储池</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate1.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate1.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      设置快速缓存层，并将副本池“testpool”配置为快速缓存池：
+     </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd tier add newpool testpool --force-nonempty
+<prompt>root@minion &gt; </prompt>ceph osd cache-mode testpool forward
+</screen>
+     <para>
+      自此之后，所有新对象都将创建在新池中：
+     </para>
+     <figure>
+      <title>快速缓存层设置</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate2.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate2.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      强制快速缓存池将所有对象移到新池中：
+     </para>
+<screen>
+<prompt>root@minion &gt; </prompt>rados -p testpool cache-flush-evict-all
+</screen>
+     <figure>
+      <title>数据清理</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate3.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate3.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      将所有客户端切换到新池。您需要指定一个覆盖层，以便在旧池中搜索对象，直到所有数据都已清理到新的纠删码池。
+     </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd tier set-overlay newpool testpool
+</screen>
+     <para>
+      有了覆盖层，所有操作都会转到旧的副本池“testpool”：
+     </para>
+     <figure>
+      <title>设置覆盖层</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate4.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate4.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      现在，您可以将所有客户端都切换为访问新池中的对象。
+     </para>
+    </step>
+    <step>
+     <para>
+      所有数据都迁移到纠删码池“newpool”后，删除覆盖层和旧超速缓冲池“testpool”：
+     </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd tier remove-overlay newpool
+<prompt>root@minion &gt; </prompt>ceph osd tier remove newpool testpool
+</screen>
+     <figure>
+      <title>迁移完成</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate5.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate5.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha.ceph.snapshots.pool">
+  <title>存储池快照</title>
+
+  <para>
+   存储池快照是整个 Ceph 存储池的状态快照。通过存储池快照，可以保留存储池状态的历史。创建存储池快照可能需要大量存储空间，具体取决于存储池的大小。在创建存储池快照之前，始终需要检查相关存储是否有足够的磁盘空间。
+  </para>
+
+  <sect2>
+   <title>创建存储池快照</title>
+   <para>
+    要创建存储池快照，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool mksnap <replaceable>pool-name</replaceable> <replaceable>snap-name</replaceable></screen>
+   <para>
+    例如：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool mksnap pool1 snapshot1
+created pool pool1 snap snapshot1</screen>
+  </sect2>
+
+  <sect2>
+   <title>删除存储池快照</title>
+   <para>
+    要删除存储池快照，请执行以下命令：
+   </para>
+<screen><prompt>root # </prompt>ceph osd pool rmsnap <replaceable>pool-name</replaceable> <replaceable>snap-name</replaceable></screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="sec.ceph.pool.compression">
+  <title>数据压缩</title>
+
+  <para>
+   从 SUSE Enterprise Storage 5 开始，BlueStore 提供即时数据压缩，以节省磁盘空间。
+  </para>
+
+  <sect2 xml:id="sec.ceph.pool.compression.enable">
+   <title>启用压缩</title>
+   <para>
+    可使用以下命令启用存储池的数据压缩：
+   </para>
+<screen><prompt>root # </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> ompression_algorithm snappy
+<prompt>root # </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> compression_mode aggressive</screen>
+   <para>
+    将 <replaceable>POOL_NAME</replaceable> 替换为要启用压缩的存储池。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="sec.ceph.pool.compression.options">
+   <title>存储池压缩选项</title>
+   <para>
+    完整的压缩设置列表：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>compression_algorithm</term>
+     <listitem>
+      <para>
+       值：<literal>none</literal>、<literal>zstd</literal>、<literal>snappy</literal>。默认值：<literal>snappy</literal>。
+      </para>
+      <para>
+       使用的压缩算法取决于特定使用情形。下面是几点建议：
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         不要使用 <literal>zlib</literal>，其余几种算法更好。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         如果需要较好的压缩率，请使用 <literal>zstd</literal>。注意，由于 <literal>zstd</literal> 在压缩少量数据时 CPU 开销较高，建议不要将其用于 BlueStore。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         如果需要较低的 CPU 使用率，请使用 <literal>lz4</literal> 或 <literal>snappy</literal>。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         针对实际数据的样本运行这些算法的基准测试，观察集群的 CPU 和内存使用率。
+        </para>
+       </listitem>
+      </itemizedlist>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>compression_mode</term>
+     <listitem>
+      <para>
+       值：{<literal>none</literal>、<literal>aggressive</literal>、<literal>passive</literal>、<literal>force</literal>}。默认值：<literal>none</literal>。
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         <literal>none</literal>：从不压缩
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>passive</literal>：如果提示 <literal>COMPRESSIBLE</literal>，则压缩
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>aggressive</literal>：除非提示 <literal>INCOMPRESSIBLE</literal>，才压缩
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>force</literal>：始终压缩
+        </para>
+       </listitem>
+      </itemizedlist>
+      <para>
+       有关如何设置 <literal>COMPRESSIBLE</literal> 或 <literal>INCOMPRESSIBLE</literal> 标志的信息，请参见 <link xlink:href="http://docs.ceph.com/docs/doc-12.2.0-major-changes/rados/api/librados/#rados_set_alloc_hint"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>compression_required_ratio</term>
+     <listitem>
+      <para>
+       值：双精度型，比例 = SIZE_COMPRESSED / SIZE_ORIGINAL。默认值：<literal>.875</literal>
+      </para>
+      <para>
+       由于净增益低，存储高于此比例的对象时不会压缩。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>compression_max_blob_size</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>0</literal>
+      </para>
+      <para>
+       所压缩对象的最大大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>compression_min_blob_size</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>0</literal>
+      </para>
+      <para>
+       所压缩对象的最小大小。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="sec.ceph.pool.bluestore_compression.options">
+   <title>全局压缩选项</title>
+   <para>
+    可在 Ceph 配置中设置以下配置选项，并将其应用于所有 OSD 而不仅仅是单个存储池。<xref linkend="sec.ceph.pool.compression.options"/>中列出的存储池特定配置优先。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>bluestore_compression_algorithm</term>
+     <listitem>
+      <para>
+       值：<literal>none</literal>、<literal>zstd</literal>、<literal>snappy</literal>、<literal>zlib</literal>。默认值：<literal>snappy</literal>。
+      </para>
+      <para>
+       使用的压缩算法取决于特定使用情形。下面是几点建议：
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         不要使用 <literal>zlib</literal>，其余几种算法更好。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         如果需要较好的压缩率，请使用 <literal>zstd</literal>。注意，由于 <literal>zstd</literal> 在压缩少量数据时 CPU 开销较高，建议不要将其用于 BlueStore。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         如果需要较低的 CPU 使用率，请使用 <literal>lz4</literal> 或 <literal>snappy</literal>。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         针对实际数据的样本运行这些算法的基准测试，观察集群的 CPU 和内存使用率。
+        </para>
+       </listitem>
+      </itemizedlist>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_mode</term>
+     <listitem>
+      <para>
+       值：{<literal>none</literal>、<literal>aggressive</literal>、<literal>passive</literal>、<literal>force</literal>}。默认值：<literal>none</literal>。
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         <literal>none</literal>：从不压缩
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>passive</literal>：如果提示 <literal>COMPRESSIBLE</literal>，则压缩。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>aggressive</literal>：除非提示 <literal>INCOMPRESSIBLE</literal>，才压缩
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>force</literal>：始终压缩
+        </para>
+       </listitem>
+      </itemizedlist>
+      <para>
+       有关如何设置 <literal>COMPRESSIBLE</literal> 或 <literal>INCOMPRESSIBLE</literal> 标志的信息，请参见 <link xlink:href="http://docs.ceph.com/docs/doc-12.2.0-major-changes/rados/api/librados/#rados_set_alloc_hint"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_required_ratio</term>
+     <listitem>
+      <para>
+       值：双精度型，比例 = SIZE_COMPRESSED / SIZE_ORIGINAL。默认值：<literal>.875</literal>
+      </para>
+      <para>
+       由于净增益低，存储高于此比例的对象时不会压缩。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_min_blob_size</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>0</literal>
+      </para>
+      <para>
+       所压缩对象的最小大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_max_blob_size</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>0</literal>
+      </para>
+      <para>
+       所压缩对象的最大大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_min_blob_size_ssd</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>8K</literal>
+      </para>
+      <para>
+       压缩并存储在固态硬盘上的对象的最小大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_max_blob_size_ssd</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>64K</literal>
+      </para>
+      <para>
+       压缩并存储在固态硬盘上的对象的最大大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_min_blob_size_hdd</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>128K</literal>
+      </para>
+      <para>
+       压缩并存储在普通硬盘上的对象的最小大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_max_blob_size_hdd</term>
+     <listitem>
+      <para>
+       值：无符号整数，大小以字节为单位。默认值：<literal>512K</literal>
+      </para>
+      <para>
+       压缩并存储在普通硬盘上的对象的最大大小。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,483 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_iscsi.xml" version="5.0" xml:id="cha.ceph.iscsi">
+
+
+ <title>Ceph iSCSI Gateway</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>modification</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>oui</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Ce chapitre est consacré aux tâches d'administration liées à la passerelle iSCSI. Pour suivre une procédure de déploiement, reportez-vous au <xref linkend="cha.ceph.as.iscsi"/>. <remark role="fixme">Can YaST be used for iSCSI?</remark>
+ </para>
+ <sect1 xml:id="ceph.iscsi.connect">
+  <title>Connexion aux cibles gérées par lrbd</title>
+
+  <para>
+   Ce chapitre décrit comment se connecter aux cibles gérées par lrbd à partir de clients exécutant Linux, Microsoft Windows ou VMware.
+  </para>
+
+  <sect2 xml:id="ceph.iscsi.connect.linux">
+   <title>Linux (<systemitem>open-iscsi</systemitem>)</title>
+   <para>
+    La connexion aux cibles iSCSI soutenues par lrbd avec <systemitem>open-iscsi</systemitem> s'effectue en deux étapes. Tout d'abord, l'initiateur doit découvrir les cibles iSCSI disponibles sur l'hôte de passerelle, puis il doit se connecter et assigner les unités logiques (LU) disponibles.
+   </para>
+   <para>
+    Les deux étapes exigent que le daemon <systemitem>open-iscsi</systemitem> soit en cours d'exécution. La façon dont vous démarrez le daemon <systemitem>open-iscsi</systemitem> dépend de votre distribution Linux :
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Sur les hôtes SUSE Linux Enterprise Server (SLES) et Red Hat Enterprise Linux (RHEL), exécutez <command>systemctl start iscsid</command> (ou <command>service iscsid start</command> si <command>systemctl</command> n'est pas disponible).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Sur les hôtes Debian et Ubuntu, lancez <command>systemctl start open-iscsi</command> (ou <command>service open-iscsi start</command>).
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    Si votre hôte initiateur exécute SUSE Linux Enterprise Server, reportez-vous à la page <link xlink:href="https://www.suse.com/documentation/sles-12/stor_admin/data/sec_iscsi_initiator.html"/> ou à la page <link xlink:href="https://www.suse.com/documentation/sles11/stor_admin/data/sec_inst_system_iscsi_initiator.html"/> pour plus d'informations sur la façon de se connecter à une cible iSCSI.
+   </para>
+   <para>
+    Pour toute autre distribution Linux prenant en charge <systemitem>open-iscsi</systemitem>, poursuivez la découverte des cibles sur votre passerelle <systemitem>lrbd</systemitem> (cet exemple utilise iscsi1.example.com comme adresse de portail ; pour l'accès multipath, répétez ces étapes avec iscsi2.example.com) :
+   </para>
+<screen>iscsiadm -m discovery -t sendtargets -p iscsi1.example.com
+192.168.124.104:3260,1 iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol</screen>
+   <para>
+    Ensuite, connectez-vous au portail. Si la connexion s'effectue correctement, les unités logiques soutenues par RBD sur le portail sont immédiatement disponibles sur le bus SCSI du système :
+   </para>
+<screen>iscsiadm -m node -p iscsi1.example.com --login
+Logging in to [iface: default, target: iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260] (multiple)
+Login to [iface: default, target: iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260] successful.</screen>
+   <para>
+    Répétez ce processus pour les autres adresses IP ou hôtes du portail.
+   </para>
+   <para>
+    Si l'utilitaire <systemitem>lsscsi</systemitem> est installé sur votre système, vous pouvez l'utiliser pour énumérer les périphériques SCSI disponibles sur votre système :
+   </para>
+<screen>lsscsi
+[8:0:0:0]    disk    SUSE     RBD              4.0   /dev/sde
+[9:0:0:0]    disk    SUSE     RBD              4.0   /dev/sdf</screen>
+   <para>
+    Dans une configuration multipath (où deux périphériques iSCSI connectés représentent une seule et même LU), vous pouvez également examiner l'état du périphérique multipath avec l'utilitaire <systemitem>multipath</systemitem> :
+   </para>
+<screen>multipath -ll
+360014050cf9dcfcb2603933ac3298dca dm-9 SUSE,RBD
+size=49G features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 8:0:0:0 sde 8:64 active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+`- 9:0:0:0 sdf 8:80 active ready running</screen>
+   <para>
+    Vous pouvez désormais utiliser ce périphérique multipath comme vous le feriez pour n'importe quel périphérique de traitement par blocs. Par exemple, vous pouvez utiliser le périphérique en tant que volume physique pour la gestion de volumes logiques (LVM) ou simplement créer un système de fichiers dessus. L'exemple ci-dessous montre comment créer un système de fichiers XFS sur le volume iSCSI multipath nouvellement connecté :
+   </para>
+<screen>mkfs -t xfs /dev/mapper/360014050cf9dcfcb2603933ac3298dca
+log stripe unit (4194304 bytes) is too large (maximum is 256KiB)
+log stripe unit adjusted to 32KiB
+meta-data=/dev/mapper/360014050cf9dcfcb2603933ac3298dca isize=256    agcount=17, agsize=799744 blks
+         =                       sectsz=512   attr=2, projid32bit=1
+         =                       crc=0        finobt=0
+data     =                       bsize=4096   blocks=12800000, imaxpct=25
+         =                       sunit=1024   swidth=1024 blks
+naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+log      =internal log           bsize=4096   blocks=6256, version=2
+         =                       sectsz=512   sunit=8 blks, lazy-count=1
+realtime =none                   extsz=4096   blocks=0, rtextents=0</screen>
+   <para>
+    XFS étant un système de fichiers hors grappe, vous pouvez uniquement le monter sur un seul noeud initiateur iSCSI à un moment donné.
+   </para>
+   <para>
+    Si vous souhaitez à tout moment interrompre l'utilisation des LU iSCSI associées à une cible particulière, exécutez la commande suivante :
+   </para>
+<screen>iscsiadm -m node -p iscsi1.example.com --logout
+Logging out of session [sid: 18, iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260]
+Logout of [sid: 18, target: iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260] successful.</screen>
+   <para>
+    Comme pour la découverte et la connexion, vous devez répéter les étapes de déconnexion pour toutes les adresses IP ou tous les noms d'hôte du portail.
+   </para>
+   <sect3 xml:id="ceph.iscsi.connect.linux.multipath">
+    <title>Configuration multipath</title>
+    <para>
+     La configuration multipath est gérée sur les clients ou les initiateurs, et elle est indépendante de toute configuration <systemitem>lrbd</systemitem>. Sélectionnez une stratégie avant d'utiliser le stockage de bloc. Après avoir modifié le fichier <filename>/etc/multipath.conf</filename>, redémarrez <systemitem>multipathd</systemitem> avec :
+    </para>
+<screen>sudo systemctl restart multipathd</screen>
+    <para>
+     Pour une configuration active-passive avec des noms conviviaux, ajoutez
+    </para>
+<screen>defaults {
+  user_friendly_names yes
+}</screen>
+    <para>
+     à votre fichier <filename>/etc/multipath.conf</filename>. Après vous être connecté à vos cibles, exécutez
+    </para>
+<screen>multipath -ll
+mpathd (36001405dbb561b2b5e439f0aed2f8e1e) dm-0 SUSE,RBD
+size=2.0G features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 2:0:0:3 sdl 8:176 active ready running
+|-+- policy='service-time 0' prio=1 status=enabled
+| `- 3:0:0:3 sdj 8:144 active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+  `- 4:0:0:3 sdk 8:160 active ready running</screen>
+    <para>
+     Notez l'état de chaque liaison. Pour une configuration active-active, ajoutez
+    </para>
+<screen>defaults {
+  user_friendly_names yes
+}
+
+devices {
+  device {
+    vendor "(LIO-ORG|SUSE)"
+    product "RBD"
+    path_grouping_policy "multibus"
+    path_checker "tur"
+    features "0"
+    hardware_handler "1 alua"
+    prio "alua"
+    failback "immediate"
+    rr_weight "uniform"
+    no_path_retry 12
+    rr_min_io 100
+  }
+}</screen>
+    <para>
+     à votre fichier <filename>/etc/multipath.conf</filename>. Redémarrez <systemitem>multipathd</systemitem> et exécutez
+    </para>
+<screen>multipath -ll
+mpathd (36001405dbb561b2b5e439f0aed2f8e1e) dm-3 SUSE,RBD
+size=2.0G features='1 queue_if_no_path' hwhandler='1 alua' wp=rw
+`-+- policy='service-time 0' prio=50 status=active
+  |- 4:0:0:3 sdj 8:144 active ready running
+  |- 3:0:0:3 sdk 8:160 active ready running
+  `- 2:0:0:3 sdl 8:176 active ready running</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.connect.win">
+   <title>Microsoft Windows (initiateur iSCSI de Microsoft)</title>
+   <para>
+    Pour vous connecter à une cible iSCSI de SUSE Enterprise Storage à partir d'un serveur Windows 2012, procédez comme suit :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Ouvrez Windows Server Manager. Dans le tableau de bord, sélectionnez <menuchoice><guimenu>Outils</guimenu><guimenu>Initiateur iSCSI</guimenu></menuchoice>. La boîte de dialogue des <guimenu>propriétés de l'initiateur iSCSI</guimenu> apparaît. Sélectionnez l'onglet <guimenu>Détection</guimenu> :
+     </para>
+     <figure>
+      <title>Propriétés de l'initiateur iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-initiator-props.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-initiator-props.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Dans la boîte de dialogue <guimenu>Détecter un portail cible</guimenu>, entrez le nom d'hôte ou l'adresse IP dans le champ <guimenu>Cible</guimenu> et cliquez sur <guimenu>OK</guimenu> :
+     </para>
+     <figure>
+      <title>Détection du portail cible</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-ip.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-ip.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Répétez ce processus pour tous les autres noms d'hôte ou adresses IP de passerelle. Une fois terminé, passez en revue la liste <guimenu>Portails cibles</guimenu> :
+     </para>
+     <figure>
+      <title>Portails cibles</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-ip-list.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-ip-list.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Ensuite, basculez vers l'onglet <guimenu>Cibles</guimenu> et passez en revue votre ou vos cibles découvertes.
+     </para>
+     <figure>
+      <title>Cibles</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-targets.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-targets.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Cliquez sur <guimenu>Se connecter</guimenu> sous l'onglet <guimenu>Cibles</guimenu>. La boîte de dialogue <guimenu>Se connecter à la cible</guimenu> apparaît. Sélectionnez la case à cocher <guimenu>Activer la prise en charge de plusieurs chemins d'accès</guimenu> pour activer MPIO (Multi-path I/O), puis cliquez sur <guimenu>OK</guimenu> :
+     </para>
+    </step>
+    <step>
+     <para>
+      Lorsque la boîte de dialogue <guimenu>Se connecter à la cible</guimenu> se ferme, sélectionnez <guimenu>Propriétés</guimenu> pour examiner les propriétés de la cible :
+     </para>
+     <figure>
+      <title>Propriétés de la cible iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-properties.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-properties.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Sélectionnez <guimenu>Périphériques</guimenu>, puis cliquez sur <guimenu>MPIO</guimenu> pour réviser la configuration entrées/sorties réparties sur plusieurs chemins :
+     </para>
+     <figure>
+      <title>Détails du périphérique</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-device-details.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-device-details.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      La <guimenu>Stratégie d'équilibrage de charge</guimenu> par défaut s'appuie sur la méthode <guimenu>Tourniquet avec sous-ensemble</guimenu>. Si vous préférez une configuration de reprise après incident pure, choisissez <guimenu>Fail Over Only</guimenu> (Basculement seul).
+     </para>
+    </step>
+   </procedure>
+   <para>
+    Cela conclut la configuration de l'initiateur iSCSI. Les volumes iSCSI sont maintenant disponibles comme tous les autres périphériques SCSI et peuvent être initialisés en vue de leur utilisation en tant que volumes et lecteurs. Cliquez sur <guimenu>OK</guimenu> pour fermer la boîte de dialogue des <guimenu>propriétés de l'initiateur iSCSI</guimenu> et poursuivez avec le rôle <guimenu>Services de fichiers et de stockage</guimenu> à partir du tableau de bord <guimenu>Gestionnaire de serveur</guimenu>.
+   </para>
+   <para>
+    Observez le volume nouvellement connecté. Il s'identifie comme <emphasis>SUSE RBD SCSI Multi-Path Drive</emphasis> (Unité multipath SCSI RBD de SUSE) sur le bus iSCSI et il est marqué initialement avec l'état <emphasis>Hors ligne</emphasis> et une table de partitions de type <emphasis>Inconnu</emphasis>. Si le nouveau volume n'apparaît pas immédiatement, sélectionnez <guimenu>Relancer l'analyse du stockage</guimenu> dans la zone de liste déroulante <guimenu>Tâches</guimenu> pour relancer l'analyse du bus iSCSI.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Cliquez avec le bouton droit sur le volume iSCSI et sélectionnez <guimenu>Nouveau volume</guimenu> dans le menu contextuel. L'<guimenu>Assistant Nouveau volume</guimenu> apparaît. Cliquez sur <guimenu>Suivant</guimenu>, mettez en surbrillance le volume iSCSI nouvellement connecté et cliquez sur <guimenu>Suivant</guimenu> pour commencer.
+     </para>
+     <figure>
+      <title>Assistant Nouveau Volume</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-volume-wizard.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-volume-wizard.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Initialement, le périphérique est vide et ne contient pas de table de partitions. Lorsque vous y êtes invité, vérifiez la boîte de dialogue indiquant que le volume est initialisé avec une table de partitions GPT :
+     </para>
+     <figure>
+      <title>Invite de disque hors ligne</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-win-prompt1.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-win-prompt1.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Sélectionnez la taille du volume. En règle générale, vous pouvez utiliser la capacité totale du périphérique. Assignez ensuite une lettre d'unité ou un nom de répertoire dans lequel le volume nouvellement créé sera disponible. Sélectionnez un système de fichiers à créer sur le nouveau volume et, enfin, confirmez vos sélections en cliquant sur <guimenu>Créer</guimenu> pour achever la création du volume :
+     </para>
+     <figure>
+      <title>Confirmation des sélections de volume</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-volume-confirm.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-volume-confirm.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Une fois la procédure terminée, vérifiez les résultats, puis cliquez sur <guimenu>Fermer</guimenu> afin de conclure l'initialisation de l'unité. Une fois l'initialisation terminée, le volume (ainsi que son système de fichiers NTFS) devient disponible en tant qu'unité locale nouvellement initialisée.
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.connect.vmware">
+   <title>VMware</title>
+   <para/>
+   <procedure>
+    <step>
+     <para>
+      Pour vous connecter aux volumes iSCSI gérés par <systemitem>lrbd</systemitem>, vous devez disposer d'un adaptateur logiciel iSCSI configuré. Si aucun adaptateur n'est disponible dans votre configuration vSphere, créez-en un en sélectionnant <menuchoice><guimenu>Configuration</guimenu><guimenu>Adaptateurs de stockage </guimenu><guimenu>Ajouter</guimenu><guimenu>Initiateur de logiciel iSCSI</guimenu></menuchoice>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Lorsqu'elles sont disponibles, sélectionnez les propriétés de l'adaptateur en cliquant avec le bouton droit sur l'adaptateur et en sélectionnant <guimenu>Propriétés</guimenu> depuis le menu contextuel :
+     </para>
+     <figure>
+      <title>Propriétés de l'initiateur iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi_vmware_adapter_props.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi_vmware_adapter_props.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Dans la boîte de dialogue <guimenu>iSCSI Software Initiator</guimenu> (Initiateur logiciel iSCSI), cliquez sur le bouton <guimenu>Configurer</guimenu>. Accédez ensuite à l'onglet <guimenu>Découverte dynamique</guimenu> et sélectionnez <guimenu>Ajouter</guimenu>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Entrez l'adresse IP ou le nom d'hôte de votre passerelle iSCSI <systemitem>lrbd</systemitem>. Si vous exécutez plusieurs passerelles iSCSI dans une configuration de basculement, répétez cette étape autant de fois que vous avez des passerelles dont vous êtes responsable.
+     </para>
+     <figure>
+      <title>Ajout d'un serveur cible</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-add-target.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-add-target.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Lorsque vous avez entré toutes les passerelles iSCSI, cliquez sur <guimenu>OK</guimenu> dans la boîte de dialogue pour lancer une nouvelle analyse de l'adaptateur iSCSI.
+     </para>
+    </step>
+    <step>
+     <para>
+      Une fois cette analyse terminée, le nouveau périphérique iSCSI apparaît dans la liste <guimenu>Adaptateurs du stockage</guimenu> du volet <guimenu>Détails</guimenu>. Pour les périphériques multipath, vous pouvez à présent cliquer avec le bouton droit sur l'adaptateur et sélectionnez <guimenu>Gérer les chemins</guimenu> dans le menu contextuel :
+     </para>
+     <figure>
+      <title>Gestion des périphériques Multipath</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-multipath.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-multipath.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Tous les chemins visibles doivent être signalés par une diode verte sous l'entête <guimenu>État</guimenu>. L'un de vos chemins d'accès doit être signalé par <guimenu>Actif (E/S)</guimenu> et tous les autres simplement par <guimenu>Actif</guimenu> :
+     </para>
+     <figure>
+      <title>Liste des chemins pour Multipath</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-paths.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-paths.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Vous pouvez maintenant passer d'<guimenu>Adaptateurs du stockage</guimenu> à l'élément étiqueté <guimenu>Stockage</guimenu>. Sélectionnez <guimenu>Ajouter un stockage...</guimenu> dans le coin supérieur droit du volet pour afficher la boîte de dialogue <guimenu>Ajouter un stockage</guimenu>. Sélectionnez ensuite <guimenu>Disque/LUN</guimenu>, puis cliquez sur <guimenu>Suivant</guimenu>. Le périphérique iSCSI nouvellement ajouté apparaît dans la liste <guimenu>Sélectionner un disque/LUN</guimenu>. Sélectionnez-le, puis cliquez sur <guimenu>Suivant</guimenu> pour continuer :
+     </para>
+     <figure>
+      <title>Boîte de dialogue Ajouter un stockage</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-add-storage-dialog.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-add-storage-dialog.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Cliquez sur <guimenu>Suivant</guimenu> pour accepter la disposition de disque par défaut.
+     </para>
+    </step>
+    <step>
+     <para>
+      Dans le volet <guimenu>Propriétés</guimenu>, assignez un nom à la nouvelle banque de données, puis cliquez sur <guimenu>Suivant</guimenu>. Acceptez le paramétrage par défaut pour utiliser l'intégralité de l'espace de volume pour la banque de données ou sélectionnez <guimenu>Custom Space Setting</guimenu> (Paramétrage d'espace personnalisé) pour une banque de données plus petite :
+     </para>
+     <figure>
+      <title>Configuration de l'espace personnalisé</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-custom-datastore.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-custom-datastore.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Cliquez sur <guimenu>Terminer</guimenu> pour achever la création de la banque de données.
+     </para>
+     <para>
+      La nouvelle banque de données apparaît maintenant dans la liste de banques de données, et vous pouvez la sélectionner afin d'afficher les informations détaillées qui s'y rapportent. Vous pouvez maintenant utiliser le volume iSCSI soutenu par <systemitem>lrbd</systemitem> comme toute autre banque de données vSphere.
+     </para>
+     <figure>
+      <title>Présentation de la banque de données iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-overview.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-overview.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.conclude">
+  <title>Conclusion</title>
+
+  <para>
+   <systemitem>lrbd</systemitem> est un composant clé de SUSE Enterprise Storage qui permet d'accéder à un stockage de bloc distribué hautement disponible à partir de n'importe quel serveur ou client compatible avec le protocole iSCSI. En utilisant <systemitem>lrbd</systemitem> sur un ou plusieurs hôtes de passerelle iSCSI, les images Ceph RBD deviennent disponibles sous la forme d'unités logiques (LU) associées à des cibles iSCSI, dont l'accès peut être hautement disponible et régi par l'équilibrage de charge.
+  </para>
+
+  <para>
+   Puisque la configuration de <systemitem>lrbd</systemitem> est entièrement stockée dans la zone de stockage des objets Ceph RADOS, les hôtes de passerelle <systemitem>lrbd</systemitem> ne possèdent pas intrinsèquement d'état persistant, ce qui permet de les remplacer, les augmenter ou les réduire à volonté. En conséquence, SUSE Enterprise Storage permet aux clients SUSE de déployer une technologie de stockage d'entreprise véritablement distribuée, hautement disponible, résiliente et à autodépannage sur du matériel de base et une plate-forme entièrement Open Source.
+  </para>
+ </sect1>
+</chapter>

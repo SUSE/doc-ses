@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tiered_storage.xml" version="5.0" xml:id="cha.ceph.tiered">
+
+ <title>Hiérarchisation du cache</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>modification</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>oui</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Un <emphasis>niveau de cache</emphasis> est une couche de stockage supplémentaire mise en oeuvre entre le client et le stockage standard. Il est conçu pour accélérer l'accès aux réserves stockées sur les disques durs lents et les réserves codées à effacement.
+ </para>
+ <para>
+  Généralement, la hiérarchisation du cache implique la création d'une réserve de périphériques de stockage relativement rapides/coûteux (par exemple, des disques SSD) configurés pour servir de niveau de cache et d'une réserve de sauvegarde constituée de périphériques plus lents et moins chers configurés pour servir de niveau de stockage.
+ </para>
+ <sect1>
+  <title>Terminologie de cache hiérarchisé</title>
+
+  <para>
+   La hiérarchisation du cache reconnaît deux types de réserve : une <emphasis>réserve de cache</emphasis> et une <emphasis>réserve de stockage</emphasis>.
+  </para>
+
+  <tip>
+   <para>
+    Pour obtenir des informations générales sur les réserves, reportez-vous au <xref linkend="ceph.pools"/>.
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>réserve de stockage</term>
+    <listitem>
+     <para>
+      Soit une réserve répliquée standard qui stocke plusieurs copies d'un objet dans la grappe de stockage Ceph, soit une réserve codée à effacement (voir <xref linkend="cha.ceph.erasure"/>).
+     </para>
+     <para>
+      La réserve de stockage est parfois appelée stockage de « sauvegarde » ou stockage « à froid » (statique).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>réserve de cache</term>
+    <listitem>
+     <para>
+      Réserve répliquée standard stockée sur un périphérique de stockage relativement petit mais rapide, avec son propre ensemble de règles dans une assignation CRUSH.
+     </para>
+     <para>
+      La réserve de cache est également appelée stockage « à chaud » (dynamique).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.caution">
+  <title>Considérations</title>
+
+  <para>
+   La hiérarchisation du cache peut <emphasis>dégrader</emphasis> les performances de la grappe pour des charges de travail spécifiques. Les points suivants présentent certains de ses aspects que vous devez considérer :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>Dépendance à la charge de travail</emphasis> : le fait qu'un cache améliore les performances dépend de la charge de travail. Étant donné qu'il existe un coût associé au déplacement des objets dans ou hors du cache, il peut être plus efficace lorsque la plupart des requêtes concernent un petit nombre d'objets. La réserve de cache doit être suffisamment grande pour capturer l'ensemble de votre charge de travail afin d'éviter le débordement.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Comparaison difficile</emphasis> : la plupart des tests de performance peuvent révéler des performances médiocres avec la hiérarchisation du cache. En effet, ces tests requièrent un ensemble volumineux d'objets, et le cache met du temps à être pleinement opérationnel.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Performances potentiellement faibles</emphasis> : pour les charges de travail qui ne sont pas adaptées à la hiérarchisation du cache, les performances sont souvent plus lentes qu'avec une réserve répliquée normale sans hiérarchisation du cache activée.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Énumération d'objets <emphasis><systemitem>librados</systemitem></emphasis> : si votre application utilise <systemitem>librados</systemitem> directement et repose sur l'énumération d'objets, la hiérarchisation du cache peut ne pas fonctionner comme prévu. (Cela ne constitue pas un problème pour Object Gateway, RBD ou CephFS.)
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1>
+  <title>Quand utiliser la hiérarchisation du cache</title>
+
+  <para>
+   Vous pouvez envisager d'utiliser la hiérarchisation du cache dans les cas suivants :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Vous devez accéder aux réserves codées à effacement via RADOS Block Device (RBD).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Vous devez accéder aux réserves codées à effacement via iSCSI, car il hérite des limitations de RBD. Pour plus d'informations sur iSCSI, reportez-vous au <xref linkend="cha.ceph.iscsi"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Vous disposez d'un nombre limité de stockage hautes performances et d'une grande quantité de stockage à faible performance. Vous avez besoin d'accéder plus rapidement aux données stockées.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.cachemodes">
+  <title>Modes de cache</title>
+
+  <para>
+   L'agent de hiérarchisation du cache gère la migration des données entre le niveau de cache et le niveau de stockage de sauvegarde. Les administrateurs ont la possibilité de configurer la manière dont cette migration s'effectue. Voici les deux principaux scénarios :
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>mode écriture différée</term>
+    <listitem>
+     <para>
+      Dans le mode écriture différée, les clients Ceph écrivent des données dans le niveau de cache et reçoivent un accusé de réception du niveau de cache. À la longue, les données écrites dans le niveau de cache migrent vers le niveau de stockage et sont vidées du niveau de cache. Du point de vue conceptuel, le niveau de cache est placé « en avant » du niveau de stockage de sauvegarde. Lorsqu'un client Ceph a besoin de données qui résident dans le niveau de stockage, l'agent de hiérarchisation du cache migre les données vers le niveau de cache lors de la lecture, puis celles-ci sont envoyées au client Ceph. Par la suite, le client Ceph peut effectuer des E/S en utilisant le niveau de cache jusqu'à ce que les données deviennent inactives. Il est idéal pour les données modifiables telles que l'édition de photos ou de vidéos ou les données transactionnelles.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Mode lecture seule</term>
+    <listitem>
+     <para>
+      En mode lecture seule, les clients Ceph écrivent des données directement dans le niveau de sauvegarde. En lecture, Ceph copie les objets demandés du niveau de sauvegarde vers le niveau de cache. Les objets périmés sont supprimés du niveau de cache en fonction de la stratégie définie. Cette approche est idéale pour les données immuables, telles que la présentation d'images ou de vidéos sur un réseau social, des données ADN ou des clichés radiographiques, car il est peu cohérent de lire des données dans une réserve de cache pouvant contenir des données périmées. N'utilisez pas le mode lecture seule pour les données changeantes.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="ses.tiered.hitset">
+  <title>Jeu d'accès</title>
+
+  <sect2 xml:id="ses.tiered.hitset.overview">
+   <title>Présentation</title>
+   <para>
+    Les paramètres d'un <emphasis>jeu d'accès</emphasis> permettent de régler les <emphasis>réserves de cache</emphasis>. Dans Ceph, les jeux d'accès sont généralement des filtres de Bloom et fournissent un moyen efficace en termes de mémoire pour suivre les objets qui figurent déjà dans la réserve de cache.
+   </para>
+   <para>
+    Le jeu d'accès est un tableau de bits utilisé pour le stockage du résultat d'un ensemble de fonctions de hachage appliquées aux noms d'objet. Initialement, tous les bits sont définis sur <literal>0</literal>. Lorsqu'un objet est ajouté au jeu d'accès, son nom est haché et le résultat est assigné à des positions différentes dans le jeu d'accès, où la valeur du bit est alors définie sur <literal>1</literal>.
+   </para>
+   <para>
+    Pour savoir si un objet existe dans le cache, le nom de l'objet est à nouveau haché. Si un bit est <literal>0</literal>, l'objet n'est absolument pas dans le cache et doit être récupéré dans le stockage à froid. <remark role="fixme">How is the modification date retrieved in read mode?</remark>
+   </para>
+   <para>
+    Il se peut que les résultats de différents objets soient stockés dans le même emplacement du jeu d'accès. Par chance, tous les bits peuvent être définis sur <literal>1</literal> sans que l'objet soit dans le cache. Par conséquent, les jeux d'accès fonctionnant avec un filtre de Bloom peuvent uniquement indiquer si un objet n'est vraiment pas dans le cache et doit être récupéré dans le stockage à froid.
+   </para>
+   <para>
+    Une réserve de cache peut avoir plusieurs accès au fichier de suivi du jeu d'accès au fil du temps. Le paramètre <literal>hit_set_count</literal> définit le nombre de jeux d'accès en cours d'utilisation, tandis que le paramètre <literal>hit_set_period</literal> définit la durée d'utilisation de chaque jeu d'accès. Une fois la période expirée, le jeu d'accès suivant est utilisé. Si le nombre de jeux d'accès est épuisé, la mémoire du jeu d'accès le plus ancien est libérée et un nouveau jeu d'accès est créé. Les valeurs de <literal>hit_set_count</literal> et <literal>hit_set_period</literal> multipliées l'une par l'autre définissent la période totale de suivi des objets.
+   </para>
+   <figure xml:id="ses.tiered.hitset.overview.bloom">
+    <title>Filtre de Bloom avec 3 objets stockés</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Comparé au nombre d'objets hachés, un jeu d'accès basé sur un filtre de Bloom est très efficace en termes de mémoire. Moins de 10 bits suffisent pour réduire à moins de 1 % la probabilité de faux positifs. La probabilité de faux positifs peut être définie avec <literal>hit_set_fpp</literal>. En fonction du nombre d'objets dans un groupe de placement et de la probabilité de faux positifs, Ceph calcule automatiquement la taille du jeu d'accès.
+   </para>
+   <para>
+    L'espace de stockage requis sur la réserve de cache peut être limité avec les paramètres <literal>min_write_recency_for_promote</literal> et <literal>min_read_recency_for_promote</literal>. Si la valeur est définie sur <literal>0</literal>, tous les objets sont promus dans la réserve de cache dès qu'ils sont lus ou écrits, et le problème persiste jusqu'à leur élimination. Toute valeur supérieure à <literal>0</literal> définit le nombre de jeux d'accès triés par âge dans lesquels l'objet est recherché. Si l'objet se trouve dans un jeu d'accès, il est promu dans la réserve de cache.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ses.tiered.hitset.examples">
+   <title>Exemples</title>
+   <sect3 xml:id="ses.tiered.hitset.examples.memory">
+    <title>Réserve de cache volumineuse et faible quantité de mémoire</title>
+    <para>
+     Si un volume important de stockage est disponible avec une faible quantité de RAM, tous les objets peuvent être promus dans la réserve de cache dès qu'ils sont accessibles. La petite taille du jeu d'accès est maintenue. Voici un ensemble d'exemples de valeurs de configuration :
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses.tiered.hitset.examples.storage">
+    <title>Réserve de cache faible et grande quantité de mémoire</title>
+    <para>
+     Si une petite quantité de stockage est disponible avec une grande quantité de mémoire, le niveau de cache peut être configuré pour promouvoir un nombre limité d'objets dans la réserve de cache. Douze jeux d'accès, dont chacun est utilisé sur une période de 14 400 secondes, fournissent un suivi pour un total de 48 heures. Si un objet a été lu au cours des huit dernières heures, il est promu dans la réserve de cache. L'ensemble des valeurs de configuration exemple est alors le suivant :
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ses.tiered.storage">
+  <title>Configuration d'un exemple de cache hiérarchisé</title>
+
+  <para>
+   Cette section explique comment configurer un niveau de cache SSD rapide (stockage à chaud) en face d'un disque dur standard (stockage à froid). 
+  </para>
+
+  <tip>
+   <para>
+    L'exemple suivant est fourni uniquement à des fins d'illustration et inclut une configuration avec une racine et une règle pour la partie SSD résidant sur un noeud Ceph unique.
+   </para>
+   <para>
+    Dans l'environnement de production, les configurations de grappe incluent généralement un nombre supérieur d'entrées racine et de règle pour le stockage à chaud, ainsi que des noeuds mixtes avec des disques SSD et SATA.
+   </para>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     Préparez une machine hôte avec des disques rapides, tels que des disques SSD. Ce noeud de grappe agira comme un niveau de cache rapide.
+    </para>
+   </step>
+   <step>
+    <para>
+     Transformez la machine en noeud Ceph à l'aide de DeepSea. Installez le logiciel et configurez la machine hôte comme décrit à la <xref linkend="salt.adding.nodes"/>. Supposons que son nom soit <replaceable>node-4</replaceable>. Ce noeud a besoin de quatre disques OSD.
+    </para>
+    <para>
+     Cela peut générer une entrée similaire à celle-ci dans l'assignation CRUSH :
+    </para>
+<screen>[...]
+host node-4 {
+   id -5  # do not change unnecessarily
+   # weight 0.012
+   alg straw
+   hash 0  # rjenkins1
+   item osd.6 weight 0.003
+   item osd.7 weight 0.003
+   item osd.8 weight 0.003
+   item osd.9 weight 0.003
+}
+[...]</screen>
+   </step>
+   <step>
+    <para>
+     Modifiez l'assignation CRUSH pour la réserve de stockage dynamique assignée aux OSD soutenus par les disques SSD rapides. Définissez une seconde hiérarchie avec un noeud racine pour les disques SSD (en tant que « root ssd »). En outre, modifiez la pondération et une règle CRUSH pour les SSD. Pour plus d'informations sur l'assignation CRUSH, visitez le site <link xlink:href="http://docs.ceph.com/docs/master/rados/operations/crush-map/"/>.
+    </para>
+    <para>
+     Modifiez l'assignation CRUSH directement avec des outils de ligne de commande, tels que <command>getcrushmap</command> et <command>crushtool</command> :
+    </para>
+    <substeps performance="required">
+     <step>
+      <para>
+       Récupérez l'assignation actuelle et enregistrez-la sous <filename>c.map</filename> :
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd getcrushmap -o c.map</screen>
+     </step>
+     <step>
+      <para>
+       Décompilez le fichier <filename>c.map</filename> et enregistrez-le sous <filename>c.txt</filename> :
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -d c.map -o c.txt</screen>
+     </step>
+     <step>
+      <para>
+       Éditez <filename>c.txt</filename> :
+      </para>
+<screen>[...]
+host node-4 {
+        id -5  # do not change unnecessarily
+        # weight 4.000
+        alg straw
+        hash 0  # rjenkins1
+        item osd.6 weight 1.000
+        item osd.7 weight 1.000
+        item osd.8 weight 1.000
+        item osd.9 weight 1.000
+}
+root ssd {    # newly added root for the SSD hot-storage
+        id -6
+        alg straw
+        hash 0
+        item node-4 weight 4.00
+}
+rule ssd {
+        ruleset 4
+        type replicated
+        min_size 0
+        max_size 4
+        step take ssd
+        step chooseleaf firstn 0 type host
+        step emit
+}
+[...]</screen>
+     </step>
+     <step>
+      <para>
+       Compilez le fichier <filename>c.txt</filename> modifié et enregistrez-le sous <filename>ssd.map</filename> :
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -c c.txt -o ssd.map</screen>
+     </step>
+     <step>
+      <para>
+       Enfin, installez le fichier <filename>ssd.map</filename> en tant que nouvelle assignation CRUSH :
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd setcrushmap -i ssd.map</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     Créez la réserve de stockage dynamique à utiliser pour la hiérarchisation du cache. Utilisez la nouvelle règle « ssd » pour cela :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create hot-storage 100 100 replicated ssd</screen>
+   </step>
+   <step>
+    <para>
+     Créez la réserve de stockage statique à l'aide de la règle « replicated_ruleset » par défaut :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+   </step>
+   <step>
+    <para>
+     Ensuite, la configuration d'un niveau de cache implique l'association d'une réserve de stockage de sauvegarde à une réserve de cache, dans ce cas, un stockage à froid (=réserve de stockage) avec stockage à chaud (=réserve de cache) :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier add cold-storage hot-storage</screen>
+   </step>
+   <step>
+    <para>
+     Pour définir le mode de cache sur « writeback », exécutez la commande suivante :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier cache-mode hot-storage writeback</screen>
+    <para>
+     Pour plus d'informations sur les modes de cache, reportez-vous à la <xref linkend="sec.ceph.tiered.cachemodes"/>.
+    </para>
+    <para>
+     Les niveaux de cache d'écriture différée recouvrent le niveau de stockage de sauvegarde, ils nécessitent donc une étape supplémentaire : vous devez diriger tout le trafic client de la réserve de stockage vers la réserve de cache. Pour diriger le trafic client directement vers la réserve de cache, exécutez la commande suivante, par exemple :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier set-overlay cold-storage hot-storage</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="cache.tier.configure">
+   <title>Configuration d'un niveau de cache</title>
+   <para>
+    Il existe plusieurs options que vous pouvez utiliser pour configurer les niveaux de cache. Utilisez la syntaxe suivante :
+   </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+   <sect3>
+    <title>Taille et type de cible</title>
+    <para>
+     Les étapes suivantes expliquent comment configurer une <emphasis>réserve de cache</emphasis> avec les valeurs fournies dans la <xref linkend="ses.tiered.hitset.examples.storage"/>
+    </para>
+    <para>
+     Les niveaux de cache de production de Ceph utilisent un filtre de Bloom pour <option>hit_set_type</option> :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_type bloom</screen>
+    <para>
+     <option>hit_set_count</option> et <option>hit_set_period</option> définissent la période que chaque jeu d'accès doit couvrir et le nombre de jeux d'accès à stocker. <remark role="fixme">What are the numbers doing? They're without explanation. https://software.intel.com/en-us/blogs/2015/03/03/ceph-cache-tiering-introduction</remark>
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_count 12
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_period 14400
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes 1000000000000</screen>
+    <note>
+     <para>
+      Avec une valeur plus grande de <option>hit_set_count</option>, le processus <systemitem class="process">ceph osd</systemitem> utilise plus de mémoire vive.
+     </para>
+    </note>
+    <para>
+     Le paramètre <option>min_read_recency_for_promote</option> définit le nombre de jeux d'accès dans lesquels un objet sera recherché lors de la gestion d'une opération de lecture. En fonction du résultat de la recherche, il est décidé ou non de promouvoir l'objet de façon asynchrone. Sa valeur doit être comprise entre 0 et <option>hit_set_count</option>. Si la valeur est 0, l'objet est toujours promu. Si la valeur est 1, le jeu d'accès actuel est contrôlé. Si cet objet réside dans le jeu d'accès actuel, il est promu. Sinon, il ne l'est pas. Pour les autres valeurs, le nombre exact de jeux d'accès archivés est vérifié. L'objet est promu s'il se trouve dans l'un des jeux d'accès <option>min_read_recency_for_promote</option> les plus récents.
+    </para>
+    <para>
+     Vous pouvez définir un paramètre similaire, <option>min_write_recency_for_promote</option>, pour l'opération d'écriture :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_read_recency_for_promote 2
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_write_recency_for_promote 2</screen>
+    <note>
+     <para>
+      Plus la période est longue et plus les valeurs de <option>min_read_recency_for_promote</option> et de <option>min_write_recency_for_promote</option> sont élevées, plus le daemon <systemitem class="process">ceph osd</systemitem> consomme de mémoire vive. En particulier, lorsque l'agent est actif pour le vidage et l'éviction d'objets du cache, tous les jeux d'accès <option>hit_set_count</option> sont chargés en mémoire vive.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Dimensionnement du cache</title>
+    <para>
+     L'agent de hiérarchisation du cache effectue deux fonctions principales :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Vidage</term>
+      <listitem>
+       <para>
+        L'agent identifie les objets modifiés (altérés) et les transmet à la réserve de stockage pour un stockage à long terme.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Éviction</term>
+      <listitem>
+       <para>
+        L'agent identifie les objets qui n'ont pas été modifiés (propres) et évince l'objet dont l'utilisation est la plus ancienne parmi les objets du cache.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <sect4 xml:id="cache.tier.config.absizing">
+     <title>Dimensionnement absolu</title>
+     <para>
+      L'agent de hiérarchisation du cache peut vider ou évincer des objets en fonction du nombre total d'octets ou le nombre total d'objets. Pour indiquer un nombre maximal d'octets, exécutez la commande suivante :
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+     <para>
+      Pour indiquer le nombre maximal d'objets, exécutez la commande suivante :
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+     <note>
+      <para>
+       Ceph n'est pas en mesure de déterminer automatiquement la taille d'une réserve de cache, la configuration de la taille absolue n'est donc pas requise dans ce cas. Dans le cas contraire, le vidage et l'éviction ne fonctionneront pas. Si vous indiquez les deux limites, l'agent de hiérarchisation du cache commencera à vider ou à évincer les données lors du déclenchement de l'un ou l'autre seuil.
+      </para>
+     </note>
+     <note>
+      <para>
+       Toutes les requêtes du client sont bloquées uniquement lorsque la valeur <option>target_max_bytes</option> ou <option>target_max_objects</option> est atteinte.
+      </para>
+     </note>
+    </sect4>
+    <sect4 xml:id="cache.tier.config.relsizing">
+     <title>Dimensionnement relatif</title>
+     <para>
+      L'agent de hiérarchisation du cache peut vider ou évincer des objets en fonction de la taille de la réserve de cache (spécifiée par <option>target_max_bytes</option> ou <option>target_max_objects</option> dans la <xref linkend="cache.tier.config.absizing"/>). Lorsque la réserve de cache est constituée d'un certain pourcentage d'objets modifiés (altérés), l'agent de hiérarchisation du cache vide ceux-ci dans la réserve de stockage. Pour définir le paramètre <option>cache_target_dirty_ratio</option>, exécutez la commande suivante :
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+     <para>
+      Par exemple, si vous définissez la valeur sur 0.4, les objets modifiés (altérés) seront vidés lorsqu'ils atteindront 40 % de la capacité de la réserve de cache :
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+     <para>
+      Lorsque les objets altérés atteignent un certain pourcentage de la capacité, videz-les du cache à une vitesse supérieure. Utilisez <option>cache_target_dirty_high_ratio</option> :
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+     <para>
+      Lorsque la réserve de cache atteint un certain pourcentage de sa capacité, l'agent de hiérarchisation du cache évince les objets pour maintenir l'espace libre. Pour définir le paramètre <option>cache_target_full_ratio</option>, exécutez la commande suivante :
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+    </sect4>
+   </sect3>
+   <sect3>
+    <title>Ancienneté dans le cache</title>
+    <para>
+     Vous pouvez spécifier l'âge minimal d'un objet récemment modifié (altéré) avant que l'agent de hiérarchisation du cache le transfère à la réserve de stockage de sauvegarde :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+    <para>
+     Vous pouvez spécifier l'âge minimal d'un objet avant qu'il ne soit évincé du niveau de cache :
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="ceph.tier.gmt_hitset">
+    <title>Utilisation du temps universel GMT pour le jeu d'accès</title>
+    <para>
+     Les configurations de niveau de cache possèdent un filtre de Bloom appelé <emphasis>jeu d'accès</emphasis>. Le filtre teste si un objet appartient à un ensemble d'objets dynamiques ou statiques. Les objets sont ajoutés aux jeux d'accès en utilisant des tampons horaires adjoints à leur nom.
+    </para>
+    <para>
+     Si les machines de la grappe résident dans des fuseaux horaires différents et que les tampons horaires sont dérivés de l'heure locale, les objets d'un jeu d'accès peuvent porter des noms trompeurs composés de tampons horaires futurs ou passés. Dans le pire des cas, les objets peuvent ne pas exister du tout dans le jeu d'accès.
+    </para>
+    <para>
+     Pour éviter ce problème, le paramètre <option>use_gmt_hitset</option> est défini sur « 1 » par défaut dans les configurations de niveau de cache nouvellement créées. De cette façon, vous forcez les OSD à utiliser les tampons horaires GMT (Greenwich Mean Time) lors de la création des noms d'objets pour le jeu d'accès.
+    </para>
+    <warning>
+     <title>conservation de la valeur par défaut</title>
+     <para>
+      Évitez de remplacer la valeur par défaut « 1 » du paramètre <option>use_gmt_hitset</option>. Si les erreurs liées à cette option ne sont pas dues à votre configuration de grappe, ne modifiez jamais ce paramètre manuellement. Dans le cas contraire, le comportement de la grappe peut devenir imprévisible.
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

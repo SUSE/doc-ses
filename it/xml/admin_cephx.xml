@@ -1,0 +1,589 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_cephx.xml" version="5.0" xml:id="cha.storage.cephx">
+ <title>Autenticazione con <systemitem class="service">cephx</systemitem></title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>modifica</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>sì</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Per identificare i client e proteggerli da attacchi man-in-the-middle, in Ceph è disponibile il rispettivo sistema di autenticazione <systemitem class="service">cephx</systemitem>. I <emphasis>client</emphasis> in questo conteso sono utenti umani, come l'utente amministratore, o servizi/daemon correlati a Ceph, ad esempio OSD, monitoraggi o Object Gateway.
+ </para>
+ <note>
+  <para>
+   Il protocollo <systemitem class="service">cephx</systemitem> non indirizza la cifratura dati nel trasporto, come TLS/SSL.
+  </para>
+ </note>
+ <sect1 xml:id="storage.cephx.arch">
+
+
+  <title>Architettura di autenticazione</title>
+
+  <para>
+   <systemitem class="service">cephx</systemitem> utilizza chiavi segrete per l'autenticazione, vale a dire che entrambi il client e il cluster di monitoraggio dispongono di una copia della chiave segreta del client. Il protocollo di autenticazione consente a entrambe le parti di provare a vicenda l'esistenza di una copia della chiave senza rivelarla effettivamente. In tal modo se esegue un'autenticazione reciproca, che assicura sia all'utente sia al cluster che entrambi possiedono rispettivamente la chiave segreta e la copia della stessa.
+  </para>
+
+  <para>
+   Una funzione di scalabilità della chiave di Ceph consente di evitare un'interfaccia centralizzata nell'archivio dati Ceph. Ciò significa che i client Ceph possono interagire direttamente con gli OSD. Per proteggere i dati, in Ceph è disponibile il sistema di autenticazione <systemitem class="service">cephx</systemitem>, che consente di autenticare i client Ceph.
+  </para>
+
+  <para>
+   Ciascun monitoraggio in grado di autenticare client e distribuire chiavi, pertanto non si verifica alcun single point of failure o collo di bottiglia quando si utilizza <systemitem class="service">cephx</systemitem>. Il monitoraggio restituisce una struttura di dati di autenticazione nella quale è inclusa una chiave sessione quando si ottengono i servizi Ceph. Tale chiave sessione è cifrata con la chiave segreta permanente del client in modo che solo quest'ultimo sia in grado di richiedere servizi dai Ceph monitor. La chiave sessione viene quindi utilizzata dal client per richiedere i rispettivi servizi desiderati dal monitoraggio e questo a sua volta fornisce un ticket tramite il quale il client eseguirà l'autenticazione negli OSD in cui vengono effettivamente gestiti i dati. I Ceph monitor e gli OSD condividono un segreto in modo che il client possa utilizzare il ticket fornito dal monitoraggio con qualsiasi OSD o server di metadati nel cluster. Poiché i ticket <systemitem class="service">cephx</systemitem> hanno una scadenza, l'autore di un attacco non può utilizzare un ticket scaduto o una chiave sessione ottenuti in modo illecito. Questa forma di autenticazione impedirà agli autori di un attacco, dotati di accesso ai mezzi di comunicazione, di creare messaggi contraffatti in un'altra identità del client o alterare altri messaggi legittimi del client finché la chiave segreta del client non viene rivelata prima della rispettiva scadenza.
+  </para>
+
+  <para>
+   Per utilizzare <systemitem class="service">cephx</systemitem>, l'amministratore deve prima configurare i client/gli utenti. Nel seguente diagramma, l'utente <systemitem class="username">client.admin</systemitem> richiama <command>ceph auth get-or-create-key</command> dalla riga di comando per generare un nome utente e una chiave segreta. Nel sottosistema <command>auth</command> di Ceph vengono generati nome utente e chiave, quindi viene memorizzata una copia con il o i monitoraggio e il segreto dell'utente viene trasmesso di nuovo all'utente <systemitem class="username">client.admin</systemitem>. Vale a dire che client e monitoraggio condividono una chiave segreta.
+  </para>
+
+  <figure>
+   <title>Autenticazione <systemitem class="service">cephx</systemitem> di base</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Per eseguire l'autenticazione con il monitoraggio, il client trasmette al monitoraggio il nome utente. Il monitoraggio genera una chiave sessione che viene cifrata con la chiave segreta associata al nome utente e il ticket cifrato viene trasmesso di nuovo al client. I dati con la chiave segreta condivisa vengono quindi decifrati nel client in modo da recuperare la chiave sessione. La chiave sessione consente di identificare l'utente per la sessione attuale. Il client richiede quindi un ticket correlato all'utente, che viene firmato dalla chiave sessione. Il monitoraggio genera un ticket, che viene poi cifrato con la chiave segreta dell'utente e trasmesso di nuovo al client. Il ticket viene quindi decifrato dal client e utilizzato per firmare le richieste agli OSD e ai server di metadati nel cluster.
+  </para>
+
+  <figure>
+   <title>Autenticazione <systemitem class="service">cephx</systemitem></title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Il protocollo <systemitem class="service">cephx</systemitem> consente di autenticare le comunicazioni in corso tra il computer client e i server Ceph. Ciascun messaggio inviato tra un client e un server dopo l'autenticazione iniziale viene firmato mediante l'uso di un ticket che può essere verificato da monitoraggi, OSD, e server di metadati tramite il rispettivo segreto condiviso.
+  </para>
+
+  <figure>
+   <title>Autenticazione <systemitem class="service">cephx</systemitem> - MDS e OSD</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <important>
+   <para>
+    La protezione offerta da questa autenticazione viene applicata tra il client Ceph e gli host del cluster Ceph. L'autenticazione non viene estesa oltre il client Ceph. Se un utente accede al client Ceph da un host remoto, l'autenticazione Ceph non viene applicata alla connessione tra l'host dell'utente e l'host client.
+   </para>
+  </important>
+ </sect1>
+ <sect1 xml:id="storage.cephx.keymgmt">
+
+
+  <title>Gestione delle chiavi</title>
+
+  <para>
+   In questa sezione sono descritti gli utenti del client Ceph e le rispettive autenticazioni e autorizzazioni con il cluster di memorizzazione Ceph. Gli <emphasis>utenti</emphasis> sono individui o attori di sistema, come le applicazioni, che utilizzano i client Ceph per interagire con i daemon del cluster di memorizzazione Ceph.
+  </para>
+
+  <para>
+   Quando Ceph viene eseguito con l'autenticazione e l'autorizzazione abilitate (abilitate per default), è necessario specificare un nome utente e un portachiavi contenente la chiave segreta dell'utente specificato (di solito tramite riga di comando). Se non si specifica un nome utente, Ceph utilizzerà <systemitem class="username">client.admin</systemitem> come nome utente di default. Se non si specifica un portachiavi, Ceph ne ricercherà uno tramite l'impostazione del portachiavi nel file di configurazione Ceph. Ad esempio, se si esegue il comando <command>ceph health</command> senza specificare un nome utente o un portachiavi, il comando viene interpretato da Ceph nel seguente modo:
+  </para>
+
+<screen>ceph -n client.admin --keyring=/etc/ceph/ceph.client.admin.keyring health</screen>
+
+  <para>
+   In alternativa, è possibile utilizzare la variabile di ambiente <literal>CEPH_ARGS</literal> per evitare di immettere di nuovo il nome utente e il segreto.
+  </para>
+
+  <sect2 xml:id="storage.cephx.keymgmt.backgrnd">
+   <title>Informazioni di background</title>
+   <para>
+    Indipendentemente dal tipo di client Ceph (ad esempio, dispositivo di blocco, spazio di memorizzazione degli oggetti, file system, API nativa), Ceph memorizza tutti i dati come oggetti nei <emphasis>pool</emphasis>. Gli utenti Ceph devono disporre dell'accesso ai pool per leggere e scrivere i dati. Inoltre, gli utenti Ceph devono eseguire le autorizzazioni per utilizzare i comandi amministrativi Ceph. Di seguito sono spiegati i concetti per comprendere come gestire gli utenti Ceph.
+   </para>
+   <sect3>
+    <title>Utente</title>
+    <para>
+     Un utente è un individuo o un attore di sistema, come ad esempio un'applicazione. La creazione di utenti consente di controllare chi (o cosa) può accedere al cluster di memorizzazione Ceph, ai rispettivi pool e ai dati in essi contenuti.
+    </para>
+    <para>
+     Ceph utilizza <emphasis>tipi</emphasis> di utenti. Ai fini della gestione degli utenti, il tipo sarà sempre <literal>client</literal>. Ceph identifica gli utenti nella forma delimitata da un punto (.), costituita dal tipo di utente e ID utente. Ad esempio, <literal>TYPE.ID</literal>, <literal>client.admin</literal> o <literal>client.user1</literal>. Il motivo dell'uso del tipo di utente sta nel fatto che anche i Ceph monitor, gli OSD e i server di metadati utilizzano il protocollo cephx, ma non sono client. La distinzione del tipo di utenti consente di distinguere gli utenti del client dagli altri, semplificando il controllo degli accessi, nonché il monitoraggio e la tracciabilità degli utenti.
+    </para>
+    <note>
+     <para>
+      Un utente del cluster di memorizzazione Ceph non è lo stesso di un'unità di memorizzazione degli oggetti Ceph o di un utente del file system Ceph. Ceph Object Gateway utilizza un utente del cluster di memorizzazione Ceph per la comunicazione tra il daemon del gateway e il cluster di memorizzazione, ma il gateway dispone di una funzionalità di gestione degli utenti propria per gli utenti finali. Nel file system Ceph viene utilizzata la semantica POSIX. Lo spazio utente associato a esso non è lo stesso dell'utente di un cluster di memorizzazione Ceph.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Autorizzazione e funzionalità</title>
+    <para>
+     In Ceph, con il termine "capabilities" (caps, funzionalità) si intende l'autorizzazione di un utente autenticato a praticare la funzionalità di monitoraggio, OSD e server dei metadati. Le funzionalità possono inoltre limitare l'accesso ai dati in un pool o allo spazio dei nomi in un pool. Le funzionalità di un utente vengono impostate da un utente amministrativo Ceph durante la creazione o l'aggiornamento di un utente.
+    </para>
+    <para>
+     La sintassi delle funzionalità presenta la forma seguente:
+    </para>
+<screen><replaceable>daemon-type</replaceable> 'allow <replaceable>capability</replaceable>' [...]</screen>
+    <para>
+     Di seguito è riportato un elenco di funzionalità per ciascun tipo di servizio:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Funzionalità di monitoraggio</term>
+      <listitem>
+       <para>
+        includono <literal>r</literal>, <literal>w</literal>, <literal>x</literal> e <literal>allow profile <replaceable>cap</replaceable></literal>.
+       </para>
+<screen>mon 'allow rwx'
+mon 'allow profile osd'</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Funzionalità OSD</term>
+      <listitem>
+       <para>
+        includono <literal>r</literal>, <literal>w</literal>, <literal>x</literal>, <literal>class-read</literal>, <literal>class-write</literal> e <literal>profile osd</literal>. Le funzionalità OSD consentono inoltre le impostazioni di pool spazio dei nomi.
+       </para>
+<screen>osd 'allow <replaceable>capability</replaceable>' [pool=<replaceable>poolname</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Funzionalità MDS</term>
+      <listitem>
+       <para>
+        richiedono semplicemente <literal>allow</literal> o è possibile lasciare vuoto.
+       </para>
+<screen>mds 'allow'</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Le voci seguenti descrivono ciascuna funzionalità:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>allow</term>
+      <listitem>
+       <para>
+        Precede le impostazioni di accesso per un daemon. Implica <literal>rw</literal> solo per MDS.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>r</term>
+      <listitem>
+       <para>
+        Fornisce all'utente l'accesso in lettura. Richiesta con monitoraggi per il recupero della mappa CRUSH.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>w</term>
+      <listitem>
+       <para>
+        Fornisce all'utente l'accesso in scrittura agli oggetti.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>x</term>
+      <listitem>
+       <para>
+        Fornisce all'utente la funzionalità di chiamare metodi di classe (lettura e scrittura) per eseguire operazioni <literal>auth</literal> nei monitoraggi.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-read</term>
+      <listitem>
+       <para>
+        Fornisce all'utente la funzionalità di chiamare metodi di lettura di classe. Sottoinsieme di <literal>x</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-write</term>
+      <listitem>
+       <para>
+        Fornisce all'utente la funzionalità di chiamare metodi di scrittura di classe. Sottoinsieme di <literal>x</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>*</term>
+      <listitem>
+       <para>
+        Fornisce all'utente autorizzazioni per la lettura, scrittura ed esecuzione di un determinato daemon/pool, nonché la capacità di eseguire comandi amministrativi.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile osd</term>
+      <listitem>
+       <para>
+        Fornisce all'utente le autorizzazioni per connettere un OSD ad altri OSD o monitoraggi. Concessa sugli OSD per abilitarli a gestire il traffico heartbeat delle repliche e le segnalazioni dello stato.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile mds</term>
+      <listitem>
+       <para>
+        Fornisce all'utente le autorizzazioni per connettere un MDS ad altri MDS o monitoraggi.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-osd</term>
+      <listitem>
+       <para>
+        Fornisce all'utente le autorizzazioni per eseguire il bootstrap su un OSD. Delegata agli strumenti di distribuzione in modo che dispongano delle autorizzazioni per aggiungere chiavi quando si esegue il bootstrap di un OSD.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-mds</term>
+      <listitem>
+       <para>
+        Fornisce all'utente le autorizzazioni per eseguire il bootstrap su un server dei metadati. Delegata agli strumenti di distribuzione in modo che dispongano delle autorizzazioni per aggiungere chiavi quando si esegue il bootstrap di un server dei metadati.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>Pool</title>
+    <para>
+     Un pool è una partizione logica in cui vengono memorizzati i dati degli utenti. Nelle distribuzioni Ceph, è prassi comune creare un pool come partizione logica per tipi di dati simili. Ad esempio, quando si distribuisce Ceph come back end per OpenStack, una distribuzione tipica comprende pool per volumi, immagini, backup, macchine virtuali e utenti come <systemitem class="username">client.glance</systemitem> o <systemitem class="username">client.cinder</systemitem>.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.usermgmt">
+   <title>Gestione degli utenti</title>
+   <para>
+    La funzionalità di gestione degli utenti offre agli amministratori del cluster Ceph la possibilità di creare, aggiornare ed eliminare utenti direttamente nel cluster Ceph.
+   </para>
+   <para>
+    Quando si creano o si eliminano utenti nel cluster Ceph, potrebbe essere necessario distribuire chiavi ai client in modo che possano essere aggiunte ai portachiavi. Per ulteriori informazioni, vedere <xref linkend="storage.cephx.keymgmt.keyringmgmt"/>.
+   </para>
+   <sect3>
+    <title>Elenco degli utenti</title>
+    <para>
+     Per elencare gli utenti nel cluster, eseguire quanto riportato di seguito:
+    </para>
+<screen>ceph auth list</screen>
+    <para>
+     Ceph elencherà tutti gli utenti nel cluster. Ad esempio, in un cluster con due nodi, l'output <command>ceph auth list</command> ha un aspetto simile:
+    </para>
+<screen>installed auth entries:
+
+osd.0
+        key: AQCvCbtToC6MDhAATtuT70Sl+DymPCfDSsyV4w==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+osd.1
+        key: AQC4CbtTCFJBChAAVq5spj0ff4eHZICxIOVZeA==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+client.admin
+        key: AQBHCbtT6APDHhAA5W00cBchwkQjh3dkKsyPjw==
+        caps: [mds] allow
+        caps: [mon] allow *
+        caps: [osd] allow *
+client.bootstrap-mds
+        key: AQBICbtTOK9uGBAAdbe5zcIGHZL3T/u2g6EBww==
+        caps: [mon] allow profile bootstrap-mds
+client.bootstrap-osd
+        key: AQBHCbtT4GxqORAADE5u7RkpCN/oo4e5W0uBtw==
+        caps: [mon] allow profile bootstrap-osd</screen>
+    <note>
+     <title>notazione TYPE.ID</title>
+     <para>
+      Si noti che viene applicata la notazione <literal>TYPE.ID</literal> per gli utenti in modo che <literal>osd.0</literal> specifichi un utente di tipo <literal>osd</literal> con ID <literal>0</literal>. <literal>client.admin</literal> è un utente di tipo <literal>client</literal> con ID <literal>admin</literal>. Inoltre, ogni voce presenta una voce <literal>key: <replaceable>value</replaceable></literal> e una o più voci <literal>caps:</literal>.
+     </para>
+     <para>
+      È possibile utilizzare l'opzione <option>-o <replaceable>filename</replaceable></option> con <command>ceph auth list</command> per salvare l'output in un file.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Ottenimento delle informazioni sugli utenti</title>
+    <para>
+     Per recuperare un utente, una chiave e funzionalità specifiche, eseguire quanto riportato di seguito:
+    </para>
+<screen>ceph auth get <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     Ad esempio:
+    </para>
+<screen>ceph auth get client.admin
+exported keyring for client.admin
+[client.admin]
+	key = AQA19uZUqIwkHxAAFuUwvq0eJD4S173oFRxe0g==
+	caps mds = "allow"
+	caps mon = "allow *"
+ caps osd = "allow *"</screen>
+    <para>
+     Gli sviluppatori possono eseguire anche:
+    </para>
+<screen>ceph auth export <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     Il comando <command>auth export</command> è identico a <command>auth get</command>, ma consente anche di stampare l'ID autenticazione interno.
+    </para>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.useradd">
+    <title>Aggiunta di utenti</title>
+    <para>
+     Con l'aggiunta di un utente si creano un nome utente (<literal>TYPE.ID</literal>), una chiave segreta e tutte le funzionalità incluse nel comando utilizzato per creare l'utente.
+    </para>
+    <para>
+     La chiave di un utente consente a quest'ultimo di eseguire l'autenticazione con il cluster di memorizzazione Ceph. Le funzionalità dell'utente gli forniscono le autorizzazione in lettura, scrittura o esecuzione nei Ceph monitor (mon), Ceph OSD (osd) server dei metadati Ceph (mds).
+    </para>
+    <para>
+     Per aggiungere un utente sono disponibili alcuni comandi:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>ceph auth add</command>
+      </term>
+      <listitem>
+       <para>
+        Questo comando è il modo canonico per aggiungere un utente. Consente di creare l'utente, generare una chiave e aggiungere tutte le funzionalità specificate.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create</command>
+      </term>
+      <listitem>
+       <para>
+        Questo comando è spesso il modo più pratico per creare un utente perché restituisce un formato keyfile con nome utente (tra parentesi) e chiave. Se l'utente esiste già, questo comando restituisce semplicemente il nome utente e la chiave nel formato keyfile. È possibile utilizzare l'opzione <option>-o <replaceable>filename</replaceable></option> per salvare l'output in un file.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create-key</command>
+      </term>
+      <listitem>
+       <para>
+        Questo comando è un modo pratico per creare un utente e restituire (solo) la chiave utente. È utile per i client per i quali è necessaria solo la chiave (ad esempio <systemitem class="library">libvirt</systemitem>). Se l'utente esiste già, questo comando restituisce semplicemente la chiave. È possibile utilizzare l'opzione <option>-o <replaceable>filename</replaceable></option> per salvare l'output in un file.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Quando si creano utenti del client, è possibile creare un utente senza alcuna funzionalità. Un utente privo di funzionalità può eseguire solo ed esclusivamente l'autenticazione. Tale client non è in grado di recuperare la mappa del cluster dal monitoraggio. È tuttavia possibile creare un utente senza funzionalità se si desidera rinviare l'aggiunta delle funzionalità in un momento successivo mediante l'uso del comando <command>ceph auth caps</command>.
+    </para>
+    <para>
+     Un utente tipico dispone almeno delle funzionalità di lettura sul Ceph monitor e delle funzionalità di lettura e scrittura sui Ceph OSD. Inoltre, le autorizzazioni OSD di un utente sono spesso limitate per l'accesso a un determinato pool.
+    </para>
+<screen><prompt>root # </prompt>ceph auth add client.john mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.paul mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.george mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o george.keyring
+<prompt>root # </prompt>ceph auth get-or-create-key client.ringo mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o ringo.key</screen>
+    <important>
+     <para>
+      Se si forniscono a un utente le funzionalità per gli OSD, ma <emphasis>non</emphasis> si limita l'accesso a un determinato pool, l'utente potrà accedere a <emphasis>tutti</emphasis> i pool nel cluster.
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>Modifica delle funzionalità utente</title>
+    <para>
+     Il comando <command>ceph auth caps</command> consente di specificare un utente e di modificarne le funzionalità. Quando si impostano nuove funzionalità, quelle attuali verranno sovrascritte. Per visualizzare le funzionalità attuali, eseguire <command>ceph auth get <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable></command>. Per aggiungere funzionalità, è necessario specificare anche le funzionalità esistenti quando si utilizza la forma seguente:
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable> <replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]' [<replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]']</screen>
+    <para>
+     Ad esempio:
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.john
+<prompt>root # </prompt>ceph auth caps client.john mon 'allow r' osd 'allow rw pool=prague'
+<prompt>root # </prompt>ceph auth caps client.paul mon 'allow rw' osd 'allow rwx pool=prague'
+<prompt>root # </prompt>ceph auth caps client.brian-manager mon 'allow *' osd 'allow *'</screen>
+    <para>
+     Per rimuovere una funzionalità, è possibile reimpostarla. Se si desidera che l'utente non disponga di alcun accesso a un determinato daemon impostato precedentemente, specificare una stringa vuota:
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps client.ringo mon ' ' osd ' '</screen>
+   </sect3>
+   <sect3>
+    <title>Eliminazione di utenti</title>
+    <para>
+     Per eliminare un utente, utilizzare <command>ceph auth del</command>:
+    </para>
+<screen><prompt>root # </prompt>ceph auth del <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     dove <replaceable>TYPE</replaceable> è un <literal>client</literal>, <literal>osd</literal>, <literal>mon</literal> o <literal>mds</literal> e <replaceable>ID</replaceable> è il nome utente o l'ID del daemon.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Stampa di una chiave utente</title>
+    <para>
+     Per stampare una chiave di autenticazione dell'utente nell'output standard, eseguire quanto riportato di seguito:
+    </para>
+<screen><prompt>root # </prompt>ceph auth print-key <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     dove <replaceable>TYPE</replaceable> è un <literal>client</literal>, <literal>osd</literal>, <literal>mon</literal> o <literal>mds</literal> e <replaceable>ID</replaceable> è il nome utente o l'ID del daemon.
+    </para>
+    <para>
+     È utile stampare una chiave utente quando è necessario popolare il software del client con una chiave utente (come <systemitem class="library">libvirt</systemitem>), come nell'esempio seguente:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mount -t ceph host:/ mount_point \
+-o name=client.user,secret=`ceph auth print-key client.user`</screen>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.userimp">
+    <title>Importazione di utenti</title>
+    <para>
+     Per importare uno o più utenti, utilizzare <command>ceph auth import</command> e specificare un portachiavi:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <note>
+     <para>
+      Nel cluster di memorizzazione Ceph verranno aggiunti nuovi utenti, le rispettive chiavi e funzionalità e verranno aggiornati gli utenti esistenti, insieme alle rispettive chiavi e funzionalità.
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.keyringmgmt">
+   <title>Gestione dei portachiavi</title>
+   <para>
+    Quando si accede a Ceph tramite il cliente Ceph, questo ricercherà un portachiavi locale. In Ceph l'impostazione dei portachiavi è preimpostata per default con i quattro nomi seguenti, quindi non è necessario impostarli nel file di configurazione Ceph a meno che non si desideri ignorare le impostazioni di default:
+   </para>
+<screen>/etc/ceph/<replaceable>cluster</replaceable>.<replaceable>name</replaceable>.keyring
+/etc/ceph/<replaceable>cluster</replaceable>.keyring
+/etc/ceph/keyring
+/etc/ceph/keyring.bin</screen>
+   <para>
+    La metavariabile <replaceable>cluster</replaceable> è il nome del cluster Ceph definito dal nome del file di configurazione Ceph. <filename>ceph.conf</filename> significa che il nome del cluster è <literal>ceph</literal>, pertanto <literal>ceph.keyring</literal>. La metavariabile <replaceable>name</replaceable> è il tipo di utente e l'ID utente, ad esempio <literal>client.admin</literal>, pertanto <literal>ceph.client.admin.keyring</literal>.
+   </para>
+   <para>
+    Dopo aver creato un utente (ad esempio <systemitem class="username">client.ringo</systemitem>), è necessario ottenere la chiave e aggiungerla a un portachiavi in un client Ceph in modo che l'utente possa accedere al cluster di memorizzazione Ceph.
+   </para>
+   <para>
+    Nella <xref linkend="storage.cephx.keymgmt"/> è spiegato come elencare, ottenere, aggiungere, modificare ed eliminare utenti direttamente nel cluster di memorizzazione Ceph. Ceph, tuttavia, fornisce anche l'utility <command>ceph-authtool</command> per consentire la gestione dei portachiavi da un client Ceph.
+   </para>
+   <sect3>
+    <title>Creazione di un portachiavi</title>
+    <para>
+     Quando si utilizzano le procedure indicate nella <xref linkend="storage.cephx.keymgmt"/> per creare utenti, è necessario fornire chiavi utente ai client Ceph in modo che il client possa recuperare la chiave per l'utente specificato ed eseguire l'autenticazione con il cluster di memorizzazione Ceph. I client Ceph accedono ai portachiavi per ricercare un nome utente e recuperare la chiave dell'utente:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool --create-keyring /path/to/keyring</screen>
+    <para>
+     Quando si crea un portachiavi con più utenti, si consiglia di utilizzare il nome cluster (ad esempio <replaceable>cluster</replaceable>.keyring) per il nome file del portachiavi e salvarlo nella directory <filename>/etc/ceph</filename>, in modo che l'impostazione di default della configurazione del portachiavi selezioni il nome file senza doverlo specificare nella copia locale del file di configurazione Ceph. Ad esempio, creare <filename>ceph.keyring</filename> eseguendo quanto riportato di seguito:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring</screen>
+    <para>
+     Quando si crea un portachiavi con un singolo utente, si consiglia di utilizzare il nome del cluster, il tipo di utente e il nome utente e salvarlo nella directory <filename>/etc/ceph</filename>. Ad esempio, <filename>ceph.client.admin.keyring</filename> per l'utente <systemitem class="username">client.admin</systemitem>.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Aggiunta di un utente a un portachiavi</title>
+    <para>
+     Quando si aggiunge un utente al cluster di memorizzazione Ceph (vedere <xref linkend="storage.cephx.keymgmt.usermgmt.useradd"/>), è possibile recuperare utente, chiave e funzionalità e salvare l'utente in un portachiavi.
+    </para>
+    <para>
+     Se si desidera solo utilizzare un utente per portachiavi, con il comando <command>ceph auth get</command> e l'opzione <option>-o</option> l'output verrà salvato nel formato file del portachiavi. Ad esempio, per creare un portachiavi per l'utente <systemitem class="username">client.admin</systemitem>, eseguire quanto riportato di seguito:
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.admin -o /etc/ceph/ceph.client.admin.keyring</screen>
+    <para>
+     Quando si desidera importare utenti in un portachiavi, è possibile utilizzare <command>ceph-authtool</command> per specificare il portachiavi di destinazione e quello di origine:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring \
+  --import-keyring /etc/ceph/ceph.client.admin.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>Creazione di un utente</title>
+    <para>
+     In Ceph è disponibile il comando <command>ceph auth add</command> per creare un utente direttamente nel cluster di memorizzazione Ceph. È tuttavia possibile creare anche un utente, chiavi e funzionalità direttamente in un portachiavi client Ceph. Quindi, è possibile importare l'utente nel cluster di memorizzazione Ceph:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -n client.ringo --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.keyring</screen>
+    <para>
+     È altresì possibile creare un portachiavi e aggiungervi un utente simultaneamente:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx' --gen-key</screen>
+    <para>
+     Negli scenari precedenti, il nuovo utente <systemitem class="username">client.ringo</systemitem> è presente solo nel portachiavi. Per aggiungere un nuovo utente al cluster di memorizzazione Ceph, è comunque necessario aggiungerlo al cluster:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth add client.ringo -i /etc/ceph/ceph.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>Modifica di utenti</title>
+    <para>
+     Per modificare le funzionalità di un record utente in un portachiavi, specificare il portachiavi e l'utente seguiti dalle funzionalità:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx'</screen>
+    <para>
+     Per aggiornare l'utente modificato nell'ambiente cluster Ceph, è necessario importare le modifiche dal portachiavi alla voce utente nel cluster Ceph:
+    </para>
+<screen><prompt>root # </prompt>ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <para>
+     Vedere <xref linkend="storage.cephx.keymgmt.usermgmt.userimp"/> per informazioni più dettagliate sull'aggiornamento di un cluster di memorizzazione Ceph da un portachiavi.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.cmdline">
+   <title>Utilizzo della riga di comando</title>
+   <para>
+    Il comando <command>ceph</command> supporta le seguenti opzioni correlate alla modifica del nome utente e del segreto:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><option>--id</option> o <option>--user</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph identifica gli utenti con tipo e ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>, come <systemitem class="username">client.admin</systemitem> o <systemitem class="username">client.user1</systemitem>). Le opzioni <option>id</option>, <option>name</option> e <option>-n</option> consentono di specificare la parte ID del nome utente (ad esempio <systemitem class="username">admin</systemitem> o <systemitem class="username">user1</systemitem>). È possibile specificare l'utente con --id e omettere il tipo. Ad esempio, per specificare l'utente client.foo immettere quanto indicato di seguito:
+      </para>
+<screen><prompt>root # </prompt>ceph --id foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph --user foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--name</option> o <option>-n</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph identifica gli utenti con tipo e ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>, come <systemitem class="username">client.admin</systemitem> o <systemitem class="username">client.user1</systemitem>). Le opzioni <option>--name</option> e <option>-n</option> consentono di specificare il nome utente completo. È necessario specificare il tipo di utente (di norma <literal>client</literal>) con l'ID utente:
+      </para>
+<screen><prompt>root # </prompt>ceph --name client.foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph -n client.foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--keyring</option>
+     </term>
+     <listitem>
+      <para>
+       Percorso del portachiavi contenente uno o più nomi utente e segreti. L'opzione <option>--secret</option> offre la stessa funzionalità, ma non funzione con Object Gateway, in cui viene utilizzata <option>--secret</option> per altri scopi. È possibile recuperare un portachiavi con <command>ceph auth get-or-create</command> e memorizzarlo localmente. Questo è l'approccio preferito perché è possibile cambiare i nomi utenti senza dover cambiare il percorso del portachiavi:
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo rbd map --id foo --keyring /path/to/keyring mypool/myimage</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,835 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_iscsi.xml" version="5.0" xml:id="cha.ceph.as.iscsi">
+
+ <title>安裝 iSCSI 閘道</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>編輯</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  iSCSI 是一種儲存區域網路 (SAN) 通訊協定，可讓用戶端 (稱為<emphasis>啟動器</emphasis>) 將 SCSI 指令傳送至遠端伺服器上的 SCSI 儲存裝置 (<emphasis>目標</emphasis>)。SUSE Enterprise Storage 包含一個可透過 iSCSI 通訊協定向異質用戶端 (例如 Microsoft Windows* 和 VMware* vSphere) 開啟 Ceph 儲存管理的工具。多重路徑 iSCSI 存取可讓這些用戶端具備可用性與延展性，標準化 iSCSI 通訊協定還在用戶端與 SUSE Enterprise Storage 叢集之間額外提供了一層安全性隔離。該組態工具名為 <systemitem>lrbd</systemitem>。使用 <systemitem>lrbd</systemitem>，Ceph 儲存管理員可以定義精簡佈建且複製的高可用性磁碟區，用於支援唯讀快照、讀寫複製，以及 Ceph RADOS 區塊裝置 (RBD) 的自動大小調整。然後，管理員可以透過單一 <systemitem>lrbd</systemitem> 閘道主機或支援多重路徑容錯移轉的多個閘道主機來輸出磁碟區。Linux、Microsoft Windows 和 VMware 主機可以使用 iSCSI 通訊協定連接到磁碟區，因此可如任何其他 SCSI 區塊裝置一般供您使用。這表示，SUSE Enterprise Storage 客戶可在 Ceph 上有效率地執行完整的區塊儲存基礎架構子系統，享有基本 SAN 的所有功能與優點，並為未來成長提供便利。
+ </para>
+ <para>
+  本章詳細介紹如何設定 Ceph 叢集基礎架構和 iSCSI 閘道，以便用戶端主機能夠透過 iSCSI 通訊協定，如同在本機儲存裝置上一般使用遠端儲存的資料。
+ </para>
+ <sect1 xml:id="ceph.iscsi.iscsi">
+  <title>iSCSI 區塊儲存</title>
+
+  <para>
+   iSCSI 是 RFC 3720 中指定的、使用網際網路通訊協定 (IP) 的小型電腦系統介面 (SCSI) 指令集的一種實作。iSCSI 以服務形式實作，其中，用戶端 (啟動器) 在 TCP 連接埠 3260 上透過工作階段來與伺服器 (目標) 通訊。iSCSI 目標的 IP 位址和連接埠稱為 iSCSI 入口網站，其中，一個目標可透過一個或多個入口網站公開。一個目標與一個或多個入口網站的組合稱為目標入口網站群組 (TPG)。
+  </para>
+
+  <para>
+   iSCSI 的基礎資料連結層通訊協定通常為乙太網路。更具體地說，現代 iSCSI 基礎架構使用 10 Gb 乙太網路或更快的網路實現最佳輸送量。強烈建議您在 iSCSI 閘道與後端 Ceph 叢集之間建立 10 Gb 乙太網路連接。
+  </para>
+
+  <sect2 xml:id="ceph.iscsi.iscsi.target">
+   <title>Linux 核心 iSCSI 目標</title>
+   <para>
+    Linux 核心 iSCSI 目標最初稱作 linux-iscsi.org 的 LIO，它是專案的原始網域和網站。在過去一段時間，適用於 Linux 平台的 iSCSI 目標實作競爭產品不少於四個，但 LIO 做為單一 iSCSI 參考目標最終獲得了壓倒性優勢。LIO 的主流核心代碼使用簡單但有些含糊的名稱「目標」，來區別「目標核心」與各種前端和後端目標模組。
+   </para>
+   <para>
+    可以說，最常用的前端模組就是 iSCSI。但是，LIO 也支援光纖通道 (FC)、透過乙太網路的光纖通道 (FCoE) 與其他多種前端通訊協定。目前，SUSE Enterprise Storage 僅支援 iSCSI 通訊協定。
+   </para>
+   <para>
+    最常用的目標後端模組是能夠方便地在目標主機上重新輸出任何可用區塊裝置的模組。此模組名為 iblock。但是，LIO 還有一個 RBD 特定的後端模組，該模組支援對 RBD 影像進行平行多重路徑 I/O 存取。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.iscsi.initiators">
+   <title>iSCSI 啟動器</title>
+   <para>
+    本節簡要介紹 Linux、Microsoft Windows 和 VMware 平台上使用的 iSCSI 啟動器。
+   </para>
+   <sect3>
+    <title>Linux</title>
+    <para>
+     Linux 平台的標準啟動器是 <systemitem>open-iscsi</systemitem>。<systemitem>open-iscsi</systemitem> 會啟動精靈 <systemitem>iscsid</systemitem>，然後，使用者可以使用該精靈來探查任何給定入口網站上的 iSCSI 目標、登入到目標，以及對應 iSCSI 磁碟區。<systemitem>iscsid</systemitem> 會與 SCSI 中間層通訊以建立核心中區塊裝置，然後，核心便可如處理系統上的任何其他 SCSI 區塊裝置一般處理這些裝置。您可以搭配裝置對應程式多重路徑 (<systemitem>dm-multipath</systemitem>) 工具一起部署 <systemitem>open-iscsi</systemitem> 啟動器，以提供高可用性 iSCSI 區塊裝置。
+    </para>
+   </sect3>
+   <sect3>
+    <title>Microsoft Windows 和 Hyper-V</title>
+    <para>
+     Microsoft Windows 作業系統的預設 iSCSI 啟動器是 Microsoft iSCSI 啟動器。iSCSI 服務可透過圖形使用者介面 (GUI) 進行設定，並支援使用多重路徑 I/O 以提供高可用性。
+    </para>
+   </sect3>
+   <sect3>
+    <title>VMware</title>
+    <para>
+     VMware vSphere 和 ESX 的預設 iSCSI 啟動器是 VMware ESX 軟體 iSCSI 啟動器 <systemitem>vmkiscsi</systemitem>。啟用該啟動器後，可透過 vSphere 用戶端或使用 <command>vmkiscsi-tool</command> 指令對其進行設定。然後，您可以使用 VMFS 來格式化透過 vSphere iSCSI 儲存介面卡連接的儲存磁碟區，並如同使用任何其他虛擬機器儲存裝置一般使用它們。VMware 啟動器還支援使用多重路徑 I/O 以提供高可用性。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.lrbd">
+  <title>有關 lrbd 的一般資訊</title>
+
+  <para>
+   <systemitem>lrbd</systemitem> 兼具 RADOS 區塊裝置的優點與 iSCSI 無所不包的多樣性。在 iSCSI 目標主機 (也稱為 <systemitem>lrbd</systemitem> 閘道) 上採用 <systemitem>lrbd</systemitem> 後，需要利用區塊儲存的任何應用程式都能從 Ceph 獲益，即使不執行 Ceph 用戶端通訊協定也是如此。而使用者可以使用 iSCSI 或任何其他目標前端通訊協定連接至 LIO 目標，從而可以轉換針對 RBD 儲存的所有目標 I/O。
+  </para>
+
+  <figure>
+   <title>包含單一 iSCSI 閘道的 Ceph 叢集</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <systemitem>lrbd</systemitem> 原本就具有高可用性，並支援多重路徑操作。因此，下游啟動器主機可以使用多個 iSCSI 閘道實現高可用性和延展性。與包含多個閘道的 iSCSI 組態通訊時，啟動器可在多個閘道之間實現 iSCSI 申請的負載平衡。如果某個閘道發生故障 (暫時不可連接，或因為維護而停用)，則將透過另一個閘道以透明方式繼續處理 I/O。
+  </para>
+
+  <figure>
+   <title>包含多個 iSCSI 閘道的 Ceph 叢集</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.deploy">
+  <title>部署考量</title>
+
+  <para>
+   包含 <systemitem>lrbd</systemitem> 的最低 SUSE Enterprise Storage 組態包括以下元件︰
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     一個 Ceph 儲存叢集。該 Ceph 叢集至少包含四部實體伺服器，其中每部伺服器至少代管八個物件儲存精靈 (OSD)。在此類組態中，有三個 OSD 節點額外充當監控程式 (MON) 主機。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     一部透過 <systemitem>lrbd</systemitem> 設定且執行 LIO iSCSI 目標的 iSCSI 目標伺服器。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     一部 iSCSI 啟動器主機，執行 <systemitem>open-iscsi</systemitem> (Linux)、Microsoft iSCSI 啟動器 (Microsoft Windows) 或任何其他相容的 iSCSI 啟動器實作。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   使用 <systemitem>lrbd</systemitem> 的建議 SUSE Enterprise Storage 生產組態包括︰
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     一個 Ceph 儲存叢集。一個 Ceph 生產叢集，它由任意數量 (一般是 10 個以上) 的 OSD 節點組成，其中每個節點一般執行 10-12 個物件儲存精靈 (OSD)，以及至少三部專屬 MON 主機。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     多部透過 <systemitem>lrbd</systemitem> 設定且執行 LIO iSCSI 目標的 iSCSI 目標伺服器。為實現 iSCSI 容錯移轉和負載平衡，這些伺服器必須執行支援 <systemitem>target_core_rbd</systemitem> 模組的核心。您可透過 SUSE Linux Enterprise Server 維護通道取得更新套件。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     任意數量的 iSCSI 啟動器主機，這些主機執行 <systemitem>open-iscsi</systemitem> (Linux)、Microsoft iSCSI 啟動器 (Microsoft Windows) 或任何其他相容的 iSCSI 啟動器實作。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph.iscsi.install">
+  <title>安裝和組態</title>
+
+  <para>
+   本節介紹在 SUSE Enterprise Storage 之上安裝和設定 iSCSI 閘道的步驟。
+  </para>
+
+  <sect2>
+   <title>將 iSCSI 閘道部署到 Ceph 叢集</title>
+   <para>
+    您可以在 Ceph 叢集部署期間部署 iSCSI 閘道，或者使用 DeepSea 將其新增至現有叢集。
+   </para>
+   <para>
+    若要在叢集部署期間加入 iSCSI 閘道，請參閱<xref linkend="policy.role.assignment"/>。
+   </para>
+   <para>
+    若要將 iSCSI 閘道新增至現有叢集，請參閱<xref linkend="salt.adding.services"/>。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>建立 RBD 影像</title>
+   <para>
+    RBD 影像建立於 Ceph 儲存中，並在隨後輸出至 iSCSI。建議您為此使用專屬的 RADOS 池。您可以在能夠使用 Ceph <command>rbd</command> 指令行公用程式連接到儲存叢集的任何主機上建立磁碟區。這需要用戶端至少有一個精簡的 ceph.conf 組態檔案，以及相應的 CephX 驗證身分證明。
+   </para>
+   <para>
+    若要透過 iSCSI 建立一個隨後可供輸出的新磁碟區，請使用 <command>rbd create</command> 指令並指定磁碟區大小 (以 MB 為單位)。例如，若要在名為 <literal>iscsi</literal> 的池中建立名為 <literal>testvol</literal> 的 100 GB 磁碟區，請執行︰
+   </para>
+<screen><prompt>root # </prompt>rbd --pool iscsi create --size=102400 testvol</screen>
+   <para>
+    上述指令將以預設格式 2 建立一個 RBD 磁碟區。
+   </para>
+   <note>
+    <para>
+     從 SUSE Enterprise Storage 3 開始，預設磁碟區格式為 2，格式 1 已廢棄。但是，您仍可以使用 <option>--image-format 1</option> 選項建立採用已廢棄格式 1 的磁碟區。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.rbd.export">
+   <title>透過 iSCSI 輸出 RBD 影像</title>
+   <para>
+    若要透過 iSCSI 輸出 RBD 影像，請使用 <systemitem>lrbd</systemitem> 公用程式。<systemitem>lrbd</systemitem> 可用於建立、查看和修改採用 JSON 格式的 iSCSI 目標組態。
+   </para>
+   <tip>
+    <title>將變更輸入至 openATTIC</title>
+    <para>
+     DeepSea 和 openATTIC 中看不到使用 <command>lrbd</command> 指令對 iSCSI 閘道組態所做的任何變更。若要輸入您的手動變更，需要將 iSCSI 閘道組態輸出至檔案︰
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>lrbd -o /tmp/lrbd.conf
+</screen>
+    <para>
+     然後將其複製到 Salt Master 以便 DeepSea 和 openATTIC 可以看到該檔案︰
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>scp /tmp/lrbd.conf ses5master:/srv/salt/ceph/igw/cache/lrbd.conf
+</screen>
+    <para>
+     最後，編輯 <filename>/srv/pillar/ceph/stack/global.yml</filename> 並做如下設定︰
+    </para>
+<screen>
+igw_config: default-ui
+</screen>
+   </tip>
+   <para>
+    若要編輯組態，請使用 <command>lrbd -e</command> 或 <command>lrbd --edit</command>。此指令將呼叫 <literal>EDITOR</literal> 環境變數定義的預設編輯器。您可以透過同時設定 <option>-E</option> 選項和 <option>-e</option> 來覆寫此行為。
+   </para>
+   <para>
+    以下範例組態針對以下情境︰
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      有兩個分別名為 <literal>iscsi1.example.com</literal> 和 <literal>iscsi2.example.com</literal> 的 iSCSI 閘道主機，
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      使用 <literal>iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol</literal> 的 iSCSI 限定名稱 (IQN) 定義單一 iSCSI 目標，
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      包含單一 iSCSI 邏輯單元 (LU)，
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      受 RADOS 池 <literal>rbd</literal> 中名為 <literal>testvol</literal> 的 RBD 影像的支援，
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      透過名為「east」和「west」的兩個入口網站輸出目標︰
+     </para>
+    </listitem>
+   </itemizedlist>
+<screen>{
+    "auth": [
+        {
+            "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol",
+            "authentication": "none"
+        }
+    ],
+    "targets": [
+        {
+            "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol",
+            "hosts": [
+                {
+                    "host": "iscsi1.example.com",
+                    "portal": "east"
+                },
+                {
+                    "host": "iscsi2.example.com",
+                    "portal": "west"
+                }
+            ]
+        }
+    ],
+    "portals": [
+        {
+            "name": "east",
+            "addresses": [
+                "192.168.124.104"
+            ]
+        },
+        {
+            "name": "west",
+            "addresses": [
+                "192.168.124.105"
+            ]
+        }
+    ],
+    "pools": [
+        {
+            "pool": "rbd",
+            "gateways": [
+                {
+                    "target": "iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol",
+                    "tpg": [
+                        {
+                            "image": "testvol"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+    }</screen>
+   <para>
+    請注意，每當您在組態中參考某個主機名稱時，此主機名稱必須與 iSCSI 閘道的 <command>uname -n</command> 指令輸出相符。
+   </para>
+   <para>
+    編輯後的 JSON 儲存在每個池的單一 RADOS 物件的延伸屬性 (xattrs) 中。此物件適用於編輯了 JSON 的閘道主機，以及與同一 Ceph 叢集連接的所有閘道主機。不會將任何組態資訊儲存在 <systemitem>lrbd</systemitem> 閘道本地。
+   </para>
+   <para>
+    若要啟動該組態，請將其儲存在 Ceph 叢集中，並以 <systemitem class="username">root</systemitem> 身分執行以下其中一項操作︰
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      從指令行執行 <command>lrbd</command> 指令 (不帶附加選項)，
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    或
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      使用 <command>service lrbd restart</command> 重新啟動 <systemitem>lrbd</systemitem> 服務。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    <systemitem>lrbd</systemitem>「服務」不會執行任何背景精靈，只會呼叫 <command>lrbd</command> 指令。此類服務稱為「一次性」服務。
+   </para>
+   <para>
+    您還應該啟用在系統啟動時自動設定 <systemitem>lrbd</systemitem> 的功能。為此，請執行 <command>systemctl enable lrbd</command> 指令。
+   </para>
+   <para>
+    上述組態反映了一種簡單的單一閘道設定。<systemitem>lrbd</systemitem> 組態可能要複雜且強大得多。<systemitem>lrbd</systemitem> RPM 套件隨附了大量的組態範例，安裝後，您可以透過查看 <filename>/usr/share/doc/packages/lrbd/samples</filename> 目錄的內容來參考這些範例。也可以從 <link xlink:href="https://github.com/SUSE/lrbd/tree/master/samples"/> 取得這些範例。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.rbd.optional">
+   <title>選擇性設定</title>
+   <para>
+    以下設定可能對某些環境有用。用於影像的屬性有 <option>uuid</option>、<option>lun</option>、<option>retries</option>、<option>sleep</option> 和 <option>retry_errors</option>。使用前兩個屬性 (<option>uuid</option> 和 <option>lun</option>) 可以硬編碼特定影像的「uuid」或「lun」。您可為影像指定這兩者中的任一屬性。<option>retries</option>、<option>sleep</option> 和 <option>retry_errors</option> 會影響對應 rbd 影像的嘗試。
+   </para>
+<screen>"pools": [
+    {
+        "pool": "rbd",
+        "gateways": [
+        {
+        "host": "igw1",
+        "tpg": [
+                    {
+                        "image": "archive",
+                        "uuid": "12345678-abcd-9012-efab-345678901234",
+                        "lun": "2",
+                        "retries": "3",
+                        "sleep": "4",
+                        "retry_errors": [ 95 ],
+                        [...]
+                    }
+                ]
+            }
+        ]
+    }
+]</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph.iscsi.rbd.advanced">
+   <title>進階設定</title>
+   <para>
+    您可以為 <systemitem>lrbd</systemitem> 設定進階參數，這些參數隨後將傳遞給 LIO I/O 目標。這些參數分為 iSCSI 和支援儲存元件，可隨後分別於 <systemitem>lrbd</systemitem> 組態的「targets」和「tpg」區段中指定。
+   </para>
+   <warning>
+    <para>
+     不建議變更這些參數的預設設定。
+    </para>
+   </warning>
+<screen>"targets": [
+    {
+        [...]
+        "tpg_default_cmdsn_depth": "64",
+        "tpg_default_erl": "0",
+        "tpg_login_timeout": "10",
+        "tpg_netif_timeout": "2",
+        "tpg_prod_mode_write_protect": "0",
+    }
+]</screen>
+   <para>
+    選項說明如下︰
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>tpg_default_cmdsn_depth</term>
+     <listitem>
+      <para>
+       預設的 CmdSN (指令順序編號) 深度。限制 iSCSI 啟動器可在任何時候具有的未處理申請數量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_default_erl</term>
+     <listitem>
+      <para>
+       預設的錯誤復原層級。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_login_timeout</term>
+     <listitem>
+      <para>
+       登入逾時值 (以秒為單位)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_netif_timeout</term>
+     <listitem>
+      <para>
+       NIC 故障逾時 (以秒為單位)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>tpg_prod_mode_write_protect</term>
+     <listitem>
+      <para>
+       如果設定為 1，則阻止寫入 LUN。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+<screen>"pools": [
+    {
+        "pool": "rbd",
+        "gateways": [
+        {
+        "host": "igw1",
+        "tpg": [
+                    {
+                        "image": "archive",
+                        "backstore_block_size": "512",
+                        "backstore_emulate_3pc": "1",
+                        "backstore_emulate_caw": "1",
+                        "backstore_emulate_dpo": "0",
+                        "backstore_emulate_fua_read": "0",
+                        "backstore_emulate_fua_write": "1",
+                        "backstore_emulate_model_alias": "0",
+                        "backstore_emulate_rest_reord": "0",
+                        "backstore_emulate_tas": "1",
+                        "backstore_emulate_tpu": "0",
+                        "backstore_emulate_tpws": "0",
+                        "backstore_emulate_ua_intlck_ctrl": "0",
+                        "backstore_emulate_write_cache": "0",
+                        "backstore_enforce_pr_isids": "1",
+                        "backstore_fabric_max_sectors": "8192",
+                        "backstore_hw_block_size": "512",
+                        "backstore_hw_max_sectors": "8192",
+                        "backstore_hw_pi_prot_type": "0",
+                        "backstore_hw_queue_depth": "128",
+                        "backstore_is_nonrot": "1",
+                        "backstore_max_unmap_block_desc_count": "1",
+                        "backstore_max_unmap_lba_count": "8192",
+                        "backstore_max_write_same_len": "65535",
+                        "backstore_optimal_sectors": "8192",
+                        "backstore_pi_prot_format": "0",
+                        "backstore_pi_prot_type": "0",
+                        "backstore_queue_depth": "128",
+                        "backstore_unmap_granularity": "8192",
+                        "backstore_unmap_granularity_alignment": "4194304"
+                    }
+                ]
+            }
+        ]
+    }
+]</screen>
+   <para>
+    選項說明如下︰
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>backstore_block_size</term>
+     <listitem>
+      <para>
+       基礎裝置的區塊大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_3pc</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「協力廠商複製」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_caw</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「比較並寫入」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_dpo</term>
+     <listitem>
+      <para>
+       如果設定為 1，則開啟「停用頁面輸出」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_fua_read</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「強制單元讀取存取」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_fua_write</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「強制單元寫入存取」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_model_alias</term>
+     <listitem>
+      <para>
+       如果設定為 1，則使用後端裝置名稱做為模型別名。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_rest_reord</term>
+     <listitem>
+      <para>
+       如果設定為 0，則佇列演算法修飾詞的重新排序受限。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_tas</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「任務已中止狀態」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_tpu</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「精簡佈建 - 取消對應」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_tpws</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「精簡佈建 - 寫入相同內容」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_ua_intlck_ctrl</term>
+     <listitem>
+      <para>
+       如果設定為 1，則啟用「單元警告聯鎖」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_emulate_write_cache</term>
+     <listitem>
+      <para>
+       如果設定為 1，則開啟「啟用寫入快取」。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_enforce_pr_isids</term>
+     <listitem>
+      <para>
+       如果設定為 1，則強制持續保留 ISID。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_fabric_max_sectors</term>
+     <listitem>
+      <para>
+       網狀架構一次可以傳輸的最大磁區數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_block_size</term>
+     <listitem>
+      <para>
+       硬體區塊大小 (以位元組為單位)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_max_sectors</term>
+     <listitem>
+      <para>
+       硬體一次可以傳輸的最大磁區數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_pi_prot_type</term>
+     <listitem>
+      <para>
+       如果值非零，則在基礎硬體上啟用 DIF 保護。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_hw_queue_depth</term>
+     <listitem>
+      <para>
+       硬體佇列深度。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_is_nonrot</term>
+     <listitem>
+      <para>
+       如果設定為 1，則支援儲存為非旋轉裝置。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_max_unmap_block_desc_count</term>
+     <listitem>
+      <para>
+       UNMAP 的最大區塊描述子數量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_max_unmap_lba_count:</term>
+     <listitem>
+      <para>
+       UNMAP 的最大 LBA 數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_max_write_same_len</term>
+     <listitem>
+      <para>
+       WRITE_SAME 的最大長度。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_optimal_sectors</term>
+     <listitem>
+      <para>
+       磁區中的最佳申請大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_pi_prot_format</term>
+     <listitem>
+      <para>
+       DIF 保護格式。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_pi_prot_type</term>
+     <listitem>
+      <para>
+       DIF 保護類型。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_queue_depth</term>
+     <listitem>
+      <para>
+       佇列深度。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_unmap_granularity</term>
+     <listitem>
+      <para>
+       UNMAP 細粒度。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>backstore_unmap_granularity_alignment</term>
+     <listitem>
+      <para>
+       UNMAP 細粒度對齊。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    對於目標，可以使用 <option>tpg</option> 屬性優化核心參數。請小心使用此屬性。
+   </para>
+<screen>"targets": [
+{
+    "host": "igw1",
+    "target": "iqn.2003-01.org.linux-iscsi.generic.x86:sn.abcdefghijk",
+    "tpg_default_cmdsn_depth": "64",
+    "tpg_default_erl": "0",
+    "tpg_login_timeout": "10",
+    "tpg_netif_timeout": "2",
+    "tpg_prod_mode_write_protect": "0",
+    "tpg_t10_pi": "0"
+}</screen>
+   <tip>
+    <para>
+     如果站台需要靜態指定的 LUN，請為每個 LUN 指定編號。
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="iscsi.tcmu">
+  <title>使用 <systemitem>tcmu-runner</systemitem> 輸出 RADOS 區塊裝置影像</title>
+
+  <para>
+   從版本 5 開始，SUSE Enterprise Storage 針對 <systemitem>tcmu-runner</systemitem> 隨附了一個使用者空間 RBD 後端 (如需詳細資料，請參閱 <command>man 8 tcmu-runner</command>)。
+  </para>
+
+  <warning>
+   <title>技術預覽</title>
+   <para>
+    基於 <systemitem>tcmu-runner</systemitem> 的 iSCSI 閘道部署目前以技術預覽的方式提供。如需使用 <systemitem>lrbd</systemitem> 進行基於核心的 iSCSI 閘道部署的說明，請參閱<xref linkend="cha.ceph.as.iscsi"/>。
+   </para>
+  </warning>
+
+  <para>
+   與基於核心的 <systemitem>lrbd</systemitem> iSCSI 閘道部署不同，基於 <systemitem>tcmu-runner</systemitem> 的 iSCSI 閘道不支援多重路徑 I/O 或 SCSI 持續保留。
+  </para>
+
+  <para>
+   由於 DeepSea 和 openATTIC 目前不支援 <systemitem>tcmu-runner</systemitem> 部署，因此您需要手動管理安裝、部署和監控。
+  </para>
+
+  <sect2 xml:id="iscsi.tcmu.install">
+   <title>安裝</title>
+   <para>
+    在 iSCSI 閘道節點上，安裝 SUSE Enterprise Storage 5 媒體中的 <systemitem>tcmu-runner-handler-rbd</systemitem> 套件，以及 <systemitem>libtcmu1</systemitem> 和 <systemitem>tcmu-runner</systemitem> 套件相依項。安裝用於設定目的的 <systemitem>targetcli-fb</systemitem> 套件。請注意，<systemitem>targetcli-fb</systemitem> 套件與「non-fb」版本的 <systemitem>targetcli</systemitem> 套件不相容。
+   </para>
+   <para>
+    確認 <systemitem>tcmu-runner</systemitem> <systemitem class="daemon">systemd</systemitem> 服務正在執行︰
+   </para>
+<screen><prompt>root # </prompt>systemctl enable tcmu-runner
+tcmu-gw:~ # systemctl status tcmu-runner
+● tcmu-runner.service - LIO Userspace-passthrough daemon
+  Loaded: loaded (/usr/lib/systemd/system/tcmu-runner.service; static; vendor
+  preset: disabled)
+    Active: active (running) since ...</screen>
+  </sect2>
+
+  <sect2 xml:id="iscsi.tcmu.depl">
+   <title>組態和部署</title>
+   <para>
+    在現有的 Ceph 叢集上建立一個 RADOS 區塊裝置影像。在以下範例中，我們將使用「rbd」池中名為「tcmu-lu」的 10G 影像。
+   </para>
+   <para>
+    建立 RADOS 區塊裝置影像後，請執行 <command>targetcli</command>，並確定 tcmu-runner RBD 處理常式 (外掛程式) 可用︰
+   </para>
+<screen><prompt>root # </prompt>targetcli
+targetcli shell version 2.1.fb46
+Copyright 2011-2013 by Datera, Inc and others.
+For help on commands, type 'help'.
+
+/&gt; ls
+o- / ................................... [...]
+  o- backstores ........................ [...]
+...
+  | o- user:rbd ......... [Storage Objects: 0]</screen>
+   <para>
+    為 RBD 影像建立一個支援儲存組態項目︰
+   </para>
+<screen>/&gt; cd backstores/user:rbd
+/backstores/user:rbd&gt; create tcmu-lu 10G /rbd/tcmu-lu
+Created user-backed storage object tcmu-lu size 10737418240.</screen>
+   <para>
+    建立一個 iSCSI 傳輸組態項目。在以下範例中，目標 IQN「iqn.2003-01.org.linux-iscsi.tcmu-gw.x8664:sn.cb3d2a3a」由 <command>targetcli</command> 自動產生，用做唯一的 iSCSI 目標識別碼︰
+   </para>
+<screen>/backstores/user:rbd&gt; cd /iscsi
+/iscsi&gt; create
+Created target iqn.2003-01.org.linux-iscsi.tcmu-gw.x8664:sn.cb3d2a3a.
+Created TPG 1.
+Global pref auto_add_default_portal=true
+Created default portal listening on all IPs (0.0.0.0), port 3260.</screen>
+   <para>
+    針對您要連接到目標的 iSCSI 啟動器建立一個 ACL 項目。在以下範例中，使用了啟動器 IQN「iqn.1998-01.com.vmware:esxi-872c4888」︰
+   </para>
+<screen>/iscsi&gt; cd
+iqn.2003-01.org.linux-iscsi.tcmu-gw.x8664:sn.cb3d2a3a/tpg1/acls/
+/iscsi/iqn.20...a3a/tpg1/acls&gt; create iqn.1998-01.com.vmware:esxi-872c4888</screen>
+   <para>
+    最後，將前面建立的 RBD 支援儲存組態連結到 iSCSI 目標︰
+   </para>
+<screen>/iscsi/iqn.20...a3a/tpg1/acls&gt; cd ../luns
+/iscsi/iqn.20...a3a/tpg1/luns&gt; create /backstores/user:rbd/tcmu-lu
+Created LUN 0.
+Created LUN 0-&gt;0 mapping in node ACL iqn.1998-01.com.vmware:esxi-872c4888</screen>
+   <para>
+    結束外圍程序以儲存現有組態︰
+   </para>
+<screen>/iscsi/iqn.20...a3a/tpg1/luns&gt; exit
+Global pref auto_save_on_exit=true
+Last 10 configs saved in /etc/target/backup.
+Configuration saved to /etc/target/saveconfig.json</screen>
+  </sect2>
+
+  <sect2 xml:id="iscsi.tcmu.use">
+   <title>用法</title>
+   <para>
+    使用前面設定的 IQN 和主機名稱，從 iSCSI 啟動器 (用戶端) 節點連接至新佈建的 iSCSI 目標。
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

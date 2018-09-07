@@ -1,0 +1,1193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_gui_oa.xml" version="5.0" xml:id="ceph.oa">
+ <title>openATTIC</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>yes</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <tip>
+  <title>Calamari 已删除</title>
+  <para>
+   Calamari 曾是用于管理和监视 Ceph 集群的首选 Web UI 应用。但自 SUSE Enterprise Storage 5 开始，删除了 Calamari，以更先进的 openATTIC 代替。
+  </para>
+ </tip>
+ <para>
+  openATTIC 是一个中央存储管理系统，支持 Ceph 存储集群。借助 openATTIC，您可以从中央管理界面控制所有事宜。您不再需要熟悉 Ceph 存储工具的内部工作方式。集群管理任务可以使用 openATTIC 直观的 Web 界面或通过其 REST API 执行。
+ </para>
+ <sect1 xml:id="ceph.oa.installation">
+  <title>openATTIC 部署和配置</title>
+
+  <para>
+   本节介绍部署和配置 openATTIC 及其支持的功能的步骤，以便您可以通过易于使用的 Web 界面来管理 Ceph 集群。
+  </para>
+
+  <sect2 xml:id="oa.ssl">
+   <title>启用使用 SSL 安全访问 openATTIC 的功能</title>
+   <para>
+    系统默认使用不安全的 HTTP 协议来访问 openATTIC Web 应用程式。要启用安全访问 openATTIC 的功能，您需要手动配置 Apache Web 服务器：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      如果您没有经知名证书颁发机构 (CA) 签名的 SSL 证书，请创建一个自我签名的 SSL 证书，并将其文件复制到 Web 服务器预期会检索该证书的目录下，例如：
+     </para>
+<screen>
+<prompt>root # </prompt>openssl req -newkey rsa:2048 -new -nodes -x509 -days 3650 \
+ -keyout key.pem -out cert.pem
+<prompt>root # </prompt>cp cert.pem /etc/ssl/certs/servercert.pem
+<prompt>root # </prompt>cp key.pem /etc/ssl/certs/serverkey.pem
+</screen>
+     <para>
+      请参见 <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_apache2_ssl.html"/> 了解有关创建 SSL 证书的详细信息。
+     </para>
+    </step>
+    <step>
+     <para>
+      为 <filename>/etc/sysconfig/apache2</filename> 配置文件中的 <option>APACHE_SERVER_FLAGS</option> 选项添加“SSL”。您可以手动执行此操作，也可以运行以下命令来执行：
+     </para>
+<screen>
+<prompt>root # </prompt>a2enmod ssl
+<prompt>root # </prompt>a2enflag SSL
+</screen>
+    </step>
+    <step>
+     <para>
+      为新 Apache 虚拟主机创建 <filename>/etc/apache2/vhosts.d/vhost-ssl.conf</filename>，在其中包含以下内容：
+     </para>
+<screen>
+&lt;IfDefine SSL&gt;
+&lt;IfDefine !NOSSL&gt;
+&lt;VirtualHost *:80&gt;
+ ServerName <replaceable>OA_HOST_NAME</replaceable>
+ Redirect "/" "https://<replaceable>OA_HOST_NAME</replaceable>/"
+&lt;/VirtualHost&gt;
+&lt;VirtualHost _default_:443&gt;
+ ServerName <replaceable>OA_HOST_NAME</replaceable>
+ DocumentRoot "/srv/www/htdocs"
+ ErrorLog /var/log/apache2/error_log
+ TransferLog /var/log/apache2/access_log
+ SSLEngine on
+ SSLCertificateFile /etc/ssl/certs/servercert.pem
+ SSLCertificateKeyFile /etc/ssl/certs/serverkey.pem
+ CustomLog /var/log/apache2/ssl_request_log ssl_combined
+&lt;/VirtualHost&gt;
+&lt;/IfDefine&gt;
+&lt;/IfDefine&gt;
+</screen>
+    </step>
+    <step>
+     <para>
+      重启动 Web 服务器，以重新加载新虚拟主机定义以及证书文件：
+     </para>
+<screen>
+<prompt>root # </prompt>systemctl restart apache2.service
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="oa.deploy">
+   <title>部署 openATTIC</title>
+   <para>
+    自 SUSE Enterprise Storage 5 开始，已采用 DeepSea 角色的形式来部署 openATTIC。有关一般过程，请参见<xref linkend="storage.salt.cluster"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.install.oa">
+   <title>openATTIC 初始设置</title>
+   <para>
+    默认情况下，<command>oaconfig</command> 会创建管理用户帐户 <systemitem>openattic</systemitem>，其用户名与密码相同。为安全起见，强烈建议立即更改此密码：
+   </para>
+<screen><prompt>root@minion &gt; </prompt>oaconfig changepassword openattic
+Changing password for user 'openattic'
+Password: &lt;enter password&gt;
+Password (again): &lt;re-enter password&gt;
+Password changed successfully for user 'openattic'
+</screen>
+  </sect2>
+
+  <sect2 xml:id="oa.ds">
+   <title>openATTIC 中的 DeepSea 集成</title>
+   <para>
+    一些 openATTIC 功能（例如 iSCSI 网关和对象网关管理）会使用 DeepSea REST API。默认情况下，会启用并配置该 API。如果您出于调试目的需要覆盖其默认设置，请编辑 <filename>/etc/sysconfig/openattic</filename>，添加或更改以下数行：
+   </para>
+<screen>SALT_API_HOST="<replaceable>salt_api_host</replaceable>"
+SALT_API_PORT=8001
+SALT_API_USERNAME="example_user"
+SALT_API_PASSWORD="password"</screen>
+   <important>
+    <title><command>oaconfig restart</command></title>
+    <para>
+     在更改 <filename>/etc/sysconfig/openattic</filename> 文件之后，记得运行 <command>oaconfig restart</command>。
+    </para>
+   </important>
+   <important>
+    <title>文件语法</title>
+    <para>
+     在 Python 和 Bash 中会使用 <filename>/etc/sysconfig/openattic</filename>。因此，该文件需要采用 Bash 可以理解的格式，并且在“等号”前后不能有空格。
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="oa.rgw">
+   <title>对象网关管理</title>
+   <para>
+    默认情况下，openATTIC 中的对象网关管理功能处于启用状态。如果您需要覆盖 DeepSea 中发现的对象网关 API 默认值，请在 <filename>/etc/sysconfig/openattic</filename> 中包括以下选项及相关值。例如：
+   </para>
+<screen>RGW_API_HOST="<replaceable>rgw_api_host</replaceable>"
+RGW_API_PORT=80
+RGW_API_SCHEME="http"
+RGW_API_ACCESS_KEY="VFEG733GBY0DJCIV6NK0"
+RGW_API_SECRET_KEY="lJzPbZYZTv8FzmJS5eiiZPHxlT2LMGOMW8ZAeOAq"</screen>
+   <note>
+    <title>对象网关的默认资源</title>
+    <para>
+     如果您的对象网关管理资源未配置为使用默认值“admin”（即“http://rgw_host:80/admin”中所用的值），则您还需要相应地设置 <option>RGW_API_ADMIN_RESOURCE</option> 选项。
+    </para>
+   </note>
+   <para>
+    要获取对象网关身份凭证，请使用 <command>radosgw-admin</command> 命令：
+   </para>
+<screen><prompt>root@minion &gt; </prompt>radosgw-admin user info --uid=admin</screen>
+  </sect2>
+
+  <sect2 xml:id="oa.igw">
+   <title>iSCSI 网关管理</title>
+   <para>
+    默认情况下，openATTIC 中的 iSCSI 网关管理功能处于启用状态。如果您需要覆盖默认 Salt API 主机名，请按<xref linkend="oa.ds"/>中所述更改 <option>SALT_API_HOST</option> 的值。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.oa.install.webui">
+  <title>openATTIC Web 用户界面</title>
+
+  <para>
+   您可以使用 Web 用户界面来管理 openATTIC。打开 Web 浏览器并导航到 http://<replaceable>SERVER_HOST</replaceable>/openattic。要登录，请使用默认用户名 <emphasis>openattic</emphasis> 及相应的密码。
+  </para>
+
+  <figure>
+   <title>openATTIC 登录屏幕</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_login.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_login.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   openATTIC 用户界面分为顶部菜单窗格和内容窗格两部分。
+  </para>
+
+  <para>
+   顶部窗格的右侧包含当前用户设置的链接、<guimenu>Logout</guimenu>（注销）链接，及现有 <guimenu>Background tasks</guimenu>（后台任务）和系统 <guimenu>Notifications</guimenu>（通知）列表的链接。顶部窗格的其余部分包含 openATTIC 主菜单。
+  </para>
+
+  <para>
+   内容窗格因所激活的项目菜单而异。默认会显示一个<guimenu>仪表盘</guimenu>，其中包含许多控件，用于告知您集群的状态。
+  </para>
+
+  <figure>
+   <title>openATTIC 仪表盘</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_dashboard.png" width="90%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_dashboard.png" width="90%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph.oa.webui.dash">
+  <title>仪表盘</title>
+
+  <para>
+   各<guimenu>仪表盘</guimenu>控件显示与正在运行的 Ceph 集群相关的特定状态信息。点击某个控件的标题之后，该控件会扩展至整个内容窗格，可能会显示更多详细信息。下面列出了几个控件：
+  </para>
+
+  <para>
+   <guimenu>Status</guimenu>（状态）控件指出集群是否在正常工作。如果检测到问题，可点击控件内的副标题来查看详细的错误讯息。
+  </para>
+
+  <para>
+   <guimenu>Monitors in Quorum</guimenu>（仲裁中的监视器）、<guimenu>Pools</guimenu>（存储池）、<guimenu>OSDs In</guimenu>（加入的 OSD）、<guimenu>OSDs Out</guimenu>（移出的 OSD）、<guimenu>OSDs Up</guimenu>（启动的 OSD）、<guimenu>OSDs Down</guimenu>（停机的 OSD）和<guimenu>Average PGs per OSD</guimenu>（每个 OSD 的平均 PG 数）控件仅显示相关数字。
+  </para>
+
+  <figure>
+   <title>基本控件</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_basic_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_basic_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   下列控件显示总存储容量和可用存储容量：<guimenu>Cluster Capacity</guimenu>（集群容量）、<guimenu>Available Capacity</guimenu>（可用容量）、<guimenu>Used Capacity</guimenu>（已用容量）和 <guimenu>Capacity</guimenu>（容量）。
+  </para>
+
+  <figure>
+   <title>容量控件</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_capacity_widgets.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_capacity_widgets.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   下列控件显示 OSD 和监视器节点延迟：<guimenu>Average OSD Apply Latency</guimenu>（平均 OSD 应用延迟）、<guimenu>Average OSD Commit Latency</guimenu>（平均 OSD 提交延迟）和 <guimenu>Average Monitor Latency</guimenu>（平均监视器延迟）：
+  </para>
+
+  <figure>
+   <title>延迟控件</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_latency_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_latency_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <guimenu>Throughput</guimenu>（吞吐量）控件即时显示每秒的读取和写入统计数字。
+  </para>
+
+  <figure>
+   <title>吞吐量</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_io.png" width="60%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_io.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <tip>
+   <title>鼠标悬停时显示更多详细信息</title>
+   <para>
+    如果您将鼠标指针移到显示的任何图表上方，会在弹出窗口中看到与所指日期和时间相关的更多详细信息。
+   </para>
+   <para>
+    如果在图表区域中点击，然后沿时间轴向左或向右拖动鼠标指针，时间轴上的间隔将放大到您通过移动鼠标标记的间隔。要缩回原来的比例，请双击图表。
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="ceph.oa.webui.ceph">
+  <title>Ceph 相关任务</title>
+
+  <para>
+   openATTIC的 主菜单列出 Ceph 相关任务。目前有以下相关任务：<guimenu>OSD</guimenu>、<guimenu>RBD</guimenu>、<guimenu>存储池</guimenu>、<guimenu>节点</guimenu>、<guimenu>iSCSI</guimenu>、<guimenu>NFS</guimenu>、<guimenu>CRUSH 地图</guimenu>和<guimenu>对象网关</guimenu>。
+  </para>
+
+  <sect2>
+   <title>常用 Web UI 功能</title>
+   <para>
+    在 openATTIC 中，经常会使用<emphasis>列表</emphasis> — 例如，存储池列表、OSD 节点列表或 RBD 设备列表。下列常用控件可帮助您管理或调整这些列表：
+   </para>
+   <para>
+    点击 <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_reload.png" width="1.2em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_reload.png" width="1.2em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> 可刷新项目列表。
+   </para>
+   <para>
+    点击 <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_columns.png" width="1.3em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_columns.png" width="1.3em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> 可显示或隐藏表格的相应列。
+   </para>
+   <para>
+    点击 <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_rows.png" width="1.8em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_rows.png" width="1.8em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> 并选择要在一页上显示多少行。
+   </para>
+   <para>
+    在 <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_search.png" width="5em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_search.png" width="5em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> 中点击并键入要搜索的字符串以过滤行。
+   </para>
+   <para>
+    如果列表跨多页显示，可使用 <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_pager.png" width="6em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_pager.png" width="6em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> 来更改当前显示的页。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>列出 OSD 节点</title>
+   <para>
+    要列出所有可用 OSD 节点，请点击主菜单中的 <guimenu>OSD</guimenu>。
+   </para>
+   <para>
+    列表会显示每个 OSD 的名称、主机名、状态、权重和存储后端。
+   </para>
+   <figure>
+    <title>OSD 节点列表</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_osds.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_osds.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+
+  <sect2 xml:id="oa.rbds">
+   <title>管理 RADOS 块设备 (RBD)</title>
+   <para>
+    要列出所有可用的 RADOS 块设备，请点击主菜单中的 <guimenu>RBD</guimenu>。
+   </para>
+   <para>
+    列表会显示每个设备的名称、相关存储池名称、设备大小和已占用百分比（如果在 RADOS 块设备创建期间启用了“fast-diff”）。
+   </para>
+   <figure>
+    <title>RBD 列表</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_rbds.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_rbds.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>状态信息</title>
+    <para>
+     要查看有关某台设备的更详细信息，请选中其最左侧列中的复选框：
+    </para>
+    <figure>
+     <title>RBD 详细信息</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_status.png" width="40%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_status.png" width="40%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>统计数字</title>
+    <para>
+     点击 RADOS 块设备的 <guimenu>Statistics</guimenu>（统计数字）选项卡可查看已传送数据的统计数字。您可以放大和缩小时间范围，只需用鼠标高亮显示该时间范围，或先点击选项卡左上角的日期，然后再选择相应时间范围。
+    </para>
+   </sect3>
+   <sect3>
+    <title>RADOS 块设备快照</title>
+    <para>
+     要创建 RADOS 块设备快照，请点击该块设备的 <guimenu>Snapshots</guimenu>（快照）选项卡，然后从左上方的下拉框中选择 <guimenu>Create</guimenu>（创建）。
+    </para>
+    <para>
+     选择快照后，您可以对其执行重命名、保护、克隆或删除操作。您可以一次选择多个快照将它们删除。<guimenu>Rollback</guimenu>（回滚）可根据当前快照恢复设备的状态。
+    </para>
+    <figure>
+     <title>RBD 快照</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_snapshots.png" width="90%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_snapshots.png" width="90%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>删除 RBD</title>
+    <para>
+     要删除某个设备或一组设备，请选中其最左侧列中的复选框，然后点击 RBD 表格左上方的 <guimenu>Delete</guimenu>（删除）：
+    </para>
+    <figure>
+     <title>删除 RBD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>添加 RBD</title>
+    <para>
+     要添加新设备，请点击 RBD 表格左上方的 <guimenu>Add</guimenu>（增加），然后在 <guimenu>Create RBD</guimenu>（创建 RBD）屏幕上执行以下操作：
+    </para>
+    <figure>
+     <title>添加新的 RBD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       输入新设备的名称。有关命名限制，请参见<xref linkend="sysreq.naming"/>。
+      </para>
+     </step>
+     <step>
+      <para>
+       选择将会存储新存储池的集群。
+      </para>
+     </step>
+     <step>
+      <para>
+       选择将在其中创建新 RBD 设备的存储池。
+      </para>
+     </step>
+     <step>
+      <para>
+       指定新设备的大小。如果您点击上面的 <guimenu>use max</guimenu>（最大可用）链接，则会填充最大存储池大小。
+      </para>
+     </step>
+     <step>
+      <para>
+       要细调设备参数，请点击 <guimenu>Expert settings</guimenu>（专家设置），然后激活或停用显示的选项。
+      </para>
+     </step>
+     <step>
+      <para>
+       点击 <guimenu>Create</guimenu>（创建）以确认。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>管理存储池</title>
+   <tip>
+    <title>存储池的更多信息</title>
+    <para>
+     有关 Ceph 存储池的更多一般信息，请参见<xref linkend="ceph.pools"/>。有关纠删码池特定的信息，请参见<xref linkend="cha.ceph.erasure"/>。
+    </para>
+   </tip>
+   <para>
+    要列出所有可用的存储池，请点击主菜单中的 <guimenu>Pools</guimenu>（存储池）。
+   </para>
+   <para>
+    列表会显示每个存储池的名称、ID、已用空间百分比、归置组数量、副本容量、类型（“副本”或“纠删”）、纠删码配置和 CRUSH 规则组。
+   </para>
+   <figure>
+    <title>存储池列表</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_pools.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_pools.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    要查看有关某个存储池的更详细信息，请选中其最左侧列中的复选框：
+   </para>
+   <figure>
+    <title>存储池详细信息</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_pools_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_pools_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>删除存储池</title>
+    <para>
+     要删除某个或一组存储池，请选中其最左侧列中的复选框，然后点击存储池表格左上方的 <guimenu>Delete</guimenu>（删除）：
+    </para>
+    <figure>
+     <title>删除存储池</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_pools_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_pools_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>添加存储池</title>
+    <para>
+     要添加新存储池，请点击存储池表格左上方的 <guimenu>Add</guimenu>（增加），然后在 <guimenu>Create Ceph pool</guimenu>（创建 Ceph 存储池）屏幕上执行以下操作：
+    </para>
+    <figure>
+     <title>添加新存储池</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_pools_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_pools_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       输入新存储池的名称。有关命名限制，请参见<xref linkend="sysreq.naming"/>。
+      </para>
+     </step>
+     <step>
+      <para>
+       选择将会存储新存储池的集群。
+      </para>
+     </step>
+     <step>
+      <para>
+       选择存储池类型。存储池可以是副本池或是纠删码池。
+      </para>
+     </step>
+     <step>
+      <substeps>
+       <step>
+        <para>
+         对于副本池，请指定副本容量和归置组数。
+        </para>
+       </step>
+       <step>
+        <para>
+         对于纠删码池，请指定归置组数和纠删码配置。您可以点击加号“+”，并指定配置名称、数据块和编码块以及规则组故障域，来添加自定义配置。
+        </para>
+       </step>
+      </substeps>
+     </step>
+     <step>
+      <para>
+       点击 <guimenu>Create</guimenu>（创建）以确认。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.minions">
+   <title>列出节点</title>
+   <para>
+    点击主菜单中的 <guimenu>Nodes</guimenu>（节点），可查看集群上可用的节点列表。
+   </para>
+   <figure>
+    <title>节点列表</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_minion.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_minion.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    每个节点用其主机名、公共 IP 地址、它所属集群的 ID、节点角色（例如“admin”、“storage”或“master”）和密钥接受状态表示。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.nfs">
+   <title>管理 NFS Ganesha</title>
+   <tip>
+    <title>NFS Ganesha 的更多信息</title>
+    <para>
+     有关 NFS Ganesha 的更多一般信息，请参见<xref linkend="cha.ceph.nfsganesha"/>。
+    </para>
+   </tip>
+   <para>
+    要列出所有可用的 NFS 导出项，请点击主菜单中的 <guimenu>NFS</guimenu>。
+   </para>
+   <para>
+    列表会显示每个导出项的目录、主机名、状态、存储后端类型以及访问类型。
+   </para>
+   <figure>
+    <title>NFS 导出项列表</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_nfs.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_nfs.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    要查看有关某个 NFS 导出项的更详细信息，请选中其最左侧列中的复选框：
+   </para>
+   <figure>
+    <title>NFS 导出项详细信息</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_nfs_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_nfs_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <tip>
+    <title>NFS 挂载命令</title>
+    <para>
+     在导出项详细视图的底部，有一个挂载命令，可用来轻松挂载来自客户端计算机的相关 NFS 导出项。
+    </para>
+   </tip>
+   <sect3>
+    <title>添加 NFS 导出项</title>
+    <para>
+     要添加新的 NFS 导出项，请点击导出项表格左上方的 <guimenu>Add</guimenu>（增加）并输入所需的信息。
+    </para>
+    <figure>
+     <title>添加新的 NFS 导出项</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_nfs_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_nfs_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       选择 NFS 导出项的服务器主机。
+      </para>
+     </step>
+     <step>
+      <para>
+       选择存储后端 — <guimenu>CephFS</guimenu> 或<guimenu>对象网关</guimenu>。
+      </para>
+     </step>
+     <step>
+      <para>
+       输入 NFS 导出项的目录路径。如果该目录在服务器上不存在，系统将创建该目录。
+      </para>
+     </step>
+     <step>
+      <para>
+       指定 NFS 相关的其他选项，例如支持的 NFS 协议版本、访问类型、匿名访问或传输协议。
+      </para>
+     </step>
+     <step>
+      <para>
+       如果您需要设置限制，仅允许特定的客户端访问，请点击 <guimenu>Add clients</guimenu>（添加客户端）并添加它们的 IP 地址以及访问类型和匿名访问选项。
+      </para>
+     </step>
+     <step>
+      <para>
+       点击 <guimenu>Submit</guimenu>（提交）以确认。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>克隆和删除 NFS 导出项</title>
+    <para>
+     要删除某个或一组导出项，请选中其最左侧列中的复选框，然后点击导出表格左上方的 <guimenu>Delete</guimenu>（删除）。
+    </para>
+    <para>
+     同样，您可以选择 <guimenu>Clone</guimenu>（克隆）以克隆选中的网关。
+    </para>
+   </sect3>
+   <sect3>
+    <title>编辑 NFS 导出项</title>
+    <para>
+     要编辑现有导出项，可点击导出项表格中该导出项的名称，也可以选中相应复选框，然后点击网关表格左上方的 <guimenu>Edit</guimenu>（编辑）。
+    </para>
+    <para>
+     然后，您便可以调整 NFS 导出项的所有详细信息。
+    </para>
+    <figure>
+     <title>编辑 NFS 导出项</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_nfs_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_nfs_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.iscsi">
+   <title>管理 iSCSI 网关</title>
+   <tip>
+    <title>iSCSI 网关的更多信息</title>
+    <para>
+     有关 iSCSI 网关的更多一般信息，请参见<xref linkend="cha.ceph.as.iscsi"/>和<xref linkend="cha.ceph.iscsi"/>。
+    </para>
+   </tip>
+   <para>
+    要列出所有可用网关，请点击主菜单中的 <guimenu>iSCSI</guimenu>。
+   </para>
+   <para>
+    列表会显示每个网关的目标、状态、相关门户和 RBD 映像。
+   </para>
+   <figure>
+    <title>iSCSI 网关列表</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_igws.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_igws.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    要查看有关某个网关的更详细信息，请选中其最左侧列中的复选框：
+   </para>
+   <figure>
+    <title>网关详细信息</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_igws_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_igws_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>添加 iSCSI 网关</title>
+    <para>
+     要添加新的 iSCSI 网关，请点击网关表格左上方的 <guimenu>Add</guimenu>（增加）并输入所需的信息。
+    </para>
+    <figure>
+     <title>添加新的 iSCSI 网关</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_igws_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_igws_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       输入新网关的目标地址。
+      </para>
+     </step>
+     <step>
+      <para>
+       点击 <guimenu>Add portal</guimenu>（添加门户）并从列表中选择一个或多个 iSCSI 门户。
+      </para>
+     </step>
+     <step>
+      <para>
+       点击 <guimenu>Add image</guimenu>（添加映像）并为网关选择一个或多个 RBD 映像。
+      </para>
+     </step>
+     <step>
+      <para>
+       如果您需要使用身份验证才能访问网关，请选中 <guimenu>Authentication</guimenu>（身份验证）复选框并输入身份凭证。选中 <guimenu>Mutual authentication</guimenu>（相互身份验证）和 <guimenu>Discovery authentication</guimenu>（发现身份验证）之后，您可看到更多高级身份验证选项。
+      </para>
+     </step>
+     <step>
+      <para>
+       点击 <guimenu>Submit</guimenu>（提交）以确认。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>编辑 iSCSI 网关</title>
+    <para>
+     要编辑某个现有 iSCSI 网关，可点击网关表格中该网关的名称，也可以选中相应复选框，然后点击网关表格左上方的 <guimenu>Edit</guimenu>（编辑）。
+    </para>
+    <para>
+     然后，您便可以修改 iSCSI 目标、添加或删除门户，以及添加或删除相关 RBD 映像。您还可以调整网关的身份验证信息。
+    </para>
+   </sect3>
+   <sect3>
+    <title>克隆和删除 iSCSI 网关</title>
+    <para>
+     要删除某个或一组网关，请选中其最左侧列中的复选框，然后点击网关表格左上方的 <guimenu>Delete</guimenu>（删除）。
+    </para>
+    <para>
+     同样，您可以选择 <guimenu>Clone</guimenu>（克隆）以克隆选中的网关。
+    </para>
+   </sect3>
+   <sect3>
+    <title>启动和停止 iSCSI 网关</title>
+    <para>
+     要启动所有网关，请选择网关表格左上方的 <guimenu>Start all</guimenu>（全部启动）。要停止所有网关，请选择 <guimenu>Stop all</guimenu>（全部停止）。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.crushmap">
+   <title>查看集群 CRUSH 地图</title>
+   <para>
+    点击主菜单中的 <guimenu>CRUSH Map</guimenu>（CRUSH 地图）可查看集群 CRUSH 地图。
+   </para>
+   <figure>
+    <title>CRUSH 地图</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_crush.png" width="60%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_crush.png" width="60%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    在 <guimenu>Physical setup</guimenu>（物理架构）窗格中，您可以看到如 CRUSH 地图中所描述的集群结构。
+   </para>
+   <para>
+    您可以在 <guimenu>Replication rules</guimenu>（复制规则）窗格的 <guimenu>Content</guimenu>（内容）下拉框中选择其中一个规则组，来查看相应的规则组。
+   </para>
+   <figure>
+    <title>复制规则</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_crush_rulesets.png" width="60%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_crush_rulesets.png" width="60%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.rgw_users">
+   <title>管理对象网关用户和桶</title>
+   <tip>
+    <title>对象网关的更多信息</title>
+    <para>
+     有关对象网关的更多一般信息，请参见<xref linkend="cha.ceph.gw"/>。
+    </para>
+   </tip>
+   <para>
+    要列出对象网关用户，请选择主菜单中的<menuchoice><guimenu>Object Gateway（对象网关）</guimenu><guimenu>Users（用户）</guimenu></menuchoice>。
+   </para>
+   <para>
+    列表会显示每个用户的 ID、显示名称、电子邮件地址、用户是否处于暂停状态以及用户的最大桶数。
+   </para>
+   <figure>
+    <title>对象网关用户列表</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_rgw_users_list.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_rgw_users_list.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="oa.rgw_user.add">
+    <title>添加新的对象网关用户</title>
+    <para>
+     要添加新的对象网关用户，请点击用户表格左上方的 <guimenu>Add</guimenu>（增加）并输入相关信息。
+    </para>
+    <tip>
+     <title>更多信息</title>
+     <para>
+      <xref linkend="s3.swift.accounts.managment"/>中提供了有关对象网关用户帐户的详细信息。
+     </para>
+    </tip>
+    <figure>
+     <title>添加新的对象网关用户</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rgw_users_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rgw_users_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       输入用户名、全名和（可选）电子邮件地址以及用户的最大桶数。
+      </para>
+     </step>
+     <step>
+      <para>
+       如果用户最初应处于暂停状态，请选中 <guimenu>Suspended</guimenu>（暂停）复选框。
+      </para>
+     </step>
+     <step>
+      <para>
+       指定 S3 身份验证的访问钥和机密密钥。如果您希望 openATTIC 为您生成密钥，请选中 <guimenu>Generate key</guimenu>（生成钥）。
+      </para>
+     </step>
+     <step>
+      <para>
+       在 <guimenu>User quota</guimenu>（用户配额）部分，设置当前用户的配额限制。
+      </para>
+      <para>
+       选中 <guimenu>Enabled</guimenu>（启用）以激活用户配额限制。您可以指定集群中用户可使用磁盘空间的 <guimenu>Maximum size</guimenu>（最大容量），也可以选中 <guimenu>Unlimited size</guimenu>（容量不限）不设置大小限制。
+      </para>
+      <para>
+       同样，可以指定用户可在集群存储上存储的 <guimenu>Maximum objects</guimenu>（最大对象数目），也可以选中 <guimenu>Unlimited objects</guimenu>（对象数目不限），允许用户存储任意数量的对象。
+      </para>
+      <figure>
+       <title>用户配额</title>
+       <mediaobject>
+        <imageobject role="fo">
+         <imagedata fileref="oa_rgw_userquota.png" width="70%" format="PNG"/>
+        </imageobject>
+        <imageobject role="html">
+         <imagedata fileref="oa_rgw_userquota.png" width="70%" format="PNG"/>
+        </imageobject>
+       </mediaobject>
+      </figure>
+     </step>
+     <step>
+      <para>
+       在 <guimenu>Bucket Quota</guimenu>（桶配额）部分，设置当前用户的桶配额限制。
+      </para>
+      <figure>
+       <title>桶配额</title>
+       <mediaobject>
+        <imageobject role="fo">
+         <imagedata fileref="oa_rgw_bucketquota.png" width="70%" format="PNG"/>
+        </imageobject>
+        <imageobject role="html">
+         <imagedata fileref="oa_rgw_bucketquota.png" width="70%" format="PNG"/>
+        </imageobject>
+       </mediaobject>
+      </figure>
+     </step>
+     <step>
+      <para>
+       点击 <guimenu>Submit</guimenu>（提交）以确认。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>删除对象网关用户</title>
+    <para>
+     要删除一个或多个对象网关用户，请选中其最左侧列中的复选框，然后选择用户表格左上方的 <guimenu>Delete</guimenu>（删除）。
+    </para>
+   </sect3>
+   <sect3 xml:id="oa.user.edit">
+    <title>编辑对象网关用户</title>
+    <para>
+     要编辑对象网关用户的用户信息，请选中其最左侧列中的复选框，然后选择用户表格左上方的 <guimenu>Edit</guimenu>（编辑），或者点击用户的 ID。您可以更改在<xref linkend="oa.rgw_user.add"/>中添加用户时输入的信息，以及下列其他信息：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>子用户</term>
+      <listitem>
+       <para>
+        添加、删除或编辑当前所编辑用户的子用户。
+       </para>
+       <figure>
+        <title>添加子用户</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_subuser_add.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_subuser_add.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>密钥</term>
+      <listitem>
+       <para>
+        添加、删除或查看当前所编辑用户的访问钥和机密密钥。
+       </para>
+       <para>
+        您可为当前编辑的用户添加 S3 钥，或查看其子用户的 Swift 钥。
+       </para>
+       <figure>
+        <title>查看 S3 钥</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_user_s3key_edit.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_user_s3key_edit.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>使能</term>
+      <listitem>
+       <para>
+        添加或删除用户的使能。使能适用于 <guimenu>buckets</guimenu>、<guimenu>zone</guimenu>、<guimenu>users</guimenu>、<guimenu>metadata</guimenu> 和 <guimenu>usage</guimenu>。每个使能值可以是“read”、“write”或“*”（表示读取和写入特权）其中之一。
+       </para>
+       <figure>
+        <title>使能</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_user_capabs.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_user_capabs.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.list">
+    <title>列出对象网关用户的桶</title>
+    <tip>
+     <para>
+      桶是一种用于存储数据对象的机制。一个用户帐户可具有许多个桶，但是桶名称必须唯一。“桶”这个术语通常在 Amazon S3 API 中使用，而在 OpenStack Swift API 环境中使用的是“容器”。
+     </para>
+    </tip>
+    <para>
+     点击 <menuchoice><guimenu>Object Gateway（对象网关）</guimenu><guimenu>Buckets（桶）</guimenu></menuchoice>可列出所有可用的对象网关桶。
+    </para>
+    <figure>
+     <title>对象网关桶</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="os_ogw_bucket_list.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="os_ogw_bucket_list.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.add">
+    <title>为对象网关用户添加桶</title>
+    <para>
+     要添加新的桶，请点击桶表格左上方的 <guimenu>Add</guimenu>（增加），然后输入新的桶名称及相关的对象网关用户。点击 <guimenu>Submit</guimenu>（提交）以确认。
+    </para>
+    <figure>
+     <title>添加新的桶</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.view">
+    <title>查看桶详细信息</title>
+    <para>
+     要查看有关某个对象网关桶的详细信息，请选中桶表格最左侧列中相应的复选框。
+    </para>
+    <figure>
+     <title>桶详细信息</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_view.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_view.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.edit">
+    <title>编辑桶</title>
+    <para>
+     要编辑某个桶，请选中最左侧列中该桶的复选框，然后选择桶表格左上方的 <guimenu>Edit</guimenu>（编辑），或者点击它的名称。
+    </para>
+    <figure>
+     <title>编辑对象网关桶</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     在编辑屏幕上，您可以更改桶所属的用户。
+    </para>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.delete">
+    <title>删除桶</title>
+    <para>
+     要删除一个或多个对象网关桶，请激活桶表格最左侧列中相应的复选框，然后选择桶表格左上方的 <guimenu>Delete</guimenu>（删除）。
+    </para>
+    <figure>
+     <title>删除桶</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_buckets_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_buckets_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     要确认删除，请在 <guimenu>Delete buckets</guimenu>（删除桶）弹出窗口中键入“yes”，然后点击 <guimenu>删除</guimenu>。
+    </para>
+    <warning>
+     <title>请谨慎删除</title>
+     <para>
+      目前，当您删除对象网关桶时，系统不会校验桶实际上是否正被使用，例如由 NFS Ganesha 通过 S3 存储后端使用。
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>
