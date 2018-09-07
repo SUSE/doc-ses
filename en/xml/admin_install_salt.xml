@@ -1,0 +1,1429 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="ceph.install.saltstack">
+ <title>Deploying with &deepsea;/&salt;</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 5</dm:release>
+  </dm:docmanager>
+ </info>
+ <note>
+  <title><command>ceph-deploy</command> Removed in &storage; 5</title>
+  <para>
+   The <command>ceph-deploy</command> cluster deployment tool was deprecated in
+   &storage; 4 and is completely removed in favor of &deepsea; as of &storage;
+   5.
+  </para>
+ </note>
+ <para>
+  &salt; along with &deepsea; is a <emphasis>stack</emphasis> of components
+  that help you deploy and manage server infrastructure. It is very scalable,
+  fast, and relatively easy to get running. Read the following considerations
+  before you start deploying the cluster with &salt;:
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    <emphasis>&sminion;s</emphasis> are the nodes controlled by a dedicated
+    node called &smaster;. &sminion;s have roles, for example &osd;, &mon;,
+    &mgr;, &rgw;, &igw;, or &ganesha;.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    A &smaster; runs its own &sminion;. It is required for running privileged
+    tasks&mdash;for example creating, authorizing, and copying keys to
+    minions&mdash;so that remote minions never need to run privileged tasks.
+   </para>
+   <tip>
+    <title>Sharing Multiple Roles per Server</title>
+    <para>
+     You will get the best performance from your &ceph; cluster when each role
+     is deployed on a separate node. But real deployments sometimes require
+     sharing one node for multiple roles. To avoid troubles with performance
+     and upgrade procedure, do not deploy the &osd;, &mds;, or &mon; role to
+     the &smaster;.
+    </para>
+   </tip>
+  </listitem>
+  <listitem>
+   <para>
+    &sminion;s need to correctly resolve the &smaster;'s host name over the
+    network. By default, they look for the <systemitem>salt</systemitem> host
+    name, but you can specify any other network-reachable host name in the
+    <filename>/etc/salt/minion</filename> file, see
+    <xref linkend="ceph.install.stack"/>.
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="cha.ceph.install.relnotes">
+  <title>Read the Release Notes</title>
+
+  <para>
+   In the release notes you can find additional information on changes since
+   the previous release of &productname;. Check the release notes to see
+   whether:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     your hardware needs special considerations.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     any used software packages have changed significantly.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     special precautions are necessary for your installation.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   The release notes also provide information that could not make it into the
+   manual on time. They also contain notes about known issues.
+  </para>
+
+  <para>
+   After having installed the package <package>release-notes-ses</package>,
+   find the release notes locally in the directory
+   <filename>/usr/share/doc/release-notes</filename> or online at
+   <link xlink:href="https://www.suse.com/releasenotes/"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="deepsea.description">
+  <title>Introduction to &deepsea;</title>
+
+  <para>
+   The goal of &deepsea; is to save the administrator time and confidently
+   perform complex operations on a &ceph; cluster.
+  </para>
+
+  <para>
+   &ceph; is a very configurable software solution. It increases both the
+   freedom and responsibility of system administrators.
+  </para>
+
+  <para>
+   The minimal &ceph; setup is good for demonstration purposes, but does not
+   show interesting features of &ceph; that you can see with a big number of
+   nodes.
+  </para>
+
+  <para>
+   &deepsea; collects and stores data about individual servers, such as
+   addresses and device names. For a distributed storage system such as &ceph;,
+   there can be hundreds of such items to collect and store. Collecting the
+   information and entering the data manually into a configuration management
+   tool is exhausting and error prone.
+  </para>
+
+  <para>
+   The steps necessary to prepare the servers, collect the configuration, and
+   configure and deploy &ceph; are mostly the same. However, this does not
+   address managing the separate functions. For day to day operations, the
+   ability to trivially add hardware to a given function and remove it
+   gracefully is a requirement.
+  </para>
+
+  <para>
+   &deepsea; addresses these observations with the following strategy:
+   &deepsea; consolidates the administrator's decisions in a single file. The
+   decisions include cluster assignment, role assignment and profile
+   assignment. And &deepsea; collects each set of tasks into a simple goal.
+   Each goal is a <emphasis>stage</emphasis>:
+  </para>
+
+  <itemizedlist xml:id="deepsea.stage.description">
+   <title>&deepsea; Stages Description</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stage 0</emphasis>&mdash;the
+     <emphasis role="bold">preparation</emphasis>&mdash; during this stage, all
+     required updates are applied and your system may be rebooted.
+    </para>
+    <important>
+     <title>Re-run Stage 0 after &smaster; Reboot</title>
+     <para>
+      If, during Stage 0, the &smaster; reboots to load the new kernel version,
+      you need to run Stage 0 again, otherwise minions will not be targeted.
+     </para>
+    </important>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stage 1</emphasis>&mdash;the
+     <emphasis role="bold">discovery</emphasis>&mdash;here you detect all
+     hardware in your cluster and collect necessary information for the &ceph;
+     configuration. For details about configuration, refer to
+     <xref linkend="deepsea.pillar.salt.configuration"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stage 2</emphasis>&mdash;the
+     <emphasis role="bold">configuration</emphasis>&mdash;you need to prepare
+     configuration data in a particular format.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stage 3</emphasis>&mdash;the
+     <emphasis role="bold">deployment</emphasis>&mdash;creates a basic &ceph;
+     cluster with mandatory &ceph; services. See
+     <xref linkend="storage.intro.core.nodes"/> for their list.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stage 4</emphasis>&mdash;the
+     <emphasis role="bold">services</emphasis>&mdash;additional features of
+     &ceph; like iSCSI, &rgw; and &cephfs; can be installed in this stage. Each
+     is optional.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stage 5</emphasis>&mdash;the removal stage. This
+     stage is not mandatory and during the initial setup it is usually not
+     needed. In this stage the roles of minions and also the cluster
+     configuration are removed. You need to run this stage when you need to
+     remove a storage node from your cluster. For details refer to
+     <xref linkend="salt.node.removing"/>.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   You can find a more detailed introduction into &deepsea; at
+   <link xlink:href="https://github.com/suse/deepsea/wiki"/>.
+  </para>
+
+  <sect2 xml:id="deepsea.organisation.locations">
+   <title>Organization and Important Locations</title>
+   <para>
+    &salt; has several standard locations and several naming conventions used
+    on your master node:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><filename>/srv/pillar</filename>
+     </term>
+     <listitem>
+      <para>
+       The directory stores configuration data for your cluster minions.
+       <emphasis>Pillar</emphasis> is an interface for providing global
+       configuration values to all your cluster minions.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/</filename>
+     </term>
+     <listitem>
+      <para>
+       The directory stores &salt; state files (also called
+       <emphasis>sls</emphasis> files). State files are formatted descriptions
+       of states in which the cluster should be. For more information, refer to
+       the
+       <link xlink:href="https://docs.saltstack.com/en/latest/topics/tutorials/starting_states.html">&salt;
+       documentation</link>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/module/runners</filename>
+     </term>
+     <listitem>
+      <para>
+       The directory stores Python scripts known as runners. Runners are
+       executed on the master node.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/_modules</filename>
+     </term>
+     <listitem>
+      <para>
+       The directory stores Python scripts that are called modules. The modules
+       are applied to all minions in your cluster.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/pillar/ceph</filename>
+     </term>
+     <listitem>
+      <para>
+       The directory is used by &deepsea;. Collected configuration data are
+       stored here.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/ceph</filename>
+     </term>
+     <listitem>
+      <para>
+       A directory used by &deepsea;. It stores sls files that can be in
+       different formats, but each subdirectory contains sls files. Each
+       subdirectory contains only one type of sls file. For example,
+       <filename>/srv/salt/ceph/stage</filename> contains orchestration files
+       that are executed by <command>salt-run state.orchestrate</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ds.minion.targeting">
+   <title>Targeting the Minions</title>
+   <para>
+    &deepsea; commands are executed via the &salt; infrastructure. When using
+    the <command>salt</command> command, you need to specify a set of
+    &sminion;s that the command will affect. We describe the set of the minions
+    as a <emphasis>target</emphasis> for the <command>salt</command> command.
+    The following sections describe possible methods to target the minions.
+   </para>
+   <sect3 xml:id="ds.minion.targeting.name">
+    <title>Matching the Minion Name</title>
+    <para>
+     You can target a minion or a group of minions by matching their names. A
+     minion's name is usually the short host name of the node where the minion
+     runs. This is a general &salt; targeting method, not related to &deepsea;.
+     You can use globbing, regular expressions, or lists to limit the range of
+     minion names. The general syntax follows:
+    </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> example.module</screen>
+    <tip>
+     <title>&ceph;-only Cluster</title>
+     <para>
+      If all &sminion;s in your environment belong to your &ceph; cluster, you
+      can safely substitute <replaceable>target</replaceable> with
+      <literal>'*'</literal> to include <emphasis>all</emphasis> registered
+      minions.
+     </para>
+    </tip>
+    <para>
+     Match all minions in the example.net domain (assuming the minion names are
+     identical to their "full" host names):
+    </para>
+<screen>&prompt.smaster;salt '*.example.net' test.ping</screen>
+    <para>
+     Match the 'web1' to 'web5' minions:
+    </para>
+<screen>&prompt.smaster;salt 'web[1-5]' test.ping</screen>
+    <para>
+     Match both 'web1-prod' and 'web1-devel' minions using a regular
+     expression:
+    </para>
+<screen>&prompt.smaster;salt -E 'web1-(prod|devel)' test.ping</screen>
+    <para>
+     Match a simple list of minions:
+    </para>
+<screen>&prompt.smaster;salt -L 'web1,web2,web3' test.ping</screen>
+    <para>
+     Match all minions in the cluster:
+    </para>
+<screen>&prompt.smaster;salt '*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds.minion.targeting.grain">
+    <title>Targeting with a 'deepsea' Grain</title>
+    <para>
+     In a heterogeneous &salt;-managed environment where &productname; is
+     deployed on a subset of nodes alongside other cluster solution(s), it is a
+     good idea to 'mark' the relevant minions by applying a 'deepsea' grain to
+     them. This way you can easily target &deepsea; minions in environments
+     where matching by the minion name is problematic.
+    </para>
+    <para>
+     To apply the 'deepsea' grain to a group of minions, run:
+    </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> grains.append deepsea default</screen>
+    <para>
+     To remove the 'deepsea' grain from a group of minions, run:
+    </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> grains.delval deepsea destructive=True</screen>
+    <para>
+     After applying the 'deepsea' grain to the relevant minions, you can target
+     them as follows:
+    </para>
+<screen>&prompt.smaster;salt -G 'deepsea:*' test.ping</screen>
+    <para>
+     The following command is an equivalent:
+    </para>
+<screen>&prompt.smaster;salt -C 'G@deepsea:*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds.minion.targeting.dsminions">
+    <title>Set the <option>deepsea_minions</option> Option</title>
+    <para>
+     Setting the <option>deepsea_minions</option> option's target is a
+     requirement for &deepsea; deployments. &deepsea; uses it to instruct
+     minions during stages execution (refer to
+     <xref linkend="deepsea.stage.description"/> for details.
+    </para>
+    <para>
+     To set or change the <option>deepsea_minions</option> option, edit the
+     <filename>/srv/pillar/ceph/deepsea_minions.sls</filename> file on the
+     &smaster; and add or replace the following line:
+    </para>
+<screen>deepsea_minions: <replaceable>target</replaceable></screen>
+    <tip>
+     <title><option>deepsea_minions</option> Target</title>
+     <para>
+      As the <replaceable>target</replaceable> for the
+      <option>deepsea_minions</option> option, you can use any targeting
+      method: both
+      <xref linkend="ds.minion.targeting.name" xrefstyle="select: title"/> and
+      <xref linkend="ds.minion.targeting.grain" xrefstyle="select: title"/>.
+     </para>
+     <para>
+      Match all &sminion;s in the cluster:
+     </para>
+<screen>deepsea_minions: '*'</screen>
+     <para>
+      Match all minions with the 'deepsea' grain:
+     </para>
+<screen>deepsea_minions: 'G@deepsea:*'</screen>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>For More Information</title>
+    <para>
+     You can use more advanced ways to target minions using the &salt;
+     infrastructure. Refer to
+     <link
+      xlink:href="https://docs.saltstack.com/en/latest/topics/targeting/"/>
+     for a description of all targeting techniques.
+    </para>
+    <para>
+     Also, the 'deepsea-minions' manual page gives you more detail about
+     &deepsea; targeting (<command>man 7 deepsea_minions</command>).
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.install.stack">
+  <title>Cluster Deployment</title>
+
+  <para>
+   The cluster deployment process has several phases. First, you need to
+   prepare all nodes of the cluster by configuring &salt; and then deploy and
+   configure &ceph;.
+  </para>
+
+  <tip>
+   <title>Deploying Monitor Nodes without Defining OSD Profiles</title>
+   <para>
+    If you need to skip defining OSD profiles and deploy the monitor nodes
+    first, you can do so by setting the <option>DEV_ENV</option> variable. It
+    allows deploying monitors without the presence of the
+    <filename>profile/</filename> directory, as well as deploying a cluster
+    with at least <emphasis>one</emphasis> storage, monitor, and manager node.
+   </para>
+   <para>
+    To set the environment variable, either enable it globally by setting it in
+    the <filename>/srv/pillar/ceph/stack/global.yml</filename> file, or set it
+    for the current shell session only:
+   </para>
+<screen>&prompt.smaster;export DEV_ENV=true</screen>
+  </tip>
+
+  <para>
+   The following procedure describes the cluster preparation in detail.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Install and register &cephos; together with &storage; extension on each
+     node of the cluster.
+    </para>
+   </step>
+   <step>
+    <para>
+     Verify that proper products are installed and registered by listing
+     existing software repositories. The list will be similar to this output:
+    </para>
+<screen>
+ &prompt.sminion;zypper lr -E
+#  | Alias   | Name                              | Enabled | GPG Check | Refresh
+---+---------+-----------------------------------+---------+-----------+--------
+ 4 | [...]   | SUSE-Enterprise-Storage-5-Pool    | Yes     | (r ) Yes  | No
+ 6 | [...]   | SUSE-Enterprise-Storage-5-Updates | Yes     | (r ) Yes  | Yes
+ 9 | [...]   | SLES12-SP3-Pool                   | Yes     | (r ) Yes  | No
+11 | [...]   | SLES12-SP3-Updates                | Yes     | (r ) Yes  | Yes
+</screen>
+   </step>
+   <step>
+    <para>
+     Configure network settings including proper DNS name resolution on each
+     node. The &smaster; and all the &sminion;s need to resolve each other by
+     their host names. For more information on configuring a network, see
+     <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_basicnet_yast.html"/>
+     For more information on configuring a DNS server, see
+     <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/cha_dns.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configure, enable, and start the NTP time synchronization server:
+    </para>
+<screen>&prompt.smaster;systemctl enable ntpd.service
+&prompt.smaster;systemctl start ntpd.service</screen>
+    <para>
+     Find more information on setting up NTP in
+     <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_netz_xntp_yast.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Check whether the &aa; service is running and disable it on each cluster
+     node. Start &yast; &aa; module, and select <guimenu>Settings</guimenu> and
+     then deactivate the <guimenu>Enable Apparmor</guimenu> check box. Confirm
+     with <guimenu>Done</guimenu>.
+    </para>
+    <para>
+     Note that &storage; will <emphasis>not</emphasis> work with &aa; enabled.
+    </para>
+   </step>
+   <step>
+    <para>
+     Install the <literal>salt-master</literal> and
+     <literal>salt-minion</literal> packages on the &smaster; node:
+    </para>
+<screen>&prompt.smaster;zypper in salt-master salt-minion</screen>
+    <para>
+     Check that the <systemitem>salt-master</systemitem> service is enabled and
+     started, and enable and start it if needed:
+    </para>
+<screen>&prompt.smaster;systemctl enable salt-master.service
+&prompt.smaster;systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     If you intend to use firewall, verify that the &smaster; node has ports
+     4505 and 4506 open to all &sminion; nodes. If the ports are closed, you
+     can open them using the <command>yast2 firewall</command> command by
+     allowing the <guimenu>SaltStack</guimenu> service.
+    </para>
+    <warning>
+     <title>&deepsea; Stages Fail with Firewall</title>
+     <para>
+      &deepsea; deployment stages fail when firewall is active (and even
+      configured). To pass the stages correctly, you need to either turn the
+      firewall off by running
+     </para>
+<screen>
+&prompt.smaster;systemctl stop SuSEfirewall2.service
+</screen>
+     <para>
+      or set the <option>FAIL_ON_WARNING</option> option to 'False' in
+      <filename>/srv/pillar/ceph/stack/global.yml</filename>:
+     </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+    </warning>
+   </step>
+   <step>
+    <para>
+     Install the package <literal>salt-minion</literal> on all minion nodes.
+    </para>
+<screen>&prompt.sminion;zypper in salt-minion</screen>
+    <para>
+     Make sure that the <emphasis>fully qualified domain name</emphasis> of
+     each node can be resolved to the public network IP address by all other
+     nodes.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configure all minions (including the master minion) to connect to the
+     master. If your &smaster; is not reachable by the host name
+     <literal>salt</literal>, edit the file
+     <filename>/etc/salt/minion</filename> or create a new file
+     <filename>/etc/salt/minion.d/master.conf</filename> with the following
+     content:
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     If you performed any changes to the configuration files mentioned above,
+     restart the &salt; service on all &sminion;s:
+    </para>
+<screen>&prompt.sminion;systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Check that the <systemitem>salt-minion</systemitem> service is enabled and
+     started on all nodes. Enable and start it if needed:
+    </para>
+<screen>&prompt.sminion;systemctl enable salt-minion.service
+&prompt.sminion;systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Verify each &sminion;'s fingerprint and accept all salt keys on the
+     &smaster; if the fingerprints match.
+    </para>
+    <para>
+     View each minion's fingerprint:
+    </para>
+<screen>&prompt.sminion;salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     After gathering fingerprints of all the &sminion;s, list fingerprints of
+     all unaccepted minion keys on the &smaster;:
+    </para>
+<screen>&prompt.smaster;salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     If the minions' fingerprint match, accept them:
+    </para>
+<screen>&prompt.smaster;salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     Verify that the keys have been accepted:
+    </para>
+<screen>&prompt.smaster;salt-key --list-all</screen>
+   </step>
+   <step xml:id="deploy.wiping.disk">
+    <para>
+     Prior to deploying &storage; make sure that all disks that were used as
+     OSD by previous clusters are empty without partitions. To ensure this, you
+     need to manually zap all the disks. Remember to replace 'X' with the
+     correct disk letter:
+    </para>
+    <substeps>
+     <step>
+      <para>
+       Stop all processes that are using the specific disk.
+      </para>
+     </step>
+     <step>
+      <para>
+       Verify whether any partition on the disk is mounted, and unmount if
+       needed.
+      </para>
+     </step>
+     <step>
+      <para>
+       If the disk is managed by LVM, deactivate and delete the whole LVM
+       infrastructure. Refer to
+       <link xlink:href="https://www.suse.com/documentation/sles-12/stor_admin/data/cha_lvm.html"/>
+       for more details.
+      </para>
+     </step>
+     <step>
+      <para>
+       If the disk is part of MD RAID, deactivate the RAID. Refer to
+       <link xlink:href="https://www.suse.com/documentation/sles-12/stor_admin/data/part_software_raid.html"/>
+       for more details.
+      </para>
+     </step>
+     <step>
+      <tip>
+       <title>Rebooting the Server</title>
+       <para>
+        If you get error messages such as 'partition in use' or 'kernel can not
+        be updated with the new partition table' during the following steps,
+        reboot the server.
+       </para>
+      </tip>
+      <para>
+       Wipe the beginning of each partition:
+      </para>
+<screen>for partition in /dev/sdX[0-9]*
+do
+  dd if=/dev/zero of=$partition bs=4096 count=1 oflag=direct
+done</screen>
+     </step>
+     <step>
+      <para>
+       Wipe the partition table:
+      </para>
+<screen>sgdisk -Z --clear -g /dev/sdX</screen>
+     </step>
+     <step>
+      <para>
+       Wipe the backup partition tables:
+      </para>
+<screen>size=`blockdev --getsz /dev/sdX`
+position=$((size/4096 - 33))
+dd if=/dev/zero of=/dev/sdX bs=4M count=33 seek=$position oflag=direct</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     Install &deepsea; on the &smaster; node:
+    </para>
+<screen>&prompt.smaster;zypper in deepsea</screen>
+   </step>
+   <step>
+    <para>
+     The value of the <option>master_minion</option> parameter is dynamically
+     derived from the <filename>/etc/salt/minion_id</filename> file on the
+     &smaster;. If you need to override the discovered value, edit the file
+     <filename>/srv/pillar/ceph/stack/global.yml</filename> and set a relevant
+     value:
+    </para>
+<screen>
+master_minion: <replaceable>MASTER_MINION_NAME</replaceable>
+</screen>
+    <para>
+     If your &smaster; is reachable via more host names, use the &sminion; name
+     for the storage cluster as returned by the <command>salt-key -L</command>
+     command. If you used the default host name for your
+     &smaster;&mdash;<emphasis>salt</emphasis>&mdash;in the
+     <emphasis>ses</emphasis> domain, then the file looks as follows:
+    </para>
+<screen>master_minion: salt.ses</screen>
+   </step>
+  </procedure>
+
+  <para>
+   Now you deploy and configure &ceph;. Unless specified otherwise, all steps
+   are mandatory.
+  </para>
+
+  <note>
+   <title>&salt; Command Conventions</title>
+   <para>
+    There are two possible ways how to run <command>salt-run
+    state.orch</command>&mdash;one is with <literal>stage.&lt;stage
+    number&gt;</literal>, the other is with the name of the stage. Both
+    notations have the same impact and it is fully your preference which
+    command you use.
+   </para>
+  </note>
+
+  <procedure xml:id="ds.depl.stages">
+   <title>Running Deployment Stages</title>
+   <step>
+    <para>
+     Include the &sminion;s belonging to the &ceph; cluster that you are
+     currently deploying. Refer to <xref linkend="ds.minion.targeting.name"/>
+     for more information on targeting the minions.
+    </para>
+   </step>
+   <step>
+    <para>
+     Prepare your cluster. Refer to <xref linkend="deepsea.stage.description"/>
+     for more details.
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.0</screen>
+    <para>
+     or
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.prep</screen>
+    <note>
+     <title>Run or Monitor Stages using &deepsea; CLI</title>
+     <para>
+      Using the &deepsea; CLI, you can follow the stage execution progress in
+      real-time, either by running the &deepsea; CLI in the monitoring mode, or
+      by running the stage directly through &deepsea; CLI. For details refer to
+      <xref linkend="deepsea.cli"/>.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     <emphasis>Optional</emphasis>: create Btrfs sub-volumes for
+     <filename>/var/lib/ceph/</filename>. This step should only be executed
+     before the next stages of &deepsea; have been executed. To migrate
+     existing directories or for more details, see
+     <xref linkend="storage.tips.ceph_btrfs_subvol"/>.
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.migrate.subvolume</screen>
+   </step>
+   <step>
+    <para>
+     The discovery stage collects data from all minions and creates
+     configuration fragments that are stored in the directory
+     <filename>/srv/pillar/ceph/proposals</filename>. The data are stored in
+     the YAML format in *.sls or *.yml files.
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.1</screen>
+    <para>
+     or
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.discovery</screen>
+   </step>
+   <step>
+    <para>
+     After the previous command finishes successfully, create a
+     <filename>policy.cfg</filename> file in
+     <filename>/srv/pillar/ceph/proposals</filename>. For details refer to
+     <xref linkend="policy.configuration"/>.
+    </para>
+    <tip>
+     <para>
+      If you need to change the cluster's network setting, edit
+      <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename> and adjust
+      the lines starting with <literal>cluster_network:</literal> and
+      <literal>public_network:</literal>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     The configuration stage parses the <filename>policy.cfg</filename> file
+     and merges the included files into their final form. Cluster and role
+     related content are placed in
+     <filename>/srv/pillar/ceph/cluster</filename>, while &ceph; specific
+     content is placed in <filename>/srv/pillar/ceph/stack/default</filename>.
+    </para>
+    <para>
+     Run the following command to trigger the configuration stage:
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.2</screen>
+    <para>
+     or
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.configure</screen>
+    <para>
+     The configuration step may take several seconds. After the command
+     finishes, you can view the pillar data for the specified minions (for
+     example, named <literal>ceph_minion1</literal>,
+     <literal>ceph_minion2</literal>, etc.) by running:
+    </para>
+<screen>&prompt.smaster;salt 'ceph_minion*' pillar.items</screen>
+    <note>
+     <title>Overwriting Defaults</title>
+     <para>
+      As soon as the command finishes, you can view the default configuration
+      and change it to suit your needs. For details refer to
+      <xref linkend="ceph.deploy.ds.custom"/>.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Now you run the deployment stage. In this stage, the pillar is validated,
+     and monitors and ODS daemons are started on the storage nodes. Run the
+     following to start the stage:
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.3</screen>
+    <para>
+     or
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.deploy
+    </screen>
+    <para>
+     The command may take several minutes. If it fails, you need to fix the
+     issue and run the previous stages again. After the command succeeds, run
+     the following to check the status:
+    </para>
+<screen>&prompt.smaster;ceph -s</screen>
+   </step>
+   <step>
+    <para>
+     The last step of the &ceph; cluster deployment is the
+     <emphasis>services</emphasis> stage. Here you instantiate any of the
+     currently supported services: &igw;, &cephfs;, &rgw;, &oa;, and &ganesha;.
+     In this stage, the necessary pools, authorizing keyrings, and starting
+     services are created. To start the stage, run the following:
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.4</screen>
+    <para>
+     or
+    </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.services</screen>
+    <para>
+     Depending on the setup, the command may run for several minutes.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deepsea.cli">
+  <title>&deepsea; CLI</title>
+
+  <para>
+   &deepsea; also provides a command line interface (CLI) tool that allows the
+   user to monitor or run stages while visualizing the execution progress in
+   real-time. The executable is included in the <package>deepsea-cli</package>
+   package and is installed together with the <package>deepsea</package>
+   package.
+  </para>
+
+  <para>
+   Two modes are supported for visualizing a stage's execution progress:
+  </para>
+
+  <itemizedlist xml:id="deepsea.cli.modes">
+   <title>&deepsea; CLI Modes</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">Monitoring mode</emphasis>: visualizes the execution
+     progress of a &deepsea; stage triggered by the <command>salt-run</command>
+     command issued in another terminal session.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stand-alone mode</emphasis>: runs a &deepsea; stage
+     while providing real-time visualization of its component steps as they are
+     executed.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <important>
+   <title>&deepsea; CLI Commands</title>
+   <para>
+    The &deepsea; CLI commands can only be run on the &smaster; node with the
+    &rootuser; privileges.
+   </para>
+  </important>
+
+  <sect2 xml:id="deepsea.cli.monitor">
+   <title>&deepsea; CLI: Monitor Mode</title>
+   <para>
+    The progress monitor provides a detailed, real-time visualization of what
+    is happening during execution of stages using <command>salt-run
+    state.orch</command> commands in other terminal sessions.
+   </para>
+   <para>
+    You need to start the monitor before running any <command>salt-run
+    state.orch</command> so that the monitor can detect the start of the
+    stage's execution.
+   </para>
+   <para>
+    If you start the monitor after issuing the <command>salt-run
+    state.orch</command> command, then no execution progress will be shown.
+   </para>
+   <para>
+    You can start the monitor mode by running the following command:
+   </para>
+<screen>&prompt.smaster;deepsea monitor</screen>
+   <para>
+    For more information about the available command line options of the
+    <command>deepsea monitor</command> command check its manual page:
+   </para>
+<screen>&prompt.smaster;man deepsea-monitor</screen>
+  </sect2>
+
+  <sect2 xml:id="deepsea.cli.standalone">
+   <title>&deepsea; CLI: Stand-alone Mode</title>
+   <para>
+    In the stand-alone mode, &deepsea; CLI can be used to run a &deepsea;
+    stage, showing its execution in real-time.
+   </para>
+   <para>
+    The command to run a &deepsea; stage from the &deepsea; CLI has the
+    following form:
+   </para>
+<screen>&prompt.smaster;deepsea stage run <replaceable>stage-name</replaceable></screen>
+   <para>
+    where <replaceable>stage-name</replaceable> corresponds to the way &salt;
+    orchestration state files are referenced. For example, stage
+    <emphasis role="bold">deploy</emphasis>, which corresponds to the directory
+    located in <filename>/srv/salt/ceph/stage/deploy</filename>, is referenced
+    as <emphasis role="bold">ceph.stage.deploy</emphasis>.
+   </para>
+   <para>
+    This command is an alternative to the &salt;-based commands for running
+    &deepsea; stages (or any &deepsea; orchestration state file).
+   </para>
+   <para>
+    The command <command>deepsea stage run ceph.stage.0</command> is equivalent
+    to <command>salt-run state.orch ceph.stage.0</command>.
+   </para>
+   <para>
+    For more information about the available command line options accepted by
+    the <command>deepsea stage run</command> command check its manual page:
+   </para>
+<screen>&prompt.smaster;man deepsea-stage run</screen>
+   <para>
+    In the following figure shows an example of the output of the &deepsea; CLI
+    when running <emphasis role="underline">Stage 2</emphasis>:
+   </para>
+   <figure>
+    <title>DeepSea CLI stage execution progress output</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="deepsea.cli.run.alias">
+    <title>DeepSea CLI <command>stage run</command> Alias</title>
+    <para>
+     For advanced users of &salt;, we also support an alias for running a
+     &deepsea; stage that takes the &salt; command used to run a stage, for
+     example, <command>salt-run state.orch
+     <replaceable>stage-name</replaceable></command>, as a command of the
+     &deepsea; CLI.
+    </para>
+    <para>
+     Example:
+    </para>
+<screen>&prompt.smaster;deepsea salt-run state.orch <replaceable>stage-name</replaceable></screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deepsea.pillar.salt.configuration">
+  <title>Configuration and Customization</title>
+
+  <sect2 xml:id="policy.configuration">
+   <title>The <filename>policy.cfg</filename> File</title>
+   <para>
+    The <filename>/srv/pillar/ceph/proposals/policy.cfg</filename>
+    configuration file is used to determine roles of individual cluster nodes.
+    For example, which node acts as an OSD or which as a monitor node. Edit
+    <filename>policy.cfg</filename> in order to reflect your desired cluster
+    setup. The order of the sections is arbitrary, but the content of included
+    lines overwrites matching keys from the content of previous lines.
+   </para>
+   <tip>
+    <title>Examples of <filename>policy.cfg</filename></title>
+    <para>
+     You can find several examples of complete policy files in the
+     <filename>/usr/share/doc/packages/deepsea/examples/</filename> directory.
+    </para>
+   </tip>
+   <sect3 xml:id="policy.cluster.assignment">
+    <title>Cluster Assignment</title>
+    <para>
+     In the <emphasis role="bold">cluster</emphasis> section you select minions
+     for your cluster. You can select all minions, or you can blacklist or
+     whitelist minions. Examples for a cluster called
+     <emphasis role="bold">ceph</emphasis> follow.
+    </para>
+    <para>
+     To include <emphasis role="bold">all</emphasis> minions, add the following
+     lines:
+    </para>
+<screen>cluster-ceph/cluster/*.sls</screen>
+    <para>
+     To <emphasis role="bold">whitelist</emphasis> a particular minion:
+    </para>
+<screen>cluster-ceph/cluster/abc.domain.sls</screen>
+    <para>
+     or a group of minions&mdash;you can shell glob matching:
+    </para>
+<screen>cluster-ceph/cluster/mon*.sls</screen>
+    <para>
+     To <emphasis role="bold">blacklist</emphasis> minions, set the them to
+     <literal>unassigned</literal>:
+    </para>
+<screen>cluster-unassigned/cluster/client*.sls</screen>
+   </sect3>
+   <sect3 xml:id="policy.role.assignment">
+    <title>Role Assignment</title>
+    <para>
+     This section provides you with details on assigning 'roles' to your
+     cluster nodes. A 'role' in this context means the service you need to run
+     on the node, such as &mon;, &ogw;, &igw;, or &oa;. No role is assigned
+     automatically, only roles added to <command>policy.cfg</command> will be
+     deployed.
+    </para>
+    <para>
+     The assignment follows this pattern:
+    </para>
+<screen>role-<replaceable>ROLE_NAME</replaceable>/<replaceable>PATH</replaceable>/<replaceable>FILES_TO_INCLUDE</replaceable></screen>
+    <para>
+     Where the items have the following meaning and values:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>ROLE_NAME</replaceable> is any of the following: 'master',
+       'admin', 'mon', 'mgr', 'mds', 'igw', 'rgw', 'ganesha', or 'openattic'.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>PATH</replaceable> is a relative directory path to .sls or
+       .yml files. In case of .sls files, it usually is
+       <filename>cluster</filename>, while .yml files are located at
+       <filename>stack/default/ceph/minions</filename>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>FILES_TO_INCLUDE</replaceable> are the &salt; state files
+       or YAML configuration files. They normally consist of &sminion;s host
+       names, for example <filename>ses5min2.yml</filename>. Shell globbing can
+       be used for more specific matching.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     An example for each role follows:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <emphasis>master</emphasis> - the node has admin keyrings to all &ceph;
+       clusters. Currently, only a single &ceph; cluster is supported. As the
+       <emphasis>master</emphasis> role is mandatory, always add a similar line
+       to the following:
+      </para>
+<screen>role-master/cluster/master*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>admin</emphasis> - the minion will have an admin keyring. You
+       define the role as follows:
+      </para>
+<screen>role-admin/cluster/abc*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mon</emphasis> - the minion will provide the monitoring
+       service to the &ceph; cluster. This role requires addresses of the
+       assigned minions. As of &productname; 5, the public address are
+       calculated dynamically and are no longer needed in the &salt; pillar.
+      </para>
+<screen>role-mon/cluster/mon*.sls</screen>
+      <para>
+       The example assigns the monitoring role to a group of minions.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mgr</emphasis> - the &ceph; manager daemon which collects all
+       the state information from the whole cluster. Deploy it on all minions
+       where you plan to deploy the &ceph; monitor role.
+      </para>
+<screen>role-mgr/cluster/mgr*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mds</emphasis> - the minion will provide the metadata service
+       to support &cephfs;.
+      </para>
+<screen>role-mds/cluster/mds*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>igw</emphasis> - the minion will act as an &igw;. This role
+       requires addresses of the assigned minions, thus you need to also
+       include the files from the <filename>stack</filename> directory:
+      </para>
+<screen>role-igw/stack/default/ceph/minions/xyz.domain.yml
+role-igw/cluster/*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>rgw</emphasis> - the minion will act as an &ogw;:
+      </para>
+<screen>role-rgw/cluster/rgw*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>openattic</emphasis> - the minion will act as an &oa; server:
+      </para>
+<screen>role-openattic/cluster/openattic*.sls</screen>
+      <para>
+       For more information, see <xref linkend="ceph.oa"/>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>ganesha</emphasis> - the minion will act as an &ganesha;
+       server. The 'ganesha' role requires either an 'rgw' or 'mds' role in
+       cluster, otherwise the validation will fail in Stage 3.
+      </para>
+      <para>
+       To successfully install &ganesha;, additional configuration is required.
+       If you want to use &ganesha;, read <xref linkend="cha.as.ganesha"/>
+       before executing stages 2 and 4. However, it is possible to install
+       &ganesha; later.
+      </para>
+      <para>
+       In some cases it can be useful to define custom roles for &ganesha;
+       nodes. For details, see <xref linkend="ceph.nfsganesha.customrole"/>.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <note>
+     <title>Multiple Roles of Cluster Nodes</title>
+     <para>
+      You can assign several roles to a single node. For example, you can
+      assign the mds roles to the monitor nodes:
+     </para>
+<screen>role-mds/cluster/mon[1,2]*.sls</screen>
+    </note>
+   </sect3>
+   <sect3 xml:id="policy.common.configuration">
+    <title>Common Configuration</title>
+    <para>
+     The common configuration section includes configuration files generated
+     during the <emphasis>discovery (stage 1)</emphasis>. These configuration
+     files store parameters like <literal>fsid</literal> or
+     <literal>public_network</literal>. To include the required &ceph; common
+     configuration, add the following lines:
+    </para>
+<screen>config/stack/default/global.yml
+config/stack/default/ceph/cluster.yml</screen>
+   </sect3>
+   <sect3 xml:id="policy.profile.assignment">
+    <title>Profile Assignment</title>
+    <para>
+     In &ceph;, a single storage role would be insufficient to describe the
+     many disk configurations available with the same hardware. &deepsea; stage
+     1 will generate a default storage profile proposal. By default this
+     proposal will be a <literal>bluestore</literal> profile and will try to
+     propose the highest performing configuration for the given hardware setup.
+     For example, external journals will be preferred over a single disk
+     containing objects and metadata. Solid state storage will be prioritized
+     over spinning disks. Profiles are assigned in the
+     <filename>policy.cfg</filename> similar to roles.
+    </para>
+    <para>
+     The default proposal can be found in the profile-default directory tree.
+     To include this add the following two lines to your
+     <filename>policy.cfg</filename>.
+    </para>
+<screen>profile-default/cluster/*.sls
+profile-default/stack/default/ceph/minions/*.yml</screen>
+    <para>
+     You can also create a customized storage profile to your liking by using
+     the proposal runner. This runner offers three methods: help, peek, and
+     populate.
+    </para>
+    <para>
+     <command>salt-run proposal.help</command> prints the runner help text
+     about the various arguments it accepts.
+    </para>
+    <para>
+     <command>salt-run proposal.peek</command> shows the generated proposal
+     according to the arguments passed.
+    </para>
+    <para>
+     <command>salt-run proposal.populate</command> writes the proposal to the
+     <filename>/srv/pillar/ceph/proposals</filename> subdirectory. Pass
+     <option>name=myprofile</option> to name the storage profile. This will
+     result in a profile-myprofile subdirectory.
+    </para>
+    <para>
+     For all other arguments, consult the output of <command>salt-run
+     proposal.help</command>.
+    </para>
+   </sect3>
+   <sect3 xml:id="ds.profile.osd.encrypted">
+    <title>Deploying Encrypted OSDs</title>
+    <para>
+     Since &productname; 5, OSDs are by default deployed using &bluestore;
+     instead of &filestore;. Although &bluestore; supports encryption, &osd;s
+     are deployed unencrypted by default. Let us assume that both data and
+     WAL/DB disks to be used for OSD deployment are clean with no partitions.
+     If the disk were previously used, wipe them following the procedure
+     described in <xref linkend="deploy.wiping.disk"/>.
+    </para>
+    <para>
+     To use encrypted OSDs for your new deployment, use the
+     <literal>proposal.populate</literal> runner with the
+     <option>encryption=dmcrypt</option> argument:
+    </para>
+<screen>
+&prompt.smaster;salt-run proposal.populate encryption=dmcrypt
+</screen>
+   </sect3>
+   <sect3 xml:id="deepsea.policy.filtering">
+    <title>Item Filtering</title>
+    <para>
+     Sometimes it is not practical to include all files from a given directory
+     with *.sls globbing. The <filename>policy.cfg</filename> file parser
+     understands the following filters:
+    </para>
+    <warning>
+     <title>Advanced Techniques</title>
+     <para>
+      This section describes filtering techniques for advanced users. When not
+      used correctly, filtering can cause problems for example in case your
+      node numbering changes.
+     </para>
+    </warning>
+    <variablelist>
+     <varlistentry>
+      <term>slice=[start:end]</term>
+      <listitem>
+       <para>
+        Use the slice filter to include only items <emphasis>start</emphasis>
+        through <emphasis>end-1</emphasis>. Note that items in the given
+        directory are sorted alphanumerically. The following line includes the
+        third to fifth files from the <filename>role-mon/cluster/</filename>
+        subdirectory:
+       </para>
+<screen>role-mon/cluster/*.sls slice[3:6]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>re=regexp</term>
+      <listitem>
+       <para>
+        Use the regular expression filter to include only items matching the
+        given expressions. For example:
+       </para>
+<screen>role-mon/cluster/mon*.sls re=.*1[135]\.subdomainX\.sls$</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="deepsea.example.policy_cfg">
+    <title>Example <filename>policy.cfg</filename> File</title>
+    <para>
+     Following is an example of a basic <filename>policy.cfg</filename> file:
+    </para>
+<screen>## Cluster Assignment
+cluster-ceph/cluster/*.sls <co xml:id="co.policy.1"/>
+
+## Roles
+# ADMIN
+role-master/cluster/examplesesadmin.sls <co xml:id="co.policy.2"/>
+role-admin/cluster/sesclient*.sls <co xml:id="co.policy.3"/>
+
+# MON
+role-mon/cluster/ses-example-[123].sls <co xml:id="co.policy.5"/>
+
+# MGR
+role-mgr/cluster/ses-example-[123].sls <co xml:id="co.policy.mgr"/>
+
+# MDS
+role-mds/cluster/ses-example-4.sls <co xml:id="co.policy.6"/>
+
+# IGW
+role-igw/stack/default/ceph/minions/ses-example-4.yml <co xml:id="co.policy.7"/>
+role-igw/cluster/ses-example-4.sls <co xml:id="co.policy.10"/>
+
+# RGW
+role-rgw/cluster/ses-example-4.sls <co xml:id="co.policy.11"/>
+
+# openATTIC
+role-openattic/cluster/openattic*.sls <co xml:id="co.policy.oa"/>
+
+# COMMON
+config/stack/default/global.yml <co xml:id="co.policy.8"/>
+config/stack/default/ceph/cluster.yml <co xml:id="co.policy.13"/>
+
+## Profiles
+profile-default/cluster/*.sls <co xml:id="co.policy.9"/>
+profile-default/stack/default/ceph/minions/*.yml <co xml:id="co.policy.12"/></screen>
+    <calloutlist>
+     <callout arearefs="co.policy.1">
+      <para>
+       Indicates that all minions are included in the &ceph; cluster. If you
+       have minions you do not want to include in the &ceph; cluster, use:
+      </para>
+<screen>cluster-unassigned/cluster/*.sls
+cluster-ceph/cluster/ses-example-*.sls</screen>
+      <para>
+       The first line marks all minions as unassigned. The second line
+       overrides minions matching 'ses-example-*.sls', and assigns them to the
+       &ceph; cluster.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.2">
+      <para>
+       The minion called 'examplesesadmin' has the 'master' role. This, by the
+       way, means it will get admin keys to the cluster.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.3">
+      <para>
+       All minions matching 'sesclient*' will get admin keys as well.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.5">
+      <para>
+       All minions matching 'ses-example-[123]' (presumably three minions:
+       ses-example-1, ses-example-2, and ses-example-3) will be set up as MON
+       nodes.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.mgr">
+      <para>
+       All minions matching 'ses-example-[123]' (all MON nodes in the example)
+       will be set up as MGR nodes.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.6">
+      <para>
+       Minion 'ses-example-4' will have the MDS role.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.7">
+      <para>
+       Ensures that &deepsea; knows the IP address of the IGW node.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.10">
+      <para>
+       Minion 'ses-example-4' will have the IGW role.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.11">
+      <para>
+       Minion 'ses-example-4' will have the RGW role.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.oa">
+      <para>
+       Specifies to deploy the &oa; user interface to administer the &ceph;
+       cluster. See <xref linkend="ceph.oa"/> for more details.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.8">
+      <para>
+       Means that we accept the default values for common configuration
+       parameters such as <option>fsid</option> and
+       <option>public_network</option>.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.13">
+      <para>
+       Means that we accept the default values for common configuration
+       parameters such as <option>fsid</option> and
+       <option>public_network</option>.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.9">
+      <para>
+       We are telling &deepsea; to use the default hardware profile for each
+       minion. Choosing the default hardware profile means that we want all
+       additional disks (other than the root disk) as OSDs.
+      </para>
+     </callout>
+     <callout arearefs="co.policy.12">
+      <para>
+       We are telling &deepsea; to use the default hardware profile for each
+       minion. Choosing the default hardware profile means that we want all
+       additional disks (other than the root disk) as OSDs.
+      </para>
+     </callout>
+    </calloutlist>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>Custom <filename>ceph.conf</filename> File</title>
+   <para>
+    If you need to put custom settings into the <filename>ceph.conf</filename>
+    configuration file, see <xref linkend="ds.custom.cephconf"/> for more
+    details.
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

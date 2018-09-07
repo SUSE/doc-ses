@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_erasure.xml" version="5.0" xml:id="cha.ceph.erasure">
+ <title>イレージャコーディングプール</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>編集</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Cephでは、プール内のデータの通常のレプリケーションに代わる代替手段が提供されています。これを「イレージャ」<emphasis/>または「イレージャコーディング」<emphasis/>プールと呼びます。イレージャプールは「複製」<emphasis/>プールの一部の機能を備えていませんが、必要な未加工ストレージが少なくて済みます。デフォルトのイレージャプールは1TBのデータを保存でき、1.5TBの未加工ストレージを必要とします。複製プールでは同じ量のデータに対して2TBの未加工ストレージが必要であるため、比較しても遜色ありません。
+ </para>
+ <para>
+  イレージャコードの背景情報については、<link xlink:href="https://en.wikipedia.org/wiki/Erasure_code"/>を参照してください。
+ </para>
+ <note>
+  <para>
+   FileStoreを使用する場合、キャッシュ層が設定されていない限り、RBDインタフェースでイレージャコーディングプールにアクセスすることはできません。詳細を確認する、またはBlueStoreを使用するには、<xref linkend="ceph.tier.erasure"/>を参照してください。
+  </para>
+ </note>
+ <note>
+  <para>
+   「イレージャプール」<emphasis/>のCRUSHルールでは<literal>step</literal>に<literal>indep</literal>を使用するようにしてください。詳細については、<xref linkend="datamgm.rules.step.mode"/>を参照してください。
+  </para>
+ </note>
+ <sect1 xml:id="cha.ceph.erasure.default-profile">
+  <title>サンプルのイレージャコーディングプールの作成</title>
+
+  <para>
+   最もシンプルなイレージャコーディングプールはRAID5と同等で、少なくとも3つのホストを必要とします。この手順では、テスト用のプールを作成する方法について説明します。
+  </para>
+  <procedure>
+   <step>
+    <para>
+     コマンド<command>ceph osd pool create</command>を使用して、タイプが「erasure」<emphasis/>のプールを作成します。<literal>12</literal>は、配置グループの数を表します。デフォルトのパラメータの場合、このプールは1つのOSDの障害に対応できます。
+    </para>
+<screen><prompt>root # </prompt>ceph osd pool create ecpool 12 12 erasure
+pool 'ecpool' created</screen>
+   </step>
+   <step>
+    <para>
+     文字列<literal>ABCDEFGHI</literal>を<literal>NYAN</literal>という名前のオブジェクトに書き込みます。
+    </para>
+<screen><prompt>cephadm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -</screen>
+   </step>
+   <step>
+    <para>
+     これで、テストのためにOSDを無効にできます。たとえば、OSDをネットワークから接続解除します。
+    </para>
+   </step>
+   <step>
+    <para>
+     プールがデバイスの障害に対応できるかどうかをテストするため、<command>rados</command>コマンドを使用してファイルの内容にアクセスできます。
+    </para>
+<screen><prompt>root # </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cha.ceph.erasure.erasure-profiles">
+  <title>イレージャコードプロファイル</title>
+  <para><command>ceph osd pool create</command>コマンドを起動して「イレージャプール」<emphasis/>を作成する場合、別のプロファイルを指定しない限り、デフォルトのプロファイルが使用されます。プロファイルはデータの冗長性を定義します。このためには、任意に<literal>k</literal>および<literal>m</literal>という名前が付けられた2つのパラメータを定義します。kおよびmは、1つのデータを何個の<literal>chunks</literal> (チャンク)に分割するかと、何個のコーディングチャンクを作成するかを定義します。これにより、冗長チャンクは異なるOSDに保存されます。
+  </para>
+  <para>
+   イレージャプールプロファイルに必要な定義は次のとおりです。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>chunk</term>
+    <listitem>
+     <para>
+      エンコーディング関数を呼び出すと、同じサイズの複数のチャンクが返されます。連結して元のオブジェクトを再構成できるデータチャンクと、失われたチャンクの再構築に使用できるコーディングチャンクです。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>k</term>
+    <listitem>
+     <para>
+      データチャンクの数。これは、元のオブジェクトが分割されるチャンクの数です。たとえば、<literal>k = 2</literal>の場合、10KBのオブジェクトはそれぞれが5KBの<literal>k</literal>個のオブジェクトに分割されます。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>m</term>
+    <listitem>
+     <para>
+      コーディングチャンクの数。これは、エンコーディング関数によって計算される追加チャンクの数です。コーディングチャンクが2つある場合、2つのOSDに障害が発生してもデータが失われないことを意味します。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>crush-failure-domain</term>
+    <listitem>
+     <para>
+      チャンクの分散先のデバイスを定義します。値としてバケットタイプを設定する必要があります。すべてのバケットタイプについては、<xref linkend="datamgm.buckets"/>を参照してください。障害ドメインが<literal>rack</literal>の場合、ラック障害時の災害耐性を向上させるため、チャンクは別のラックに保存されます。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   <xref linkend="cha.ceph.erasure.default-profile"/>で使用されているデフォルトのイレージャコードプロファイルでは、1つのOSDに障害が発生した場合は、クラスタデータは失われません。したがって、1TBのデータを保存するには、さらに0.5TBの未加工ストレージが必要です。つまり、1TBのデータに対し、1.5TBの未加工ストレージが必要です。これは、一般的なRAID 5設定と同等です。比較すると、複製プールでは1TBのデータを保存するのに2TBの未加工ストレージが必要です。
+  </para>
+  <para>デフォルトのプロファイルの設定は次のコマンドで表示できます。
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd erasure-code-profile get default
+directory=.libs
+k=2
+m=1
+plugin=jerasure
+crush-failure-domain=host
+technique=reed_sol_van</screen>
+
+  <para>
+   プール作成後はプロファイルを変更できないため、適切なプロファイルを選択することが重要です。異なるプロファイルを持つ新しいプールを作成し、前のプールにあるオブジェクトをすべて新しいプールに移動する必要があります。
+  </para>
+
+  <para>
+   <literal>k</literal>、<literal>m</literal>、および<literal>crush-failure-domain</literal>のパラメータは、ストレージのオーバーヘッドとデータの持続性を定義するので、プロファイルの中で最も重要なパラメータです。たとえば、目的のアーキテクチャが66%のストレージオーバーヘッドでラック2台分の損失に耐える必要がある場合、次のプロファイルを定義できます。
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
+   k=3 \
+   m=2 \
+   crush-failure-domain=rack</screen>
+
+  <para>
+   この新しいプロファイルで、<xref linkend="cha.ceph.erasure.default-profile"/>の例をもう一度使用できます。
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
+<prompt>cephadm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
+<prompt>root # </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+
+  <para>
+   NYANオブジェクトは3つ(<literal>k=3</literal>)に分割され、2つの追加チャンク(<literal>m=2</literal>)が作成されます。<literal>m</literal>の値は、データを失うことなく何個のOSDが同時に失われても構わないかを定義します。<literal>crush-failure-domain=rack</literal>は、2つのチャンクが同じラックに保存されないようにするCRUSHルールセットを作成します。
+  </para>
+
+  <informalfigure>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="ceph_erasure_obj.png" width="80%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="ceph_erasure_obj.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </informalfigure>
+
+  <para>
+   イレージャコードプロファイルの詳細については、<link xlink:href="http://docs.ceph.com/docs/master/rados/operations/erasure-code-profile"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="ceph.tier.erasure">
+  <title>イレージャコーディングプールとキャッシュ階層化</title>
+
+  <para>
+   イレージャコーディングプールには複製プールよりも多くのリソースが必要で、部分書き込みなど一部の機能がありません。これらの制限を解決するには、イレージャコーディングプールの前にキャッシュ層を設定することをお勧めします。
+  </para>
+
+  <para>
+   たとえば、<quote>hot-storage</quote>プールが高速なストレージで構成されている場合、<xref linkend="cha.ceph.erasure.erasure-profiles"/>で作成した<quote>ecpool</quote>を次のコマンドによって高速化できます。
+  </para>
+
+<screen><prompt>root # </prompt>ceph osd tier add ecpool hot-storage
+<prompt>root # </prompt>ceph osd tier cache-mode hot-storage writeback
+<prompt>root # </prompt>ceph osd tier set-overlay ecpool hot-storage</screen>
+
+  <para>
+   これは、<quote>hot-storage</quote>プールをecpoolの層としてライトバックモードで配置します。これによって、ecpoolに対するすべての読み書きは実際にはhot-storageを使用し、その柔軟性と速度を利用できるようになります。
+  </para>
+
+  <para>
+   FileStoreを使用する場合、イレージャコーディングプール上にRBDイメージを作成することはできません。RBDには部分書き込みが必要であるためです。ただし、複製プール層でキャッシュ層が設定されている場合は、イレージャコーディングプール上にRBDイメージを作成できます。
+  </para>
+
+<screen><prompt>root # </prompt>rbd --pool ecpool create --size 10 myvolume</screen>
+
+  <para>
+   キャッシュ階層化の詳細については、<xref linkend="cha.ceph.tiered"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="ec.rbd">
+  <title>イレージャコーディングプールとRADOS Block Device</title>
+  <para>
+   ECプールにRBDプールとしてマークを付けるには、適切にタグを付けます。
+  </para>
+<screen>
+<prompt>root # </prompt>ceph osd pool application enable rbd <replaceable>ec_pool_name</replaceable>
+</screen>
+  <para>
+  RBDはECプールにイメージの「データ」<emphasis/>を保存できます。ただし、イメージのヘッダとメタデータは引き続き複製プールに保存する必要があります。このための「rbd」という名前のプールがあると想定した場合、次のコマンドを使用します。
+  </para>
+<screen>
+<prompt>root # </prompt>rbd create rbd/<replaceable>image_name</replaceable> --size 1T --data-pool <replaceable>ec_pool_name</replaceable>
+</screen>
+  <para>
+   このイメージは他のイメージと同じように通常の方法で使用できますが、すべてのデータは「rbd」プールではなく<replaceable>ec_pool_name</replaceable>プールに保存される点が異なります。
+  </para>
+ </sect1>
+</chapter>

@@ -1,0 +1,1158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_gui_oa.xml" version="5.0" xml:id="ceph.oa">
+ <title>openATTIC</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>oui</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <tip>
+  <title>suppression de Calamari</title>
+  <para>
+   Calamari était l'application d'interface Web préférée pour la gestion et la surveillance de la grappe Ceph. Depuis SUSE Enterprise Storage 5, Calamari a fait place à un système plus performant, openATTIC.
+  </para>
+ </tip>
+ <para>
+  openATTIC est un système de gestion de stockage central qui prend en charge la grappe de stockage Ceph. Avec openATTIC, vous pouvez tout contrôler depuis une interface de gestion centrale. Il n'est plus nécessaire de se familiariser avec le fonctionnement interne des outils de stockage Ceph. Les tâches de gestion de grappe peuvent être effectuées à l'aide de l'interface Web intuitive d'openATTIC ou de son API REST.
+ </para>
+ <sect1 xml:id="ceph.oa.installation">
+  <title>Déploiement et configuration d'openATTIC</title>
+
+  <para>
+   Cette section présente les étapes de déploiement et de configuration d'openATTIC et de ses fonctionnalités prises en charge afin que vous puissiez administrer votre grappe Ceph en utilisant une interface Web conviviale.
+  </para>
+
+  <sect2 xml:id="oa.ssl">
+   <title>Activation de l'accès sécurisé à openATTIC à l'aide de SSL</title>
+   <para>
+    L'accès à l'application Web openATTIC utilise le protocole HTTP non sécurisé par défaut. Pour permettre un accès sécurisé à openATTIC, vous devez configurer le serveur Web Apache manuellement :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Si vous ne disposez pas d'un certificat SSL signé par une autorité de certification connue, créez un certificat SSL auto-signé et copiez ses fichiers dans le répertoire attendu par le serveur Web, par exemple :
+     </para>
+<screen>
+<prompt>root # </prompt>openssl req -newkey rsa:2048 -new -nodes -x509 -days 3650 \
+ -keyout key.pem -out cert.pem
+<prompt>root # </prompt>cp cert.pem /etc/ssl/certs/servercert.pem
+<prompt>root # </prompt>cp key.pem /etc/ssl/certs/serverkey.pem
+</screen>
+     <para>
+      Reportez-vous à l'adresse <link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_apache2_ssl.html"/> pour plus d'informations sur la création de certificats SSL.
+     </para>
+    </step>
+    <step>
+     <para>
+      Ajoutez « SSL » à l'option <option>APACHE_SERVER_FLAGS</option> du fichier de configuration <filename>/etc/sysconfig/apache2</filename>. Vous pouvez le faire manuellement ou exécuter les commandes suivantes :
+     </para>
+<screen>
+<prompt>root # </prompt>a2enmod ssl
+<prompt>root # </prompt>a2enflag SSL
+</screen>
+    </step>
+    <step>
+     <para>
+      Créez le fichier <filename>/etc/apache2/vhosts.d/vhost-ssl.conf</filename> pour un nouvel hôte virtuel Apache avec le contenu suivant :
+     </para>
+<screen>
+&lt;IfDefine SSL&gt;
+&lt;IfDefine !NOSSL&gt;
+&lt;VirtualHost *:80&gt;
+ ServerName <replaceable>OA_HOST_NAME</replaceable>
+ Redirect "/" "https://<replaceable>OA_HOST_NAME</replaceable>/"
+&lt;/VirtualHost&gt;
+&lt;VirtualHost _default_:443&gt;
+ ServerName <replaceable>OA_HOST_NAME</replaceable>
+ DocumentRoot "/srv/www/htdocs"
+ ErrorLog /var/log/apache2/error_log
+ TransferLog /var/log/apache2/access_log
+ SSLEngine on
+ SSLCertificateFile /etc/ssl/certs/servercert.pem
+ SSLCertificateKeyFile /etc/ssl/certs/serverkey.pem
+ CustomLog /var/log/apache2/ssl_request_log ssl_combined
+&lt;/VirtualHost&gt;
+&lt;/IfDefine&gt;
+&lt;/IfDefine&gt;
+</screen>
+    </step>
+    <step>
+     <para>
+      Redémarrez le serveur Web pour recharger la nouvelle définition de l'hôte virtuel ainsi que les fichiers de certificat :
+     </para>
+<screen>
+<prompt>root # </prompt>systemctl restart apache2.service
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="oa.deploy">
+   <title>Déploiement d'openATTIC</title>
+   <para>
+    Depuis SUSE Enterprise Storage 5, openATTIC est déployé en tant que rôle DeepSea. Reportez-vous à la procédure générale au <xref linkend="storage.salt.cluster"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.install.oa">
+   <title>Configuration initiale d'openATTIC</title>
+   <para>
+    Par défaut, <command>oaconfig</command> crée un compte administrateur, <systemitem>openattic</systemitem>, avec le même mot de passe que le nom d'utilisateur. Par mesure de sécurité, nous vous recommandons vivement de changer ce mot de passe immédiatement :
+   </para>
+<screen><prompt>root@minion &gt; </prompt>oaconfig changepassword openattic
+Changing password for user 'openattic'
+Password: &lt;enter password&gt;
+Password (again): &lt;re-enter password&gt;
+Password changed successfully for user 'openattic'
+</screen>
+  </sect2>
+
+  <sect2 xml:id="oa.ds">
+   <title>Intégration DeepSea dans openATTIC</title>
+   <para>
+    Certaines fonctionnalités openATTIC, telles que la gestion de la passerelle iSCSI et de la passerelle Object Gateway, utilisent l'API DeepSea REST. Elle est activée et configurée par défaut. Si vous devez remplacer ses paramètres par défaut à des fins de débogage, modifiez <filename>/etc/sysconfig/openattic</filename> et ajoutez ou modifiez les lignes suivantes :
+   </para>
+<screen>SALT_API_HOST="<replaceable>salt_api_host</replaceable>"
+SALT_API_PORT=8001
+SALT_API_USERNAME="example_user"
+SALT_API_PASSWORD="password"</screen>
+   <important>
+    <title><command>oaconfig restart</command></title>
+    <para>
+     N'oubliez pas d'exécuter <command>oaconfig restart</command> après avoir modifié le fichier <filename>/etc/sysconfig/openattic</filename>.
+    </para>
+   </important>
+   <important>
+    <title>syntaxe des fichiers</title>
+    <para>
+     <filename>/etc/sysconfig/openattic</filename> est utilisé dans Python et Bash. Par conséquent, les fichiers doivent être dans un format que Bash peut comprendre, et les espaces avant ou après le signe égal sont interdits.
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="oa.rgw">
+   <title>Gestion Object Gateway</title>
+   <para>
+    Les fonctionnalités de gestion Object Gateway sont activées par défaut dans openATTIC. Si vous souhaitez remplacer les valeurs par défaut pour l'API Object Gateway, telles qu'elles ont été détectées par DeepSea, incluez les options suivantes avec les valeurs appropriées dans le fichier <filename>/etc/sysconfig/openattic</filename>. Par exemple :
+   </para>
+<screen>RGW_API_HOST="<replaceable>rgw_api_host</replaceable>"
+RGW_API_PORT=80
+RGW_API_SCHEME="http"
+RGW_API_ACCESS_KEY="VFEG733GBY0DJCIV6NK0"
+RGW_API_SECRET_KEY="lJzPbZYZTv8FzmJS5eiiZPHxlT2LMGOMW8ZAeOAq"</screen>
+   <note>
+    <title>ressource par défaut pour Object Gateway</title>
+    <para>
+     Si votre ressource d'administrateur Object Gateway n'est pas configurée pour utiliser la valeur par défaut « admin » dans « http://rgw_host:80/admin », vous devez également définir l'option <option>RGW_API_ADMIN_RESOURCE</option> de façon appropriée.
+    </para>
+   </note>
+   <para>
+    Pour obtenir des informations d'identification Object Gateway, exécutez la commande <command>radosgw admin</command> :
+   </para>
+<screen><prompt>root@minion &gt; </prompt>radosgw-admin user info --uid=admin</screen>
+  </sect2>
+
+  <sect2 xml:id="oa.igw">
+   <title>Gestion de la passerelle iSCSI</title>
+   <para>
+    Les fonctionnalités de gestion de la passerelle iSCSI sont activées par défaut dans openATTIC. Si vous devez remplacer le nom d'hôte de l'API Salt par défaut, modifiez la valeur de <option>SALT_API_HOST</option> comme décrit à la <xref linkend="oa.ds"/>.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.oa.install.webui">
+  <title>Interface utilisateur Web openATTIC</title>
+
+  <para>
+   openATTIC peut être géré à l'aide d'une interface utilisateur Web. Dans un navigateur Web, accédez à http://<replaceable>HÔTE_SERVEUR</replaceable>/openattic. Pour vous connecter, utilisez le nom d'utilisateur par défaut <emphasis>openattic</emphasis> et le mot de passe correspondant.
+  </para>
+
+  <figure>
+   <title>Écran de connexion openATTIC</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_login.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_login.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   L'interface utilisateur openATTIC se divise en un volet de menu supérieur et un volet de contenu en mode graphique.
+  </para>
+
+  <para>
+   La partie droite du volet supérieur comprend un lien vers les paramètres utilisateur actuels et un lien <guimenu>Logout</guimenu> (Déconnexion) ainsi que des liens vers la liste <guimenu>Background tasks</guimenu> (Tâches d'arrière-plan) et de <guimenu>Notifications</guimenu> système. L'espace restant du volet supérieur est occupé par le menu principal d'openATTIC.
+  </para>
+
+  <para>
+   Le volet de contenu varie selon le menu d'éléments activé. Par défaut, le <guimenu>tableau de bord</guimenu> qui s'affiche propose un certain nombre de widgets pour vous informer sur l'état de la grappe.
+  </para>
+
+  <figure>
+   <title>Tableau de bord openATTIC</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_dashboard.png" width="90%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_dashboard.png" width="90%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph.oa.webui.dash">
+  <title>Tableau de bord</title>
+
+  <para>
+   Chaque widget <guimenu>Dashboard</guimenu> (Tableau de bord) affiche les informations d'état spécifiques liées à la grappe Ceph en cours d'exécution. Une fois que vous avez cliqué sur le titre d'un widget, celui-ci se propage à l'ensemble du volet de contenu, affichant éventuellement plus de détails. Voici une liste de widgets :
+  </para>
+
+  <para>
+   Le widget <guimenu>Status</guimenu> (État) indique si la grappe fonctionne correctement. Si un problème est détecté, vous pouvez afficher le message d'erreur détaillé en cliquant sur le sous-titre du widget.
+  </para>
+
+  <para>
+   Les widgets <guimenu>Monitors in Quorum</guimenu> (Moniteurs dans le quorum), <guimenu>Pools</guimenu> (Réserves), <guimenu>OSDs In</guimenu> (OSD en entrée), <guimenu>OSDs Out</guimenu> (OSD en sortie), <guimenu>OSDs Up</guimenu> (OSD actifs), <guimenu>OSDs Down</guimenu> (OSD inactifs) et <guimenu>Average PGs per OSD</guimenu> (Moyenne de groupes de placement par OSD) affichent simplement les valeurs numériques associées.
+  </para>
+
+  <figure>
+   <title>Widgets de base</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_basic_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_basic_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Les widgets suivants traitent de la capacité de stockage totale et de la capacité de stockage disponible : <guimenu>Cluster Capacity</guimenu> (Capacité de la grappe), <guimenu>Available Capacity</guimenu> (Capacité disponible), <guimenu>Used Capacity</guimenu> (Capacité utilisée) et <guimenu>Capacity</guimenu> (Capacité).
+  </para>
+
+  <figure>
+   <title>Widgets de capacité</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_capacity_widgets.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_capacity_widgets.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Les widgets suivants sont liés à la latence des noeuds d'OSD et de moniteur : <guimenu>Average OSD Apply Latency</guimenu> (Latence d'application moyenne d'OSD), <guimenu>Average OSD Commit Latency</guimenu> (Latence de validation moyenne d'OSD) et <guimenu>Average Monitor Latency</guimenu> (Latence de moniteur moyenne) :
+  </para>
+
+  <figure>
+   <title>Widgets de latence</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_latency_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_latency_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Le widget <guimenu>Throughput</guimenu> (Débit) affiche les statistiques de lecture et d'écriture par seconde au fil du temps.
+  </para>
+
+  <figure>
+   <title>Widget Throughput</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_io.png" width="60%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_io.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <tip>
+   <title>plus de détails grâce au pointeur de la souris</title>
+   <para>
+    Si vous déplacez le pointeur de la souris sur l'un des graphiques affichés, vous obtenez des informations détaillées sur la date et l'heure indiquées par le pointeur dans une fenêtre contextuelle.
+   </para>
+   <para>
+    Si vous cliquez dans la zone du graphique, puis faites glisser le pointeur de la souris vers la gauche ou la droite le long de l'axe temporel, l'intervalle temporel sur l'axe est agrandi par effet de zoom à l'intervalle que vous avez marqué en déplaçant la souris. Pour effectuer un zoom arrière et revenir à l'échelle originale, double-cliquez sur le graphique.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="ceph.oa.webui.ceph">
+  <title>Tâches liées à Ceph</title>
+
+  <para>
+   Le menu principal d'openATTIC répertorie les tâches liées à Ceph. Actuellement, les tâches suivantes sont pertinentes : <guimenu>OSD</guimenu>, <guimenu>RBD</guimenu>, <guimenu>Pools</guimenu> (Réserves), <guimenu>Nodes</guimenu> (Noeuds), <guimenu>iSCSI</guimenu>, <guimenu>NFS</guimenu>, <guimenu>CRUSH Map</guimenu> (Assignation CRUSH) et <guimenu>Object Gateway</guimenu>.
+  </para>
+
+  <sect2>
+   <title>Fonctionnalités courantes de l'interface utilisateur Web</title>
+   <para>
+    Dans openATTIC, la plupart des opérations s'effectuent à l'aide de <emphasis>listes</emphasis>, par exemple, des listes de réserves, de noeuds OSD ou de périphériques RBD. Les widgets communs suivants vous aident à gérer ou à ajuster ces listes :
+   </para>
+   <para>
+    Cliquez sur <inlinemediaobject> <imageobject role="fo"> <imagedata fileref="oa_widget_reload.png" width="1.2em" format="PNG"/> </imageobject> <imageobject role="html"> <imagedata fileref="oa_widget_reload.png" width="1.2em" format="PNG"/> </imageobject> </inlinemediaobject> pour rafraîchir la liste des éléments.
+   </para>
+   <para>
+    Cliquez sur <inlinemediaobject> <imageobject role="fo"> <imagedata fileref="oa_widget_columns.png" width="1.3em" format="PNG"/> </imageobject> <imageobject role="html"> <imagedata fileref="oa_widget_columns.png" width="1.3em" format="PNG"/> </imageobject> </inlinemediaobject> pour afficher ou masquer des colonnes de table individuelles.
+   </para>
+   <para>
+    Cliquez sur <inlinemediaobject> <imageobject role="fo"> <imagedata fileref="oa_widget_rows.png" width="1.8em" format="PNG"/> </imageobject> <imageobject role="html"> <imagedata fileref="oa_widget_rows.png" width="1.8em" format="PNG"/> </imageobject> </inlinemediaobject> et sélectionnez le nombre de lignes à afficher sur une seule page.
+   </para>
+   <para>
+    Cliquez à l'intérieur de <inlinemediaobject> <imageobject role="fo"> <imagedata fileref="oa_widget_search.png" width="5em" format="PNG"/> </imageobject> <imageobject role="html"> <imagedata fileref="oa_widget_search.png" width="5em" format="PNG"/> </imageobject> </inlinemediaobject> et filtrez les lignes en saisissant la chaîne à rechercher.
+   </para>
+   <para>
+    Utilisez <inlinemediaobject> <imageobject role="fo"> <imagedata fileref="oa_widget_pager.png" width="6em" format="PNG"/> </imageobject> <imageobject role="html"> <imagedata fileref="oa_widget_pager.png" width="6em" format="PNG"/> </imageobject> </inlinemediaobject> pour modifier la page affichée si la liste s'étend sur plusieurs pages.
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Liste des noeuds OSD</title>
+   <para>
+    Pour répertorier tous les noeuds OSD disponibles, cliquez sur <guimenu>OSD</guimenu> dans le menu principal.
+   </para>
+   <para>
+    La liste affiche le nom de chaque OSD, son nom d'hôte, son état, sa pondération et son système dorsal de stockage.
+   </para>
+   <figure>
+    <title>Liste des noeuds OSD</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_osds.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_osds.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+
+  <sect2 xml:id="oa.rbds">
+   <title>Gestion des périphériques de traitement par blocs RADOS (RBD)</title>
+   <para>
+    Pour répertorier tous les périphériques de traitement par blocs RADOS (RADOS Block Device, RBD) disponibles, cliquez sur <guimenu>RBD</guimenu> dans le menu principal.
+   </para>
+   <para>
+    La liste affiche le nom de chaque périphérique, le nom de la réserve associée, la taille du périphérique et, si « fast-diff » a été activé lors de la création du périphérique de traitement par blocs RADOS, le pourcentage déjà occupé.
+   </para>
+   <figure>
+    <title>Liste des RBD</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_rbds.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_rbds.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>Informations relatives à l'état</title>
+    <para>
+     Pour afficher des informations plus détaillées sur un périphérique, cochez la case située dans la colonne située la plus à gauche :
+    </para>
+    <figure>
+     <title>Informations sur les RBD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_status.png" width="40%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_status.png" width="40%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>Statistiques</title>
+    <para>
+     Cliquez sur l'onglet <guimenu>Statistics</guimenu> (Statistiques) d'un périphérique de traitement par blocs RADOS pour afficher les statistiques des données transférées. Vous pouvez effectuer un zoom avant ou arrière sur la plage horaire en la sélectionnant avec la souris ou en la sélectionnant après avoir cliqué sur la date dans le coin supérieur gauche de l'onglet.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Instantanés de périphériques de traitement par blocs RADOS</title>
+    <para>
+     Pour créer un instantané de périphérique de traitement par blocs RADOS, cliquez sur son onglet <guimenu>Snapshots</guimenu> (Instantanés) et sélectionnez <guimenu>Create</guimenu> (Créer) dans la zone de liste déroulante en haut à gauche.
+    </para>
+    <para>
+     Après avoir sélectionné un instantané, vous pouvez le renommer, le protéger, le cloner ou le supprimer. La suppression fonctionne également si vous sélectionnez plusieurs instantanés. <guimenu>Rollback</guimenu> restaure l'état de l'appareil à partir de l'instantané actuel.
+    </para>
+    <figure>
+     <title>Instantanés de RBD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_snapshots.png" width="90%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_snapshots.png" width="90%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>Suppression de RBD</title>
+    <para>
+     Pour supprimer un périphérique ou un groupe de périphériques, cochez les cases dans la colonne la plus à gauche et cliquez sur <guimenu>Delete</guimenu> (Supprimer) en haut à gauche dans le tableau des RBD :
+    </para>
+    <figure>
+     <title>Suppression de RBD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>Ajout de plusieurs RBD</title>
+    <para>
+     Pour ajouter un nouveau périphérique, cliquez sur <guimenu>Ajouter</guimenu> dans la partie supérieure gauche du tableau des RBD, puis procédez comme suit dans l'écran <guimenu>Create RBD</guimenu> (Créer un RBD) :
+    </para>
+    <figure>
+     <title>Ajout d'un nouveau RBD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       Entrez le nom du nouveau périphérique. Reportez-vous au <xref linkend="sysreq.naming"/> pour plus d'informations sur les règles de dénomination.
+      </para>
+     </step>
+     <step>
+      <para>
+       Sélectionnez la grappe qui servira à stocker la nouvelle réserve.
+      </para>
+     </step>
+     <step>
+      <para>
+       Sélectionnez la réserve à partir de laquelle le nouveau périphérique RBD sera créé.
+      </para>
+     </step>
+     <step>
+      <para>
+       Spécifiez la taille du nouveau périphérique. Si vous cliquez sur le lien <guimenu>use max</guimenu>, la taille maximale de la réserve est renseignée.
+      </para>
+     </step>
+     <step>
+      <para>
+       Pour affiner les paramètres de l'appareil, cliquez sur <guimenu>Expert settings</guimenu> (Paramètres experts) et activez ou désactivez les options affichées.
+      </para>
+     </step>
+     <step>
+      <para>
+       Confirmez en cliquant sur <guimenu>Create</guimenu> (Créer).
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>Gestion des réserves</title>
+   <tip>
+    <title>plus d'informations sur les réserves</title>
+    <para>
+     Pour plus d'informations générales sur les réserves Ceph, reportez-vous au <xref linkend="ceph.pools"/>. Pour plus d'informations générales sur les réserves codées à effacement, reportez-vous au <xref linkend="cha.ceph.erasure"/>.
+    </para>
+   </tip>
+   <para>
+    Pour répertorier toutes les réserves disponibles, cliquez sur <guimenu>Pools</guimenu> (Réserves) dans le menu principal.
+   </para>
+   <para>
+    La liste reprend pour chaque réserve, le nom de la réserve, l'ID, le pourcentage d'espace utilisé, le nombre de groupes de placement, la taille de la réplique, le type (« replicated » ou « erasure »), le profil du code d'effacement et l'ensemble de règles CRUSH.
+   </para>
+   <figure>
+    <title>Liste des réserves</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_pools.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_pools.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Pour afficher des informations plus détaillées sur une réserve, cochez la case située dans la colonne la plus à gauche :
+   </para>
+   <figure>
+    <title>Détails d'une réserve</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_pools_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_pools_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>Suppression de réserves</title>
+    <para>
+     Pour supprimer une réserve ou un groupe de réserves, cochez les cases dans la colonne de gauche et cliquez sur <guimenu>Delete</guimenu> (Supprimer) en haut à gauche dans le tableau des réserves :
+    </para>
+    <figure>
+     <title>Suppression de réserves</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_pools_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_pools_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>Ajout de réserves</title>
+    <para>
+     Pour ajouter une nouvelle réserve, cliquez sur <guimenu>Add</guimenu> (Ajouter) dans la partie supérieure gauche du tableau des réserves, puis procédez comme suit dans l'écran <guimenu>Create Ceph pool</guimenu> (Créer une réserve Ceph) :
+    </para>
+    <figure>
+     <title>Ajout d'une nouvelle réserve</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_pools_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_pools_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       Entrez le nom de la nouvelle réserve. Reportez-vous au <xref linkend="sysreq.naming"/> pour plus d'informations sur les règles de dénomination.
+      </para>
+     </step>
+     <step>
+      <para>
+       Sélectionnez la grappe qui servira à stocker la nouvelle réserve.
+      </para>
+     </step>
+     <step>
+      <para>
+       Sélectionnez le type de réserve. Les réserves peuvent être répliquées ou codées à effacement.
+      </para>
+     </step>
+     <step>
+      <substeps>
+       <step>
+        <para>
+         Pour une réserve répliquée, spécifiez la taille de la réplique et le nombre de groupes de placement.
+        </para>
+       </step>
+       <step>
+        <para>
+         Pour une réserve de codes à effacement, indiquez le nombre de groupes de placement et le profil de code à effacement. Vous pouvez ajouter votre profil personnalisé en cliquant sur le signe plus « + » et en indiquant le nom du profil, les tranches de données et de codage, et un domaine d'échec de l'ensemble de règles.
+        </para>
+       </step>
+      </substeps>
+     </step>
+     <step>
+      <para>
+       Confirmez en cliquant sur <guimenu>Create</guimenu> (Créer).
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.minions">
+   <title>Liste des noeuds</title>
+   <para>
+    Cliquez sur <guimenu>Nodes</guimenu> (Noeuds) dans le menu principal pour afficher la liste des noeuds disponibles dans la grappe.
+   </para>
+   <figure>
+    <title>Liste des noeuds</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_minion.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_minion.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Chaque noeud est représenté par son nom d'hôte, son adresse IP publique, l'ID de la grappe à laquelle il appartient, son rôle de noeud (par exemple, « admin », « storage » ou « master ») et son état d'acceptation de clé.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.nfs">
+   <title>Gestion de NFS Ganesha</title>
+   <tip>
+    <title>plus d'informations sur NFS Ganesha</title>
+    <para>
+     Pour plus d'informations générales sur NFS Ganesha, reportez-vous au <xref linkend="cha.ceph.nfsganesha"/>.
+    </para>
+   </tip>
+   <para>
+    Pour répertorier toutes les exportations NFS disponibles, cliquez sur <guimenu>NFS</guimenu> dans le menu principal.
+   </para>
+   <para>
+    La liste affiche le nom de chaque exportation, son nom d'hôte, son état, son type de système dorsal de stockage et son type d'accès.
+   </para>
+   <figure>
+    <title>Liste des exportations NFS</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_nfs.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_nfs.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Pour afficher des informations plus détaillées sur une exportation NFS, cochez la case située dans la colonne située la plus à gauche :
+   </para>
+   <figure>
+    <title>Détails de l'exportation NFS</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_nfs_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_nfs_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <tip>
+    <title>commande de montage NFS</title>
+    <para>
+     La commande de montage figurant au bas de la vue détaillée d'exportation vous permet de monter aisément l'exportation NFS associée à partir d'une machine cliente.
+    </para>
+   </tip>
+   <sect3>
+    <title>Ajout d'exportations NFS</title>
+    <para>
+     Pour ajouter un nouvelle exportation NFS, cliquez sur <guimenu>Add</guimenu> (Ajouter) en haut à gauche du tableau des exportations, puis entrez les informations requises.
+    </para>
+    <figure>
+     <title>Ajout d'une nouvelle exportation NFS</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_nfs_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_nfs_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       Sélectionnez un hôte de serveur pour l'exportation NFS.
+      </para>
+     </step>
+     <step>
+      <para>
+       Sélectionnez un système dorsal de stockage, soit <guimenu>CephFS</guimenu>, soit <guimenu>Object Gateway</guimenu>.
+      </para>
+     </step>
+     <step>
+      <para>
+       Entrez le chemin de répertoire pour l'exportation NFS. Si le répertoire n'existe pas sur le serveur, il est alors créé.
+      </para>
+     </step>
+     <step>
+      <para>
+       Indiquez d'autres options liées à NFS, telles que la version du protocole NFS prise en charge, le type d'accès, l'action squash ou le protocole de transport.
+      </para>
+     </step>
+     <step>
+      <para>
+       Si vous devez limiter l'accès à des clients spécifiques, cliquez sur <guimenu>Add clients</guimenu> (Ajouter des clients) et ajoutez leurs adresses IP, ainsi que le type d'accès et les options d'action squash.
+      </para>
+     </step>
+     <step>
+      <para>
+       Confirmez en cliquant sur <guimenu>Submit</guimenu> (Soumettre).
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>Clonage et suppression d'exportations NFS</title>
+    <para>
+     Pour supprimer une exportation ou un groupe d'exportations, cochez les cases dans la colonne de gauche et sélectionnez <guimenu>Delete</guimenu> (Supprimer) en haut à gauche dans le tableau d'exportation.
+    </para>
+    <para>
+     De même, vous pouvez sélectionner <guimenu>Clone</guimenu> pour cloner la passerelle activée.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Modification d'exportations NFS</title>
+    <para>
+     Pour modifier une exportation existante, cliquez sur son nom dans la table des exportations ou sélectionnez sa case à cocher et cliquez sur <guimenu>Edit</guimenu> (Modifier) en haut à gauche dans le tableau des passerelles.
+    </para>
+    <para>
+     Vous pouvez ensuite régler tous les détails de l'exportation NFS.
+    </para>
+    <figure>
+     <title>Modification d'une exportation NFS</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_nfs_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_nfs_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.iscsi">
+   <title>Gestion des passerelles iSCSI</title>
+   <tip>
+    <title>plus d'informations sur les passerelles iSCSI</title>
+    <para>
+     Pour plus d'informations sur les passerelles iSCSI, reportez-vous au <xref linkend="cha.ceph.as.iscsi"/> et au <xref linkend="cha.ceph.iscsi"/>.
+    </para>
+   </tip>
+   <para>
+    Pour répertorier toutes les passerelles disponibles, cliquez sur <guimenu>iSCSI</guimenu> dans le menu principal.
+   </para>
+   <para>
+    Pour chaque passerelle, la liste affiche la cible, l'état, les portails connexes et les images RBD.
+   </para>
+   <figure>
+    <title>Liste des passerelles iSCSI</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_igws.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_igws.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Pour afficher des informations plus détaillées sur une passerelle, cochez la case située dans la colonne la plus à gauche :
+   </para>
+   <figure>
+    <title>Détails de la passerelle</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_igws_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_igws_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>Ajout de passerelles iSCSI</title>
+    <para>
+     Pour ajouter une nouvelle passerelle iSCSI, cliquez sur <guimenu>Add</guimenu> (Ajouter) en haut à gauche dans le tableau des passerelles, puis entrez les informations requises.
+    </para>
+    <figure>
+     <title>Ajout d'une nouvelle passerelle iSCSI</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_igws_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_igws_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       Entrez l'adresse cible de la nouvelle passerelle.
+      </para>
+     </step>
+     <step>
+      <para>
+       Cliquez sur <guimenu>Add portal</guimenu> (Ajouter un portail) et sélectionnez un ou plusieurs portails iSCSI dans la liste.
+      </para>
+     </step>
+     <step>
+      <para>
+       Cliquez sur <guimenu>Add image</guimenu> (Ajouter une image) et sélectionnez une ou plusieurs images RBD pour la passerelle.
+      </para>
+     </step>
+     <step>
+      <para>
+       Si vous devez utiliser l'authentification pour accéder à la passerelle, sélectionnez la case à cocher <guimenu>Authentication</guimenu> (Authentification), puis entrez les informations d'identification. Vous pouvez trouver des options d'authentification plus avancées après avoir activé <guimenu>l'authentification mutuelle</guimenu> et l'<guimenu>authentification par détection</guimenu>.
+      </para>
+     </step>
+     <step>
+      <para>
+       Confirmez en cliquant sur <guimenu>Submit</guimenu> (Soumettre).
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>Modification de passerelles iSCSI</title>
+    <para>
+     Pour modifier une passerelle iSCSI existante, cliquez sur son nom dans la table des passerelles iSCSI ou sélectionnez sa case à cocher et cliquez sur <guimenu>Edit</guimenu> (Modifier) en haut à gauche dans le tableau des passerelles.
+    </para>
+    <para>
+     Vous pouvez ensuite modifier la cible iSCSI, ajouter ou supprimer des portails et ajouter ou supprimer des images RBD associées. Vous pouvez également ajuster les informations d'authentification pour la passerelle.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Clonage et suppression de passerelles iSCSI</title>
+    <para>
+     Pour supprimer une passerelle ou un groupe de passerelles, cochez les cases dans la colonne de gauche et sélectionnez <guimenu>Delete</guimenu> (Supprimer) en haut à gauche dans le tableau des passerelles.
+    </para>
+    <para>
+     De même, vous pouvez sélectionner <guimenu>Clone</guimenu> pour cloner la passerelle activée.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Démarrage et arrêt de passerelles iSCSI</title>
+    <para>
+     Pour démarrer toutes les passerelles, sélectionnez <guimenu>Start all</guimenu> (Démarrer tout) en haut à gauche dans le tableau des passerelles. Pour arrêter toutes les passerelles, sélectionnez <guimenu>Stop all</guimenu> (Arrêter tout).
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.crushmap">
+   <title>Affichage de l'assignation CRUSH de la grappe</title>
+   <para>
+    Cliquez sur <guimenu>CRUSH Map</guimenu> (Assignation CRUSH) dans le menu principal pour afficher l'assignation CRUSH de la grappe.
+   </para>
+   <figure>
+    <title>Assignation CRUSH</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_crush.png" width="60%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_crush.png" width="60%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Le volet <guimenu>Physical setup</guimenu> (Configuration physique) affiche la structure de la grappe comme décrit dans l'assignation CRUSH.
+   </para>
+   <para>
+    Dans le volet <guimenu>Replication rules</guimenu> (Règles de réplication), vous pouvez afficher des ensembles de règles individuels après en avoir sélectionné un dans la liste déroulante <guimenu>Content</guimenu> (Contenu).
+   </para>
+   <figure>
+    <title>Règles de réplication</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_crush_rulesets.png" width="60%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_crush_rulesets.png" width="60%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.rgw_users">
+   <title>Gestion des utilisateurs et des compartiments Object Gateway</title>
+   <tip>
+    <title>plus d'informations sur les passerelles Object Gateway</title>
+    <para>
+     Pour plus d'informations générales sur les passerelles Object Gateway, reportez-vous au <xref linkend="cha.ceph.gw"/>.
+    </para>
+   </tip>
+   <para>
+    Pour répertorier les utilisateurs Object Gateway, sélectionnez <menuchoice><guimenu>Object Gateway</guimenu><guimenu>Users</guimenu></menuchoice> (Utilisateurs) depuis le menu principal.
+   </para>
+   <para>
+    La liste affiche l'ID, le nom d'affichage, l'adresse électronique de chaque utilisateur, si l'utilisateur est suspendu, et le nombre maximal de compartiments pour l'utilisateur.
+   </para>
+   <figure>
+    <title>Liste des utilisateurs Object Gateway</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_rgw_users_list.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_rgw_users_list.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="oa.rgw_user.add">
+    <title>Ajout d'un nouvel utilisateur Object Gateway</title>
+    <para>
+     Pour ajouter un nouvel utilisateur Object Gateway, cliquez sur <guimenu>Add</guimenu> (Ajouter) en haut à gauche dans le tableau des utilisateurs, puis entrez les informations appropriées.
+    </para>
+    <tip>
+     <title>supplément d'informations</title>
+     <para>
+      Pour plus d'informations sur les comptes d'utilisateur Object Gateway, reportez-vous à la <xref linkend="s3.swift.accounts.managment"/>.
+     </para>
+    </tip>
+    <figure>
+     <title>Ajout d'un nouvel utilisateur Object Gateway</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rgw_users_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rgw_users_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       Entrez le nom d'utilisateur, le nom complet et éventuellement une adresse électronique et le nombre maximal de compartiments pour l'utilisateur.
+      </para>
+     </step>
+     <step>
+      <para>
+       Si l'utilisateur doit d'abord être suspendu, sélectionnez la case à cocher <guimenu>Suspended</guimenu> (Suspendu).
+      </para>
+     </step>
+     <step>
+      <para>
+       Indiquez les clés d'accès et secrète pour l'authentification S3. Si vous souhaitez qu'openATTIC génère les clés automatiquement, cochez la case <guimenu>Generate Key</guimenu> (Générer la clé).
+      </para>
+     </step>
+     <step>
+      <para>
+       Dans la section <guimenu>User quota</guimenu> (Quota utilisateur), définissez des limites du quota de l'utilisateur actuel.
+      </para>
+      <para>
+       Cochez <guimenu>Enabled</guimenu> (Activé) pour activer les limites du quota utilisateur. Vous pouvez soit indiquer la taille maximale (<guimenu>Maximum size</guimenu>) de l'espace disque que l'utilisateur peut utiliser dans la grappe, soit cocher <guimenu>Unlimited size</guimenu> (Taille illimitée) pour ne fixer aucune limite de taille.
+      </para>
+      <para>
+       De même, indiquez le nombre maximal d'objets (<guimenu>Maximum objects</guimenu>) que l'utilisateur peut stocker sur le stockage de la grappe ou <guimenu>Unlimited objects</guimenu> (Objets illimités) si l'utilisateur peut stocker un nombre illimité d'objets.
+      </para>
+      <figure>
+       <title>Quota utilisateur</title>
+       <mediaobject>
+        <imageobject role="fo">
+         <imagedata fileref="oa_rgw_userquota.png" width="70%" format="PNG"/>
+        </imageobject>
+        <imageobject role="html">
+         <imagedata fileref="oa_rgw_userquota.png" width="70%" format="PNG"/>
+        </imageobject>
+       </mediaobject>
+      </figure>
+     </step>
+     <step>
+      <para>
+       Dans la section <guimenu>Bucket quota</guimenu> (Quota de compartiment), définissez des limites du quota de compartiment de l'utilisateur actuel.
+      </para>
+      <figure>
+       <title>Quota de compartiment</title>
+       <mediaobject>
+        <imageobject role="fo">
+         <imagedata fileref="oa_rgw_bucketquota.png" width="70%" format="PNG"/>
+        </imageobject>
+        <imageobject role="html">
+         <imagedata fileref="oa_rgw_bucketquota.png" width="70%" format="PNG"/>
+        </imageobject>
+       </mediaobject>
+      </figure>
+     </step>
+     <step>
+      <para>
+       Confirmez en cliquant sur <guimenu>Submit</guimenu> (Soumettre).
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>Suppression d'utilisateurs Object Gateway</title>
+    <para>
+     Pour supprimer un ou plusieurs utilisateurs Object Gateway, cochez les cases correspondantes dans la colonne la plus à gauche et sélectionnez <guimenu>Delete</guimenu> (Supprimer) en haut à gauche dans le tableau des utilisateurs.
+    </para>
+   </sect3>
+   <sect3 xml:id="oa.user.edit">
+    <title>Modification d'utilisateurs Object Gateway</title>
+    <para>
+     Pour modifier les informations utilisateur d'un utilisateur Object Gateway, cochez la case correspondante dans la colonne la plus à gauche et sélectionnez <guimenu>Edit</guimenu> (Modifier) en haut à gauche dans le tableau des utilisateurs ou cliquez sur son ID. Vous pouvez modifier les informations que vous avez entrées lors de l'ajout de l'utilisateur à la <xref linkend="oa.rgw_user.add"/> ainsi que les informations supplémentaires suivantes :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Subusers</term>
+      <listitem>
+       <para>
+        Ajoutez, supprimez ou modifiez des subusers de l'utilisateur en cours de modification.
+       </para>
+       <figure>
+        <title>Ajout d'un subuser</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_subuser_add.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_subuser_add.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Clés</term>
+      <listitem>
+       <para>
+        Ajoutez, supprimez ou affichez les clés d'accès et les clés secrètes de l'utilisateur en cours de modification.
+       </para>
+       <para>
+        Vous pouvez ajouter des clés S3 pour l'utilisateur en cours de modification ou afficher les clés Swift pour ses subusers.
+       </para>
+       <figure>
+        <title>Affichage des clés S3</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_user_s3key_edit.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_user_s3key_edit.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Fonctions</term>
+      <listitem>
+       <para>
+        Ajoutez ou supprimez des fonctions de l'utilisateur. Les fonctions s'appliquent aux options suivantes : <guimenu>buckets</guimenu> (compartiments), <guimenu>zone</guimenu>, <guimenu>users</guimenu> (utilisateurs), <guimenu>metadata</guimenu> (métadonnées) et <guimenu>usage</guimenu> (utilisation). Les fonctions peuvent avoir la valeur « read », « write » ou « * » pour les privilèges de lecture ou d'écriture.
+       </para>
+       <figure>
+        <title>Fonctions</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_user_capabs.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_user_capabs.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.list">
+    <title>Liste de compartiments pour les utilisateurs Object Gateway</title>
+    <tip>
+     <para>
+      Un compartiment est un mécanisme de stockage des objets de données. Un compte d'utilisateur peut comporter plusieurs compartiments, mais les noms de compartiment doivent être uniques. Le terme « compartiment » (« bucket ») est normalement utilisé dans l'API Amazon S3 alors que le synonyme « conteneur » (« container ») est utilisé dans le contexte de l'API OpenStack Swift.
+     </para>
+    </tip>
+    <para>
+     Cliquez sur <menuchoice><guimenu>Object Gateway</guimenu><guimenu>Buckets</guimenu></menuchoice> (Compartiments) pour répertorier tous les compartiments Object Gateway disponibles.
+    </para>
+    <figure>
+     <title>Compartiments Object Gateway</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="os_ogw_bucket_list.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="os_ogw_bucket_list.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.add">
+    <title>Ajout de compartiments pour les utilisateurs Object Gateway</title>
+    <para>
+     Pour ajouter un nouveau compartiment, cliquez sur <guimenu>Ajouter</guimenu> (Add) en haut à gauche dans le tableau des compartiments et entrez le nouveau nom de compartiment et l'utilisateur Object Gateway associé. Confirmez en cliquant sur <guimenu>Submit</guimenu> (Soumettre).
+    </para>
+    <figure>
+     <title>Ajout d'un nouveau compartiment</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.view">
+    <title>Affichage des détails d'un compartiment</title>
+    <para>
+     Pour afficher des informations détaillées sur un compartiment Object Gateway, cochez la case située dans la colonne la plus à gauche du tableau des compartiments.
+    </para>
+    <figure>
+     <title>Détails d'un compartiment</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_view.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_view.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.edit">
+    <title>Modification de compartiments</title>
+    <para>
+     Pour modifier un compartiment, cochez la case correspondante dans la colonne la plus à gauche et sélectionnez <guimenu>Edit</guimenu> (Modifier) en haut à gauche dans le tableau des compartiments ou cliquez sur son nom.
+    </para>
+    <figure>
+     <title>Modification d'un compartiment Object Gateway</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     Dans l'écran d'édition, vous pouvez changer l'utilisateur auquel appartient le compartiment.
+    </para>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.delete">
+    <title>Suppression de compartiments</title>
+    <para>
+     Pour supprimer un ou plusieurs compartiments Object Gateway, cochez les cases correspondantes dans la colonne la plus à gauche du tableau des compartiments, et sélectionnez <guimenu>Delete</guimenu> (Supprimer) en haut à gauche dans le tableau.
+    </para>
+    <figure>
+     <title>Suppression de compartiments</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_buckets_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_buckets_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     Pour confirmer la suppression, tapez « yes » dans la fenêtre contextuelle <guimenu>Delete buckets</guimenu> (Supprimer des compartiments), cliquez sur <guimenu>Delete</guimenu> (Supprimer).
+    </para>
+    <warning>
+     <title>prudence lors de la suppression</title>
+     <para>
+      La commande de suppression d'un compartiment Object Gateway ne vérifie pas si celui-ci est réellement utilisé, par exemple, par NFS Ganesha via le système dorsal de stockage S3.
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

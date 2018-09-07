@@ -1,0 +1,440 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_ds_custom.xml" version="5.0" xml:id="ceph.deploy.ds.custom">
+ <title>デフォルト設定のカスタマイズ</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>○</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  ステージ2で生成されたデフォルトのクラスタ設定を変更できます(<xref linkend="deepsea.stage.description"/>を参照してください)。たとえば、ネットワーク設定や、Salt Masterによってデフォルトでインストールされるソフトウェアの変更が必要になる場合があります。前者はステージ2の後に更新されるpillarを変更することで実行でき、後者は通常、カスタム<literal>sls</literal>ファイルを作成してpillarに追加することで実行できます。以降のセクションで詳細を説明します。
+ </para>
+ <sect1 xml:id="using.customized.files">
+  <title>カスタマイズされた設定ファイルの使用</title>
+
+  <para>
+   このセクションでは、独自の<literal>sls</literal>ファイルの追加/変更が必要なタスクを一覧にします。このような手順は、通常、デフォルトの展開プロセスを変更する必要がある場合に使用します。
+  </para>
+
+  <tip>
+   <title>カスタム.slsファイルにプレフィックスを付ける</title>
+   <para>
+    カスタム.slsファイルは、DeepSeaの.slsファイルと同じサブディレクトリに属します。DeepSeaパッケージから新しく追加される可能性があるファイルによって自分の.slsファイルが上書きされるのを避けるため、ファイル名には<filename>custom-</filename>という文字列のプレフィックスを付けてください。
+   </para>
+  </tip>
+
+  <sect2>
+   <title>展開手順の無効化</title>
+   <para>
+    DeepSeaの展開プロセスの外で特定のタスクに対応するために展開プロセスをスキップする必要がある場合、次の例に従って「操作なし」ファイルを作成します。
+   </para>
+   <procedure>
+    <title>時刻同期の無効化</title>
+    <step>
+     <para>
+      次の内容で<filename>/srv/salt/ceph/time/disabled.sls</filename>を作成して保存します。
+     </para>
+<screen>disable time setting:
+test.nop</screen>
+    </step>
+    <step>
+     <para>
+      <filename>/srv/pillar/ceph/stack/global.yml</filename>を編集して次の行を追加し、保存します。
+     </para>
+<screen>time_init: disabled</screen>
+    </step>
+    <step>
+     <para>
+      Pillarを更新し、次の手順を実行して検証します。
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.time
+admin.ceph:
+  Name: disable time setting - Function: test.nop - Result: Clean
+
+Summary for admin.ceph
+------------
+Succeeded: 1
+Failed:    0
+------------
+Total states run:     1</screen>
+     <note>
+      <title>固有のID</title>
+      <para>
+       タスクID「disable time setting」は、<literal>sls</literal>ファイル内で固有であれば、任意のメッセージにすることができます。固有の記述を指定することにより、IDの衝突を防ぎます。
+      </para>
+     </note>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="deepsea.replacing_step">
+   <title>展開手順の置き換え</title>
+   <para>
+    特定の手順の動作をカスタム手順の動作に置き換える必要がある場合は、置き換え用の内容を記述したカスタム<literal>sls</literal>ファイルを作成します。
+   </para>
+   <para>
+    デフォルトでは、<filename>/srv/salt/ceph/pool/default.sls</filename>は「demo」という名前のrbdイメージを作成します。この例では、このイメージを作成するのではなく、「archive1」および「archive2」という2つのイメージが必要です。
+   </para>
+   <procedure>
+    <title>2つのカスタムrbdイメージでの「demo」<emphasis/>RBDイメージの置き換え</title>
+    <step>
+     <para>
+      次の内容で<filename>/srv/salt/ceph/pool/custom.sls</filename>を作成して保存します。
+     </para>
+<screen>wait:
+  module.run:
+    - name: wait.out
+    - kwargs:
+        'status': "HEALTH_ERR"<co xml:id="co.deepsea.replace.wait"/>
+    - fire_event: True
+
+archive1:
+  cmd.run:
+    - name: "rbd -p rbd create archive1 --size=1024"<co xml:id="co.deepsea.replace.rbd"/>
+    - unless: "rbd -p rbd ls | grep -q archive1$"
+    - fire_event: True
+
+archive2:
+  cmd.run:
+    - name: "rbd -p rbd create archive2 --size=768"
+    - unless: "rbd -p rbd ls | grep -q archive2$"
+    - fire_event: True</screen>
+     <calloutlist>
+      <callout arearefs="co.deepsea.replace.wait">
+       <para>
+        「wait」<emphasis role="bold"/>モジュールは、Cephクラスタの状態が<literal>HEALTH_ERR</literal>になるまで一時停止します。新規インストールの場合、Cephクラスタは、十分な数のOSDが利用可能になってプールの作成が完了するまで、この状態になっていることがあります。
+       </para>
+      </callout>
+      <callout arearefs="co.deepsea.replace.rbd">
+       <para>
+        <command>rbd</command>コマンドはべき等ではありません。すでにイメージが存在する状態で同じ作成コマンドを再実行すると、Saltの状態は失敗します。これを「unless」<emphasis role="bold"/>ステートメントで防止します。
+       </para>
+      </callout>
+     </calloutlist>
+    </step>
+    <step>
+     <para>
+      デフォルトのファイルではなく新しく作成したカスタムファイルを呼び出すには、<filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>を編集して次の行を追加し、保存します。
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      Pillarを更新し、次の手順を実行して検証します。
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+   <note>
+    <title>許可</title>
+    <para>
+     プールやイメージを作成するには十分な許可が必要です。<literal>admin.ceph</literal>ミニオンは管理キーリングを持っています。
+    </para>
+   </note>
+   <tip>
+    <title>別の方法</title>
+    <para>
+     もう1つのオプションは、代わりに<filename>/srv/pillar/ceph/stack/ceph/roles/master.yml</filename>の変数を変更することです。このファイルを使用すると、他のミニオンのPillarデータが乱雑になるのを抑えることができます。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2>
+   <title>展開手順の変更</title>
+   <para>
+    場合によっては、追加タスクを実行するために特定の手順が必要になることがあります。関連する状態ファイルを変更すると将来のアップグレードが複雑になる場合があるため、これはお勧めしません。代わりに、別個のファイルを作成して、<xref linkend="deepsea.replacing_step"/>で説明されているものと同じ追加タスクを実行します。
+   </para>
+   <para>
+    新しい<literal>sls</literal>ファイルにわかりやすい名前を付けます。たとえば、demoイメージのほかにrbdイメージを2つ作成する必要がある場合、ファイルに<filename>archive.sls</filename>という名前を付けます。
+   </para>
+   <procedure>
+    <title>2つの追加rbdイメージの作成</title>
+    <step>
+     <para>
+      次の内容で<filename>/srv/salt/ceph/pool/custom.sls</filename>を作成して保存します。
+     </para>
+<screen>include:
+ - .archive
+ - .default</screen>
+     <tip>
+      <title>Includeの優先順位</title>
+      <para>
+       この例では、Saltは「archive」<emphasis/>イメージを作成してから、「demo」<emphasis/>イメージを作成します。この例では順序は重要ではありません。順序を変更するには、<literal>include:</literal>ディレクティブの後にある行を逆にします。
+      </para>
+      <para>
+       include行を<filename>archive.sls</filename>に直接追加することもできます。この場合も、すべてのイメージが作成されます。ただし、include行がどこに配置されているかに関係なく、Saltは最初に組み込みファイルの手順を処理します。「requires」<emphasis/>ステートメントおよび「order」<emphasis/>ステートメントでこの動作を上書きすることはできますが、順序は他を組み込む別個のファイルによって保証され、混乱が発生する可能性が抑えられます。
+      </para>
+     </tip>
+    </step>
+    <step>
+     <para>
+      <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>を編集して次の行を追加し、保存します。
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      Pillarを更新し、次の手順を実行して検証します。
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2>
+   <title>展開ステージの変更</title>
+   <para>
+    まったく別個の展開手順を追加する必要がある場合、新しいファイルを3つ作成します。コマンドを実行する<literal>sls</literal>ファイル、オーケストレーションファイル、および新しい手順を元の手順に連動させるカスタムファイルです。
+   </para>
+   <para>
+    たとえば、準備ステージの一部として、すべてのミニオンで<command>logrotate</command>を実行する必要があるとします。
+   </para>
+   <para>
+    この場合、最初に<literal>sls</literal>ファイルを作成して、<command>logrotate</command>コマンドを含めます。
+   </para>
+   <procedure>
+    <title>すべてのSalt Minionでの<command>logrotate</command>の実行</title>
+    <step>
+     <para>
+      <filename>/srv/salt/ceph/logrotate</filename>のようなディレクトリを作成します。
+     </para>
+    </step>
+    <step>
+     <para>
+      次の内容で<filename>/srv/salt/ceph/logrotate/init.sls</filename>を作成して保存します。
+     </para>
+<screen>rotate logs:
+  cmd.run:
+    - name: "/usr/sbin/logrotate /etc/logrotate.conf"</screen>
+    </step>
+    <step>
+     <para>
+      コマンドがミニオンに対して機能することを確認します。
+     </para>
+<screen><prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    オーケストレーションファイルは他のすべての準備手順の前に実行する必要があるため、「準備」<emphasis/>のステージ0に追加します。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      次の内容で<filename>/srv/salt/ceph/stage/prep/logrotate.sls</filename>を作成して保存します。
+     </para>
+<screen>logrotate:
+  salt.state:
+    - tgt: '*'
+    - sls: ceph.logrotate</screen>
+    </step>
+    <step>
+     <para>
+      オーケストレーションファイルが機能することを確認します。
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.prep.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    最後のファイルは、追加手順を元の手順と共に組み込むカスタムファイルです。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      次の内容で<filename>/srv/salt/ceph/stage/prep/custom.sls</filename>を作成して保存します。
+     </para>
+<screen>include:
+  - .logrotate
+  - .master
+  - .minion</screen>
+    </step>
+    <step>
+     <para>
+      デフォルトの動作を上書きします。<filename>/srv/pillar/ceph/stack/global.yml</filename>を編集して次の行を追加し、ファイルを保存します。
+     </para>
+<screen>stage_prep: custom</screen>
+    </step>
+    <step>
+     <para>
+      ステージ0が機能することを確認します。
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    </step>
+   </procedure>
+   <note>
+    <title><filename>global.yml</filename>を使用する理由</title>
+    <para>
+     <filename>global.yml</filename>ファイルではなく<filename>cluster.yml</filename>を選ぶ理由は、「準備」<emphasis/>ステージ中は、Cephクラスタに属しているミニオンがなく、<filename>cluster.yml</filename>の設定にアクセスできないためです。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ds.disable.reboots">
+   <title>ステージ0での更新と再起動の無効化</title>
+   <para>
+    ステージ0の間に(DeepSeaの各ステージの詳細については、<xref linkend="deepsea.stage.description"/>を参照してください)、Salt MasterとSalt Minionが再起動することがあります。これは、たとえば
+    <package>kernel</package>など、新しく更新されたパッケージでシステムの再起動が必要であるためです。
+   </para>
+   <para>
+    ステージ0でクラスタノードが更新または再起動されるのを防ぐには、<filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>を編集し、Salt Master、すべてのSalt Minion、またはすべてのノードのいずれの動作を変更する必要があるかに応じて、<option>stage_prep_master</option>オプションまたは<option>stage_prep_minion</option>オプションを追加します。
+   </para>
+   <para>
+    どちらのオプションも以下の値を受け付けます。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>default-no-update-no-reboot</term>
+     <listitem>
+      <para>
+       ノードがパッケージの更新と再起動のどちらも行わないようにします。
+      </para>
+     </listitem>
+     </varlistentry>
+     <varlistentry>
+     <term>default-no-update-reboot</term>
+    <listitem>
+     <para>
+      ノードがパッケージを更新しないようにしますが、再起動は許可します。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>default-update-no-reboot</term>
+    <listitem>
+     <para>
+      ノードが再起動しないようにしますが、パッケージの更新は許可します。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>default</term>
+    <listitem>
+     <para>
+      ノードによるパッケージの更新とノードの再起動の両方を許可します。
+     </para>
+    </listitem>
+   </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="discovered.configuration.modification">
+  <title>検出された設定の変更</title>
+
+  <para>
+   ステージ2の完了後に、検出された設定を変更できます。現在の設定を表示するには、次のコマンドを実行します。
+  </para>
+
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+
+  <para>
+   通常、1つのミニオンのデフォルト設定の出力は次のようになります。
+  </para>
+
+<screen>----------
+    available_roles:
+        - admin
+        - mon
+        - storage
+        - mds
+        - igw
+        - rgw
+        - client-cephfs
+        - client-radosgw
+        - client-iscsi
+        - mds-nfs
+        - rgw-nfs
+        - master
+    cluster:
+        ceph
+    cluster_network:
+        172.16.22.0/24
+    fsid:
+        e08ec63c-8268-3f04-bcdb-614921e94342
+    master_minion:
+        admin.ceph
+    mon_host:
+        - 172.16.21.13
+        - 172.16.21.11
+        - 172.16.21.12
+    mon_initial_members:
+        - mon3
+        - mon1
+        - mon2
+    public_address:
+        172.16.21.11
+    public_network:
+        172.16.21.0/24
+    roles:
+        - admin
+        - mon
+        - mds
+    time_server:
+        admin.ceph
+    time_service:
+        ntp</screen>
+
+  <para>
+   前述の各設定は、複数の設定ファイルに分散されています。これらのファイルが存在するディレクトリ構造は、<filename>/srv/pillar/ceph/stack/stack.cfg</filename>ディレクトリに定義されます。通常、以下のファイルがクラスタを記述します。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/global.yml</filename> - Saltクラスタ内のすべてのミニオンに影響します。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/cluster.yml</filename> - <literal>ceph</literal>という名前のCephクラスタ内にあるすべてのミニオンに影響します。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/roles/<replaceable>role</replaceable>.yml</filename> - <literal>ceph</literal>クラスタで特定の役割を割り当てられているすべてのミニオンに影響します。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>minions/<replaceable>minion ID</replaceable>/yml</filename> - 個々のミニオンに影響します。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>デフォルト値でのディレクトリの上書き</title>
+   <para>
+    <filename>/srv/pillar/ceph/stack/default</filename>には、デフォルト設定を保存する並行ディレクトリツリーがあります。値が上書きされるため、ここで値を変更しないでください。
+   </para>
+  </note>
+
+  <para>
+   収集された設定の一般的な変更手順は次のとおりです。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     変更する必要がある設定項目の場所を見つけます。たとえば、クラスタネットワークなどのクラスタ関連設定を変更する必要がある場合、ファイル<filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>を編集します。
+    </para>
+   </step>
+   <step>
+    <para>
+     ファイルを保存します。
+    </para>
+   </step>
+   <step>
+    <para>
+     次のコマンドを実行して変更を確認します。
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh</screen>
+    <para>
+     続いて、次のコマンドを実行します。
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

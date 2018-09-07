@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_rgw.xml" version="5.0" xml:id="cha.ceph.additional.software.installation">
+
+ <title>Ceph Object Gateway</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>編輯</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Ceph Object Gateway 是構建在 <literal>librgw</literal> 之上的物件儲存介面，為應用程式提供用於連接 Ceph 叢集的 RESTful 閘道。該閘道支援兩種介面︰
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    <emphasis>S3 相容</emphasis>︰透過與 Amazon S3 RESTful API 的某個大型子集相容的介面提供物件儲存功能。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>Swift 相容</emphasis>︰透過與 OpenStack Swift API 的某個大型子集相容的介面提供物件儲存功能。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <para>
+  物件閘道精靈使用內嵌式 HTTP 伺服器 (CivetWeb) 來與 Ceph 叢集互動。由於物件閘道提供與 OpenStack Swift 和 Amazon S3 相容的介面，因此具有自己的使用者管理功能。物件閘道可將資料儲存在用於儲存來自 CephFS 用戶端或 RADOS 區塊裝置用戶端的資料的同一個叢集中。S3 和 Swift API 共用一個通用名稱空間，因此，您可以使用其中一個 API 寫入資料，使用另一個 API 擷取資料。
+ </para>
+ <important>
+  <title>DeepSea 部署的物件閘道</title>
+  <para>
+   從 SUSE Enterprise Storage 5 開始，物件閘道做為 DeepSea 角色安裝，因此，您不需要手動安裝。
+  </para>
+  <para>
+   若要在叢集部署期間安裝物件閘道，請參閱<xref linkend="ceph.install.stack"/>。
+  </para>
+  <para>
+   若要將包含物件閘道的新節點新增至叢集，請參閱<xref linkend="salt.adding.services"/>。
+  </para>
+ </important>
+ <sect1 xml:id="rgw.installation">
+  <title>手動安裝物件閘道</title>
+
+  <procedure>
+   <step>
+    <para>
+     在未使用連接埠 80 的節點上安裝物件閘道。例如，執行 openATTIC 的節點已在使用連接埠 80。以下指令會安裝所有必需的元件︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo zypper ref &amp;&amp; sudo zypper in ceph-radosgw</screen>
+   </step>
+   <step>
+    <para>
+     如果先前的物件閘道例項中的 Apache 伺服器正在執行，請停止該伺服器並停用相關的服務︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo systemctl stop disable apache2.service</screen>
+   </step>
+   <step>
+    <para>
+     編輯 <filename>/etc/ceph/ceph.conf</filename>，新增以下幾行︰
+    </para>
+<screen>[client.rgw.gateway_host]
+ rgw frontends = "civetweb port=80"</screen>
+    <tip>
+     <para>
+      如果您想將物件閘道/CivetWeb 設定為用於 SSL 加密，請相應地修改該行︰
+     </para>
+<screen>rgw frontends = civetweb port=7480s ssl_certificate=<replaceable>path_to_certificate.pem</replaceable></screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     重新啟動物件閘道服務。
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo systemctl restart ceph-radosgw@rgw.gateway_host</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="ses.rgw.config">
+   <title>物件閘道組態</title>
+   <para>
+    設定物件閘道需要執行數個步驟。
+   </para>
+   <sect3>
+    <title>基本組態</title>
+    <para>
+     設定 Ceph Object Gateway 需要一個正常執行的 Ceph 儲存叢集。Ceph Object Gateway 是 Ceph 儲存叢集的用戶端。做為 Ceph 儲存叢集用戶端，它需要︰
+    </para>
+    <itemizedlist mark="bullet" spacing="normal">
+     <listitem>
+      <para>
+       閘道例項的主機名稱，例如 <systemitem>gateway</systemitem>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       具有相應權限和金鑰圈的儲存叢集使用者名稱。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       用於儲存閘道資料的池。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       閘道例項的資料目錄。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph 組態檔案中的例項項目。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     每個例項都必須具有使用者名稱和金鑰才能與 Ceph 儲存叢集進行通訊。在以下步驟中，我們將使用監控程式節點建立開機金鑰圈，然後基於開機金鑰圈建立物件閘道例項使用者金鑰圈。隨後建立用戶端使用者名稱和金鑰。接下來，我們將金鑰新增至 Ceph 儲存叢集。最後，將金鑰圈分發到包含閘道例項的節點。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       為閘道建立金鑰圈︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool --create-keyring /etc/ceph/ceph.client.rgw.keyring
+<prompt>cephadm &gt; </prompt>sudo chmod +r /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       為每個例項產生 Ceph Object Gateway 使用者名稱和金鑰。例如，我們將在 <systemitem>client.radosgw</systemitem> 後面使用名稱 <systemitem>gateway</systemitem>︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.client.rgw.keyring \
+  -n client.rgw.gateway --gen-key</screen>
+     </step>
+     <step>
+      <para>
+       為金鑰新增功能︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -n client.rgw.gateway --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       建立可讓 Ceph Object Gateway 存取 Ceph 儲存叢集的金鑰圈和金鑰之後，請將金鑰新增至 Ceph 儲存叢集。例如︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph -k /etc/ceph/ceph.client.admin.keyring auth add client.rgw.gateway \
+  -i /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       將金鑰圈分發到包含閘道例項的節點︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo scp /etc/ceph/ceph.client.rgw.keyring  ceph@<replaceable>hostname</replaceable>:/home/ceph
+<prompt>cephadm &gt; </prompt>ssh <replaceable>hostname</replaceable>
+<prompt>cephadm &gt; </prompt>sudo mv ceph.client.rgw.keyring /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+    </procedure>
+    <tip>
+     <title>使用開機金鑰圈</title>
+     <para>
+      另一種替代方法是建立物件閘道開機金鑰圈，然後基於該金鑰圈建立物件閘道金鑰圈︰
+     </para>
+     <procedure>
+      <step>
+       <para>
+        在某個監控程式節點上建立物件閘道開機金鑰圈︰
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph \
+ auth get-or-create client.bootstrap-rgw mon 'allow profile bootstrap-rgw' \
+ --connect-timeout=25 \
+ --cluster=ceph \
+ --name mon. \
+ --keyring=/var/lib/ceph/mon/ceph-<replaceable>node_host</replaceable>/keyring \
+ -o /var/lib/ceph/bootstrap-rgw/keyring</screen>
+      </step>
+      <step>
+       <para>
+        建立 <filename>/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable></filename> 目錄，用於儲存開機金鑰圈︰
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mkdir \
+/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        基於新建的開機金鑰圈建立物件閘道金鑰圈︰
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph \
+ auth get-or-create client.rgw.<replaceable>rgw_name</replaceable> osd 'allow rwx' mon 'allow rw' \
+ --connect-timeout=25 \
+ --cluster=ceph \
+ --name client.bootstrap-rgw \
+ --keyring=/var/lib/ceph/bootstrap-rgw/keyring \
+ -o /var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable>/keyring</screen>
+      </step>
+      <step>
+       <para>
+        將物件閘道金鑰圈複製到物件閘道主機︰
+       </para>
+<screen><prompt>cephadm &gt; </prompt>sudo scp \
+/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable>/keyring \
+<replaceable>rgw_host</replaceable>:/var/lib/ceph/radosgw/ceph-<replaceable>rgw_name</replaceable>/keyring</screen>
+       <remark role="fixme">Does the scp command fail because it is not executed as remote root but local root?</remark>
+      </step>
+     </procedure>
+    </tip>
+   </sect3>
+   <sect3 xml:id="ogw.pool.create">
+    <title>建立池 (選擇性)</title>
+    <para>
+     Ceph Object Gateway 需要使用 Ceph 儲存叢集池來儲存特定的閘道資料。如果建立的使用者具有適當的權限，則閘道會自動建立池。但是，請務必在 Ceph 組態檔案中為每個池設定適當的預設放置群組數量。
+    </para>
+    <para>
+     池名稱遵循 <literal><replaceable>ZONE_NAME</replaceable>.<replaceable>POOL_NAME</replaceable></literal> 語法。使用預設區域設定閘道時，本範例中的預設區域名稱為「default」︰
+    </para>
+<screen>.rgw.root
+default.rgw.control
+default.rgw.meta
+default.rgw.log
+default.rgw.buckets.index
+default.rgw.buckets.data</screen>
+    <para>
+     若要手動建立池，請參閱<xref linkend="ceph.pools.operate.add_pool"/>。
+    </para>
+    <important>
+     <title>物件閘道和糾刪碼池</title>
+     <para>
+      只能對 <literal>default.rgw.buckets.data</literal> 池執行糾刪碼操作。需要複製所有其他池，否則將無法連接閘道。
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>將閘道組態新增至 Ceph</title>
+    <para>
+     將 Ceph Object Gateway 組態新增至 Ceph 組態檔案。Ceph Object Gateway 組態要求您識別 Ceph Object Gateway 例項。然後，指定安裝了 Ceph Object Gateway 精靈的主機名稱、金鑰圈 (用於 cephx) 和記錄檔案 (選擇性)。例如︰
+    </para>
+<screen>[client.rgw.<replaceable>instance-name</replaceable>]
+host = <replaceable>hostname</replaceable>
+keyring = /etc/ceph/ceph.client.rgw.keyring</screen>
+    <tip>
+     <title>物件閘道記錄檔案</title>
+     <para>
+      若要覆寫預設的物件閘道記錄檔案，請包含以下指令︰
+     </para>
+<screen>log file = /var/log/radosgw/client.rgw.<replaceable>instance-name</replaceable>.log</screen>
+    </tip>
+    <para>
+     當設定用戶端類型為 Ceph Object Gateway (radosgw) 的 Ceph 儲存叢集用戶端時，閘道例項的 <literal>[client.rgw.*]</literal> 部分可識別 Ceph 組態檔案的此部分。後跟例項名稱。例如︰
+    </para>
+<screen>[client.rgw.gateway]
+host = ceph-gateway
+keyring = /etc/ceph/ceph.client.rgw.keyring</screen>
+    <note>
+     <para>
+      <replaceable>host</replaceable> 必須是您的機器主機名稱，不包括網域名稱。
+     </para>
+    </note>
+    <para>
+     然後關閉 <literal>print continue</literal>。如果將其設定為 true，執行 PUT 操作時可能會遇到問題︰
+    </para>
+<screen>rgw print continue = false</screen>
+
+    <para>
+     若要透過子網域 S3 呼叫使用 Ceph Object Gateway (例如 <literal>http://bucketname.hostname</literal>)，必須在 Ceph 組態檔案的 <literal>[client.rgw.gateway]</literal> 區段下面新增 Ceph Object Gateway DNS 名稱︰
+    </para>
+<screen>[client.rgw.gateway]
+...
+rgw dns name = <replaceable>hostname</replaceable></screen>
+    <para>
+     此外，在使用 <literal>http://<replaceable>bucketname</replaceable>.<replaceable>hostname</replaceable></literal> 語法時，還應考慮在用戶端機器上安裝 Dnsmasq 這類 DNS 伺服器。<filename>dnsmasq.conf</filename> 檔案應包含以下設定︰
+    </para>
+<screen>address=/<replaceable>hostname</replaceable>/<replaceable>host-ip-address</replaceable>
+listen-address=<replaceable>client-loopback-ip</replaceable></screen>
+    <para>
+     然後，在用戶端機器上新增 <replaceable>client-loopback-ip</replaceable> IP 位址做為第一部 DNS 伺服器。
+    </para>
+   </sect3>
+   <sect3>
+    <title>建立資料目錄</title>
+    <para>
+     部署程序檔可能無法建立預設的 Ceph Object Gateway 資料目錄。如果尚未為 radosgw 精靈的每個例項建立資料目錄，請予以建立。Ceph 組態檔案中的 <literal>host</literal> 變數用於確定哪個主機執行 radosgw 精靈的每個例項。一般的格式會指定 radosgw 精靈、叢集名稱和精靈 ID。
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mkdir -p /var/lib/ceph/radosgw/<replaceable>cluster</replaceable>-<replaceable>id</replaceable></screen>
+    <para>
+     使用上面的範例 <filename>ceph.conf</filename> 設定執行以下指令︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mkdir -p /var/lib/ceph/radosgw/ceph-radosgw.gateway</screen>
+   </sect3>
+   <sect3>
+    <title>重新啟動服務並啟動閘道</title>
+    <para>
+     為了確保所有元件都已重新載入其組態，建議您重新啟動 Ceph 儲存叢集服務。然後啟動 <systemitem>radosgw</systemitem> 服務。如需詳細資訊，請參閱<xref linkend="cha.ceph.operating"/>與<xref linkend="ceph.rgw.operating"/>。
+    </para>
+    <para>
+     服務啟動並執行後，您可以發出匿名 GET 申請，以檢查閘道是否傳回回應。向網域名稱發出簡單的 HTTP 申請應會傳回以下回應︰
+    </para>
+<screen>&lt;ListAllMyBucketsResult&gt;
+      &lt;Owner&gt;
+              &lt;ID&gt;anonymous&lt;/ID&gt;
+              &lt;DisplayName/&gt;
+      &lt;/Owner&gt;
+      &lt;Buckets/&gt;
+&lt;/ListAllMyBucketsResult&gt;</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

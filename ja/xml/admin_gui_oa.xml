@@ -1,0 +1,1193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_gui_oa.xml" version="5.0" xml:id="ceph.oa">
+ <title>openATTIC</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>○</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <tip>
+  <title>Calamariは削除</title>
+  <para>
+   Calamariはこれまで、Cephクラスタを管理および監視するための推奨Web UIアプリケーションでした。SUSE Enterprise Storage 5から、Calamariは削除され、代わってより高度なopenATTICが推奨されるようになりました。
+  </para>
+ </tip>
+ <para>
+  openATTICは、Ceph Storage Clusterをサポートする中央ストレージ管理システムです。openATTICにより、中央管理インタフェースからあらゆる機能を制御できます。Cephストレージツールの内部動作を熟知する必要はなくなりました。openATTICの直感的なWebインタフェースを使用するか、そのREST APIを経由することによってクラスタ管理タスクを実行できます。
+ </para>
+ <sect1 xml:id="ceph.oa.installation">
+  <title>openATTICの展開と設定</title>
+
+  <para>
+   このセクションでは、openATTICとそのサポート機能を展開して設定し、ユーザフレンドリなWebインタフェースを使用してCephクラスタを管理できるようにする手順を説明します。
+  </para>
+
+  <sect2 xml:id="oa.ssl">
+   <title>SSLを使用したopenATTICへの安全なアクセスの有効化</title>
+   <para>
+    デフォルトでは、openATTIC Webアプリケーションへのアクセスには、安全ではないHTTPプロトコルが使用されます。openATTICに安全にアクセスできるようにするには、Apache Webサーバを手動で設定する必要があります。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      既知のCA (認証局)によって署名されたSSL証明書がない場合は、自己署名SSL証明書を作成して、そのファイルをWebサーバで要求されるディレクトリにコピーします。次に例を示します。
+     </para>
+<screen>
+<prompt>root # </prompt>openssl req -newkey rsa:2048 -new -nodes -x509 -days 3650 \
+ -keyout key.pem -out cert.pem
+<prompt>root # </prompt>cp cert.pem /etc/ssl/certs/servercert.pem
+<prompt>root # </prompt>cp key.pem /etc/ssl/certs/serverkey.pem
+</screen>
+     <para>
+      SSL証明書の作成の詳細については、<link xlink:href="https://www.suse.com/documentation/sles-12/book_sle_admin/data/sec_apache2_ssl.html"/>を参照してください。
+     </para>
+    </step>
+    <step>
+     <para>
+      <filename>/etc/sysconfig/apache2</filename>設定ファイルの<option>APACHE_SERVER_FLAGS</option>オプションに「SSL」を追加します。手動で追加することも、次のコマンドを実行して追加することもできます。
+     </para>
+<screen>
+<prompt>root # </prompt>a2enmod ssl
+<prompt>root # </prompt>a2enflag SSL
+</screen>
+    </step>
+    <step>
+     <para>
+      次の内容で、新しいApache仮想ホストの<filename>/etc/apache2/vhosts.d/vhost-ssl.conf</filename>を作成します。
+     </para>
+<screen>
+&lt;IfDefine SSL&gt;
+&lt;IfDefine !NOSSL&gt;
+&lt;VirtualHost *:80&gt;
+ ServerName <replaceable>OA_HOST_NAME</replaceable>
+ Redirect "/" "https://<replaceable>OA_HOST_NAME</replaceable>/"
+&lt;/VirtualHost&gt;
+&lt;VirtualHost _default_:443&gt;
+ ServerName <replaceable>OA_HOST_NAME</replaceable>
+ DocumentRoot "/srv/www/htdocs"
+ ErrorLog /var/log/apache2/error_log
+ TransferLog /var/log/apache2/access_log
+ SSLEngine on
+ SSLCertificateFile /etc/ssl/certs/servercert.pem
+ SSLCertificateKeyFile /etc/ssl/certs/serverkey.pem
+ CustomLog /var/log/apache2/ssl_request_log ssl_combined
+&lt;/VirtualHost&gt;
+&lt;/IfDefine&gt;
+&lt;/IfDefine&gt;
+</screen>
+    </step>
+    <step>
+     <para>
+      Webサーバを再起動して、新しい仮想ホスト定義を証明書ファイルと共に再ロードします。
+     </para>
+<screen>
+<prompt>root # </prompt>systemctl restart apache2.service
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="oa.deploy">
+   <title>openATTICの展開</title>
+   <para>
+    SUSE Enterprise Storage 5から、openATTICはDeepSeaの役割として展開されます。全般的な手順については、<xref linkend="storage.salt.cluster"/>を参照してください。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.install.oa">
+   <title>openATTICの初期セットアップ</title>
+   <para>
+    デフォルトでは、<command>oaconfig</command>は管理者ユーザアカウント<systemitem>openattic</systemitem>を作成します。パスワードはユーザ名と同じです。セキュリティの予防措置として、このパスワードをすぐに変更することを強くお勧めします。
+   </para>
+<screen><prompt>root@minion &gt; </prompt>oaconfig changepassword openattic
+Changing password for user 'openattic'
+Password: &lt;enter password&gt;
+Password (again): &lt;re-enter password&gt;
+Password changed successfully for user 'openattic'
+</screen>
+  </sect2>
+
+  <sect2 xml:id="oa.ds">
+   <title>openATTICでのDeepSea統合</title>
+   <para>
+    iSCSI GatewayやObject Gateway管理など、openATTICの一部の機能はDeepSea REST APIを利用します。これはデフォルトで有効化および設定されています。デバッグのためにデフォルト設定を上書きする必要がある場合は、<filename>/etc/sysconfig/openattic</filename>を編集して次の行を追加または変更します。
+   </para>
+<screen>SALT_API_HOST="<replaceable>salt_api_host</replaceable>"
+SALT_API_PORT=8001
+SALT_API_USERNAME="example_user"
+SALT_API_PASSWORD="password"</screen>
+   <important>
+    <title><command>oaconfig restart</command></title>
+    <para>
+     <filename>/etc/sysconfig/openattic</filename>ファイルを変更した後は、必ず<command>oaconfig restart</command>を実行してください。
+    </para>
+   </important>
+   <important>
+    <title>ファイルの構文</title>
+    <para>
+     PythonおよびBashでは、<filename>/etc/sysconfig/openattic</filename>が使用されます。したがって、ファイルはBashが理解できるフォーマットでなければならず、「等号」記号の前後にスペースを入れることはできません。
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="oa.rgw">
+   <title>Object Gateway管理</title>
+   <para>
+    openATTICのObject Gateway管理機能は、デフォルトで有効になっています。DeepSeaから検出されたObject Gateway APIのデフォルト値を上書きする必要がある場合は、<filename>/etc/sysconfig/openattic</filename>に次のオプションと関連する値を含めます。次に例を示します。
+   </para>
+<screen>RGW_API_HOST="<replaceable>rgw_api_host</replaceable>"
+RGW_API_PORT=80
+RGW_API_SCHEME="http"
+RGW_API_ACCESS_KEY="VFEG733GBY0DJCIV6NK0"
+RGW_API_SECRET_KEY="lJzPbZYZTv8FzmJS5eiiZPHxlT2LMGOMW8ZAeOAq"</screen>
+   <note>
+    <title>Object Gatewayのデフォルトのリソース</title>
+    <para>
+     Object Gatewayの管理リソースが、「http://rgw_host:80/admin」で使用されるデフォルト値「admin」を使用するよう設定されていない場合は、<option>RGW_API_ADMIN_RESOURCE</option>オプションを適切に設定する必要もあります。
+    </para>
+   </note>
+   <para>
+    Object Gatewayの資格情報を入手するには、<command>radosgw-admin</command>コマンドを使用します。
+   </para>
+<screen><prompt>root@minion &gt; </prompt>radosgw-admin user info --uid=admin</screen>
+  </sect2>
+
+  <sect2 xml:id="oa.igw">
+   <title>iSCSI Gateway管理</title>
+   <para>
+    iSCSI Gateway管理機能は、デフォルトで有効になっています。Salt APIのデフォルトのホスト名を上書きする必要がある場合、<xref linkend="oa.ds"/>の説明に従って<option>SALT_API_HOST</option>の値を変更します。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph.oa.install.webui">
+  <title>openATTIC Webユーザインタフェース</title>
+
+  <para>
+   openATTICはWebユーザインタフェースを使用して管理できます。Webブラウザを開いて、http://<replaceable>SERVER_HOST</replaceable>/openatticに移動します。ログインするには、デフォルトのユーザ名<emphasis>openattic</emphasis>と、対応するパスワードを使用します。
+  </para>
+
+  <figure>
+   <title>openATTICのログイン画面</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_login.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_login.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   openATTICのユーザインタフェースは、グラフィックによって上部のメニューペインとコンテンツペインに分かれています。
+  </para>
+
+  <para>
+   上部ペインの右側部分には、現在のユーザ設定へのリンク、<guimenu>Logout (ログアウト)</guimenu>リンク、既存のバックグラウンドタスクのリストへのリンクを示す<guimenu>Background tasks (バックグラウンドタスク)</guimenu>、およびシステム通知を示す<guimenu>Notifications (通知)</guimenu>があります。上部ペインの残りの部分には、openATTICのメインメニューがあります。
+  </para>
+
+  <para>
+   コンテンツペインは、どの項目のメニューを有効にしたかによって変わります。デフォルトでは、<guimenu>Dashboard (ダッシュボード)</guimenu>が表示され、クラスタの状態を通知するさまざまなウィジェットが表示されます。
+  </para>
+
+  <figure>
+   <title>openATTICダッシュボード</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_dashboard.png" width="90%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_dashboard.png" width="90%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph.oa.webui.dash">
+  <title>ダッシュボード</title>
+
+  <para>
+   <guimenu>Dashboard (ダッシュボード)</guimenu>ウィジェットには、実行中のCephクラスタに関連する具体的な状態情報が表示されます。ウィジェットのタイトルをクリックすると、ウィジェットがコンテンツペイン全体に拡大され、場合によっては詳細が表示されます。次に、さまざまなウィジェットのリストを示します。
+  </para>
+
+  <para>
+   <guimenu>Status (状態)</guimenu>ウィジェットは、クラスタが正常に動作しているかどうかを通知します。問題が検出された場合は、ウィジェット内のサブタイトルをクリックすると、詳しいエラーメッセージを参照できます。
+  </para>
+
+  <para>
+   <guimenu>Monitors in Quorum (定数のMonitor)</guimenu>、<guimenu>Pools (プール)</guimenu>、<guimenu>OSDs In (参加中のOSD)</guimenu>、<guimenu>OSDs Out (除外中のOSD)</guimenu>、<guimenu>OSDs Up (稼働中のOSD)</guimenu>、<guimenu>OSDs Down (ダウン中のOSD)</guimenu>、および<guimenu>Average PGs per OSD (OSDあたりの平均PG数)</guimenu>の各ウィジェットには、単に関連する数値が表示されます。
+  </para>
+
+  <figure>
+   <title>基本ウィジェット</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_basic_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_basic_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   ストレージの合計容量と利用可能な容量を扱うウィジェットは、<guimenu>Cluster Capacity (クラスタの容量)</guimenu>、<guimenu>Available Capacity (利用可能な容量)</guimenu>、<guimenu>Used Capacity (使用済み容量)</guimenu>、および<guimenu>Capacity (容量)</guimenu>です。
+  </para>
+
+  <figure>
+   <title>容量のウィジェット</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_capacity_widgets.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_capacity_widgets.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   OSDとMonitorノードのレイテンシを扱うウィジェットは、<guimenu>Average OSD Apply Latency (OSDの平均適用レイテンシ)</guimenu>、<guimenu>Average OSD Commit Latency (OSDの平均コミットレイテンシ)</guimenu>、および<guimenu>Average Monitor Latency (Monitorの平均レイテンシ)</guimenu>です。
+  </para>
+
+  <figure>
+   <title>レイテンシのウィジェット</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_latency_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_latency_widgets.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <guimenu>Throughput (スループット)</guimenu>ウィジェットには、1秒あたりの読み込みと書き込みの統計が適切なタイミングで表示されます。
+  </para>
+
+  <figure>
+   <title>スループット</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_io.png" width="60%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_io.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <tip>
+   <title>マウスポインタを合わせて詳細を表示</title>
+   <para>
+    表示されているチャートにマウスポインタを合わせると、ポイントした時点の日時に関連する詳細がポップアップウィンドウに表示されます。
+   </para>
+   <para>
+    チャート領域をクリックし、時間軸に沿ってマウスポインタを左右にドラッグすると、軸の時間間隔が、マウスを移動してマークを付けた間隔へズームインします。ズームアウトして元の倍率に戻すには、チャートをダブルクリックします。
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="ceph.oa.webui.ceph">
+  <title>Ceph関連タスク</title>
+
+  <para>
+   openATTICのメインメニューには、Ceph関連タスクが一覧にされます。現在のところ、関係するタスクは、<guimenu>OSDs (OSD)</guimenu>、<guimenu>RBDs (RBD)</guimenu>、<guimenu>Pools (プール)</guimenu>、<guimenu>Nodes (ノード)</guimenu>、<guimenu>iSCSI</guimenu>、<guimenu>NFS</guimenu>、<guimenu>CRUSH Map (CRUSHマップ)</guimenu>、および<guimenu>Object Gateway</guimenu>です。
+  </para>
+
+  <sect2>
+   <title>Web UIの共通機能</title>
+   <para>
+    openATTICでは、プールのリスト、OSDノードのリスト、RBDデバイスのリストなど、「リスト」<emphasis/>を操作することがよくあります。次の共通ウィジェットは、これらのリストを管理または調整する場合に役立ちます。
+   </para>
+   <para>
+    <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_reload.png" width="1.2em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_reload.png" width="1.2em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> をクリックして、項目のリストを更新します。
+   </para>
+   <para>
+    <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_columns.png" width="1.3em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_columns.png" width="1.3em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> をクリックして、個々のテーブル列の表示/非表示を切り替えます。
+   </para>
+   <para>
+    <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_rows.png" width="1.8em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_rows.png" width="1.8em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> をクリックして、1ページに表示する行数を選択します。
+   </para>
+   <para>
+    <inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_search.png" width="5em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_search.png" width="5em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> の内部をクリックし、検索する文字列を入力して行をフィルタします。
+   </para>
+   <para>
+    リストが複数のページにわたる場合は、<inlinemediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="oa_widget_pager.png" width="6em" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="oa_widget_pager.png" width="6em" format="PNG"/>
+    </imageobject>
+    </inlinemediaobject> を使用して、現在表示されているページを変更します。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>OSDノードの一覧</title>
+   <para>
+    利用可能なすべてのOSDノードを一覧にするには、メインメニューから<guimenu>OSDs (OSD)</guimenu>をクリックします。
+   </para>
+   <para>
+    各OSDの名前、ホスト名、状態、重み、およびストレージバックエンドがリストに表示されます。
+   </para>
+   <figure>
+    <title>OSDノードのリスト</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_osds.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_osds.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+
+  <sect2 xml:id="oa.rbds">
+   <title>RADOS RBD (RADOS Block Device)の管理</title>
+   <para>
+    利用可能なすべてのRADOS Block Deviceを一覧にするには、メインメニューから<guimenu>RBD (RBD)</guimenu>をクリックします。
+   </para>
+   <para>
+    各デバイスの名前、関連するプール名、デバイスのサイズ、RADOS Block Deviceの作成中に「fast-diff」が有効になっていたかどうか、およびすでに使用済みの割合がリストに表示されます。
+   </para>
+   <figure>
+    <title>RBDのリスト</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_rbds.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_rbds.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>状態情報</title>
+    <para>
+     デバイスの詳細を表示するには、左端の列にあるチェックボックスをオンにします。
+    </para>
+    <figure>
+     <title>RBDの詳細</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_status.png" width="40%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_status.png" width="40%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>統計</title>
+    <para>
+     転送されたデータの統計を表示するには、RADOS Block Deviceの<guimenu>Statistics (統計)</guimenu>タグをクリックします。マウスで時間範囲を強調表示するか、タブの左上隅にある日付をクリックしてから時間範囲を選択することにより、時間間隔をズームイン/ズームアウトできます。
+    </para>
+   </sect3>
+   <sect3>
+    <title>RADOS Block Deviceのスナップショット</title>
+    <para>
+     RADOS Block Deviceのスナップショットを作成するには、<guimenu>Snapshots (スナップショット)</guimenu>タブをクリックして、左上のドロップダウンボックスから<guimenu>Create (作成)</guimenu>を選択します。
+    </para>
+    <para>
+     スナップショットを選択した後、スナップショットの名前変更、保護、クローンの作成、または削除を行うことができます。複数のスナップショットを選択して削除することもできます。<guimenu>Rollback (ロールバック)</guimenu>は、現在のスナップショットからデバイスの状態を復元します。
+    </para>
+    <figure>
+     <title>RBDのスナップショット</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_snapshots.png" width="90%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_snapshots.png" width="90%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>RBDの削除</title>
+    <para>
+     1つのデバイスまたは複数のデバイスのグループを削除するには、左端の列にあるチェックボックスをオンにして、RBDテーブルの左上で<guimenu>Delete (削除)</guimenu>をクリックします。
+    </para>
+    <figure>
+     <title>RBDの削除</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>RBDの追加</title>
+    <para>
+     新しいデバイスを追加するには、RBDテーブルの左上で<guimenu>Add (追加)</guimenu>をクリックして、<guimenu>Create RBD (RBDの作成)</guimenu>画面で次の操作を行います。
+    </para>
+    <figure>
+     <title>新しいRBDの追加</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rbd_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rbd_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       新しいデバイスの名前を入力します。命名の制限については、<xref linkend="sysreq.naming"/>を参照してください。
+      </para>
+     </step>
+     <step>
+      <para>
+       新しいプールを保存するクラスタを選択します。
+      </para>
+     </step>
+     <step>
+      <para>
+       新しいRBDデバイスの作成元となるプールを選択します。
+      </para>
+     </step>
+     <step>
+      <para>
+       新しいデバイスのサイズを指定します。上の<guimenu>use max (最大限使用)</guimenu>リンクをクリックすると、プールの最大サイズにデータが入力されます。
+      </para>
+     </step>
+     <step>
+      <para>
+       デバイスのパラメータを微調整するには、<guimenu>Expert settings (エキスパート設定)</guimenu>をクリックして、表示されるオプションを有効/無効にします。
+      </para>
+     </step>
+     <step>
+      <para>
+       <guimenu>Create (作成)</guimenu>をクリックして確認します。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>プールの管理</title>
+   <tip>
+    <title>プールについての詳細</title>
+    <para>
+     Cephのプールの全般的な情報については、<xref linkend="ceph.pools"/>を参照してください。イレージャコーディングプールに固有の情報については、<xref linkend="cha.ceph.erasure"/>を参照してください。
+    </para>
+   </tip>
+   <para>
+    利用可能なすべてのプールを一覧にするには、メインメニューから<guimenu>Pools (プール)</guimenu>をクリックします。
+   </para>
+   <para>
+    各プールの名前、ID、使用済み領域の割合、配置グループの数、レプリカのサイズ、タイプ(「replicated (複製)」または「erasure (イレージャ)」)、イレージャコードプロファイル、およびCRUSHルールセットがリストに表示されます。
+   </para>
+   <figure>
+    <title>プールのリスト</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_pools.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_pools.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    プールの詳細を表示するには、左端の列にあるチェックボックスをオンにします。
+   </para>
+   <figure>
+    <title>プールの詳細</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_pools_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_pools_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>プールの削除</title>
+    <para>
+     1つのプールまたは複数のプールのグループを削除するには、左端の列にあるチェックボックスをオンにして、プールテーブルの左上で<guimenu>Delete (削除)</guimenu>をクリックします。
+    </para>
+    <figure>
+     <title>プールの削除</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_pools_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_pools_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3>
+    <title>プールの追加</title>
+    <para>
+     新しいプールを追加するには、プールテーブルの左上で<guimenu>Add (追加)</guimenu>をクリックして、<guimenu>Create Ceph pool (Cephプールの作成)</guimenu>画面で次の操作を行います。
+    </para>
+    <figure>
+     <title>新しいプールの追加</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_pools_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_pools_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       新しいプールの名前を入力します。命名の制限については、<xref linkend="sysreq.naming"/>を参照してください。
+      </para>
+     </step>
+     <step>
+      <para>
+       新しいプールを保存するクラスタを選択します。
+      </para>
+     </step>
+     <step>
+      <para>
+       プールタイプを選択します。プールは複製またはイレージャコーディングのいずれかにできます。
+      </para>
+     </step>
+     <step>
+      <substeps>
+       <step>
+        <para>
+         複製プールの場合、レプリカのサイズと配置グループの数を指定します。
+        </para>
+       </step>
+       <step>
+        <para>
+         イレージャコーディングプールの場合、配置グループの数とイレージャコードプロファイルを指定します。カスタムプロファイルを追加するには、プラス［+］記号をクリックして、プロファイル名、データ、コーディングチャンク、およびルールセットの障害ドメインを指定します。
+        </para>
+       </step>
+      </substeps>
+     </step>
+     <step>
+      <para>
+       <guimenu>Create (作成)</guimenu>をクリックして確認します。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.minions">
+   <title>ノードの一覧</title>
+   <para>
+    クラスタで利用可能なノードのリストを表示するには、メインメニューから<guimenu>Nodes (ノード)</guimenu>をクリックします。
+   </para>
+   <figure>
+    <title>ノードのリスト</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_minion.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_minion.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    各ノードは、そのホスト名、パブリックIPアドレス、所属先のクラスタID、ノードの役割(たとえば、「admin」、「storage」、または「master」)、および鍵の受領状態によって表されます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.nfs">
+   <title>NFS Ganeshaの管理</title>
+   <tip>
+    <title>NFS Ganeshaについての詳細</title>
+    <para>
+     NFS Ganeshaの全般的な情報については、<xref linkend="cha.ceph.nfsganesha"/>を参照してください。
+    </para>
+   </tip>
+   <para>
+    利用可能なすべてのNFSエクスポートを一覧にするには、メインメニューから<guimenu>NFS</guimenu>をクリックします。
+   </para>
+   <para>
+    各エクスポートのディレクトリ、ホスト名、状態、ストレージバックエンドのタイプ、およびアクセスタイプがリストに表示されます。
+   </para>
+   <figure>
+    <title>NFSエクスポートのリスト</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_nfs.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_nfs.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    NFSエクスポートの詳細を表示するには、左端の列にあるチェックボックスをオンにします。
+   </para>
+   <figure>
+    <title>NFSエクスポートの詳細</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_nfs_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_nfs_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <tip>
+    <title>NFSマウントコマンド</title>
+    <para>
+     エクスポートの詳細ビューの下部にはマウントコマンドがあり、これを使用すると、関連するNFSエクスポートをクライアントマシンから簡単にマウントできます。
+    </para>
+   </tip>
+   <sect3>
+    <title>NFSエクスポートの追加</title>
+    <para>
+     新しいNFSエクスポートを追加するには、エクスポートテーブルの左上で<guimenu>Add (追加)</guimenu>をクリックして、必要な情報を入力します。
+    </para>
+    <figure>
+     <title>新しいNFSエクスポートの追加</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_nfs_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_nfs_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       NFSエクスポートのサーバホストを選択します。
+      </para>
+     </step>
+     <step>
+      <para>
+       ストレージバックエンドを選択します。<guimenu>CephFS</guimenu>または<guimenu>Object Gateway</guimenu>のいずれかを選択します。
+      </para>
+     </step>
+     <step>
+      <para>
+       NFSエクスポートのディレクトリパスを入力します。指定したディレクトリがサーバ上に存在しない場合、新しく作成されます。
+      </para>
+     </step>
+     <step>
+      <para>
+       他のNFS関連オプションを指定します。たとえば、サポートされるNFSプロトコルのバージョン、アクセスタイプ、squash (ルート権限無効化)、またはトランスポートプロトコルなどです。
+      </para>
+     </step>
+     <step>
+      <para>
+       アクセスを特定のクライアントだけに制限する必要がある場合、<guimenu>Add clients (クライアントの追加)</guimenu>をクリックして、クライアントのIPアドレスと共に、アクセスタイプとsquash (ルート権限無効化)オプションを指定します。
+      </para>
+     </step>
+     <step>
+      <para>
+       <guimenu>Submit (送信)</guimenu>をクリックして確認します。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>NFSエクスポートのクローン作成と削除</title>
+    <para>
+     1つのエクスポートまたは複数のエクスポートのグループを削除するには、左端の列にあるチェックボックスをオンにして、エクスポートテーブルの左上で<guimenu>Delete (削除)</guimenu>を選択します。
+    </para>
+    <para>
+     同様に、<guimenu>Clone (クローンの作成)</guimenu>を選択して、有効なゲートウェイのクローンを作成することもできます。
+    </para>
+   </sect3>
+   <sect3>
+    <title>NFSエクスポートの編集</title>
+    <para>
+     既存のエクスポートを編集するには、エクスポートテーブルでエクスポートの名前をクリックするか、該当するチェックボックスをオンにして、エクスポートテーブルの左上で<guimenu>Edit (編集)</guimenu>をクリックします。
+    </para>
+    <para>
+     その後、NFSエクスポートのすべての詳細を調整できます。
+    </para>
+    <figure>
+     <title>NFSエクスポートの編集</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_nfs_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_nfs_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.iscsi">
+   <title>iSCSI Gatewayの管理</title>
+   <tip>
+    <title>iSCSI Gatewayについての詳細</title>
+    <para>
+     iSCSIの全般的な情報については、<xref linkend="cha.ceph.as.iscsi"/>および<xref linkend="cha.ceph.iscsi"/>を参照してください。
+    </para>
+   </tip>
+   <para>
+    利用可能なすべてのゲートウェイを一覧にするには、メインメニューから<guimenu>iSCSI</guimenu>をクリックします。
+   </para>
+   <para>
+    各ゲートウェイのターゲット、状態、および関連するポータルとRBDイメージがリストに表示されます。
+   </para>
+   <figure>
+    <title>iSCSI Gatewayのリスト</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_igws.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_igws.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    ゲートウェイの詳細を表示するには、左端の列にあるチェックボックスをオンにします。
+   </para>
+   <figure>
+    <title>ゲートウェイの詳細</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_igws_status.png" width="40%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_igws_status.png" width="40%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3>
+    <title>iSCSI Gatewayの追加</title>
+    <para>
+     新しいiSCSI Gatewayを追加するには、ゲートウェイテーブルの左上で<guimenu>Add (追加)</guimenu>をクリックして、必要な情報を入力します。
+    </para>
+    <figure>
+     <title>新しいiSCSI Gatewayの追加</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_igws_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_igws_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       新しいゲートウェイのターゲットアドレスを入力します。
+      </para>
+     </step>
+     <step>
+      <para>
+       <guimenu>Add portal (ポータルの追加)</guimenu>をクリックして、リストから1つまたは複数のiSCSIポータルを選択します。
+      </para>
+     </step>
+     <step>
+      <para>
+       <guimenu>Add image (イメージの追加)</guimenu>をクリックして、ゲートウェイのRBDイメージを1つまたは複数選択します。
+      </para>
+     </step>
+     <step>
+      <para>
+       認証を使用してゲートウェイにアクセスする必要がある場合は、<guimenu>Authentication (認証)</guimenu>チェックボックスをオンにして資格情報を入力します。<guimenu>Mutual authentication (相互認証)</guimenu>および<guimenu>Discovery authentication (ディスカバリ認証)</guimenu>を有効にすると、より高度な認証オプションが表示されます。
+      </para>
+     </step>
+     <step>
+      <para>
+       <guimenu>Submit (送信)</guimenu>をクリックして確認します。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>iSCSI Gatewayの編集</title>
+    <para>
+     既存のiSCSI Gatewayを編集するには、ゲートウェイテーブルでゲートウェイの名前をクリックするか、該当するチェックボックスをオンにして、ゲートウェイテーブルの左上で<guimenu>Edit (編集)</guimenu>をクリックします。
+    </para>
+    <para>
+     その後、iSCSIターゲットの追加、ポータルの追加または削除、および関連するRBDイメージの追加または削除を行うことができます。ゲートウェイの認証情報を調整することもできます。
+    </para>
+   </sect3>
+   <sect3>
+    <title>iSCSI Gatewayのクローン作成と削除</title>
+    <para>
+     1つのゲートウェイまたは複数のゲートウェイのグループを削除するには、左端の列にあるチェックボックスをオンにして、ゲートウェイテーブルの左上で<guimenu>Delete (削除)</guimenu>を選択します。
+    </para>
+    <para>
+     同様に、<guimenu>Clone (クローンの作成)</guimenu>を選択して、有効なゲートウェイのクローンを作成することもできます。
+    </para>
+   </sect3>
+   <sect3>
+    <title>iSCSI Gatewayの起動と停止</title>
+    <para>
+     すべてのゲートウェイを起動するには、ゲートウェイテーブルの左上で<guimenu>Start all (すべて起動)</guimenu>を選択します。すべてのゲートウェイを停止するには、<guimenu>Stop all (すべて停止)</guimenu>を選択します。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph.oa.crushmap">
+   <title>クラスタのCRUSHマップの表示</title>
+   <para>
+    クラスタのCRUSHマップを表示するには、メインメニューから<guimenu>CRUSH Map (CRUSHマップ)</guimenu>をクリックします。
+   </para>
+   <figure>
+    <title>CRUSHマップ</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_crush.png" width="60%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_crush.png" width="60%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    <guimenu>Physical setup (物理セットアップ)</guimenu>ペインで、CRUSHマップに記述されているクラスタの構造を参照できます。
+   </para>
+   <para>
+    <guimenu>Replication rules (レプリケーションルール)</guimenu>ペインで、<guimenu>Content (内容)</guimenu>ドロップダウンボックスからルールセットを1つ選択した後、個々のルールセットを参照できます。
+   </para>
+   <figure>
+    <title>レプリケーションルール</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_crush_rulesets.png" width="60%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_crush_rulesets.png" width="60%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+
+  <sect2 xml:id="oa.webui.rgw_users">
+   <title>Object Gatewayのユーザとバケットの管理</title>
+   <tip>
+    <title>Object Gatewayについての詳細</title>
+    <para>
+     Object Gatewayの全般的な情報については、<xref linkend="cha.ceph.gw"/>を参照してください。
+    </para>
+   </tip>
+   <para>
+    Object Gatewayユーザを一覧にするには、メインメニューから<menuchoice><guimenu>Object Gateway</guimenu><guimenu>Users (ユーザ)</guimenu></menuchoice>を選択します。
+   </para>
+   <para>
+    各ユーザのID、表示名、電子メールアドレス、ユーザが一時停止されているかどうか、およびユーザのバケットの最大数がリストに表示されます。
+   </para>
+   <figure>
+    <title>Object Gatewayユーザのリスト</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="oa_rgw_users_list.png" width="90%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="oa_rgw_users_list.png" width="90%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="oa.rgw_user.add">
+    <title>新しいObject Gatewayユーザの追加</title>
+    <para>
+     新しいObject Gatewayユーザを追加するには、ユーザテーブルの左上で<guimenu>Add (追加)</guimenu>をクリックして、関連する情報を入力します。
+    </para>
+    <tip>
+     <title>詳細情報</title>
+     <para>
+      Object Gatewayのユーザアカウントの詳細については、<xref linkend="s3.swift.accounts.managment"/>を参照してください。
+     </para>
+    </tip>
+    <figure>
+     <title>新しいObject Gatewayユーザの追加</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_rgw_users_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_rgw_users_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <procedure>
+     <step>
+      <para>
+       ユーザ名、フルネーム、およびオプションで電子メールアドレスとユーザのバケットの最大数を入力します。
+      </para>
+     </step>
+     <step>
+      <para>
+       ユーザを初期状態で一時停止する必要がある場合、<guimenu>Suspended (一時停止)</guimenu>チェックボックスをオンにします。
+      </para>
+     </step>
+     <step>
+      <para>
+       S3認証用のアクセスキーと秘密鍵を指定します。openATTICでキーを生成する場合は、<guimenu>Generate key (キーの生成)</guimenu>をオンにします。
+      </para>
+     </step>
+     <step>
+      <para>
+       <guimenu>User quota (ユーザクォータ)</guimenu>セクションで、現在のユーザのクォータ制限を設定します。
+      </para>
+      <para>
+       ユーザクォータ制限を有効にするには、<guimenu>Enabled (有効)</guimenu>をオンにします。<guimenu>Maximum size (最大サイズ)</guimenu>で、クラスタ内でユーザが使用できるディスク領域の最大サイズを指定できます。サイズ制限を設定しない場合は、<guimenu>Unlimited size (サイズ無制限)</guimenu>をオンにできます。
+      </para>
+      <para>
+       同様に、<guimenu>Maximum objects (最大オブジェクト数)</guimenu>で、ユーザがクラスタストレージに保存できる最大オブジェクト数を指定します。ユーザがいくつでもオブジェクトを保存できる場合は、<guimenu>Unlimited objects (オブジェクト数無制限)</guimenu>を指定します。
+      </para>
+      <figure>
+       <title>ユーザクォータ</title>
+       <mediaobject>
+        <imageobject role="fo">
+         <imagedata fileref="oa_rgw_userquota.png" width="70%" format="PNG"/>
+        </imageobject>
+        <imageobject role="html">
+         <imagedata fileref="oa_rgw_userquota.png" width="70%" format="PNG"/>
+        </imageobject>
+       </mediaobject>
+      </figure>
+     </step>
+     <step>
+      <para>
+       <guimenu>Bucket Quota (バケットクォータ)</guimenu>セクションで、現在のユーザのバケットクォータ制限を設定します。
+      </para>
+      <figure>
+       <title>バケットクォータ</title>
+       <mediaobject>
+        <imageobject role="fo">
+         <imagedata fileref="oa_rgw_bucketquota.png" width="70%" format="PNG"/>
+        </imageobject>
+        <imageobject role="html">
+         <imagedata fileref="oa_rgw_bucketquota.png" width="70%" format="PNG"/>
+        </imageobject>
+       </mediaobject>
+      </figure>
+     </step>
+     <step>
+      <para>
+       <guimenu>Submit (送信)</guimenu>をクリックして確認します。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3>
+    <title>Object Gatewayユーザの削除</title>
+    <para>
+     1人以上のObject Gatewayユーザを削除するには、左端の列にあるチェックボックスをオンにして、ユーザテーブルの左上で<guimenu>Delete (削除)</guimenu>を選択します。
+    </para>
+   </sect3>
+   <sect3 xml:id="oa.user.edit">
+    <title>Object Gatewayユーザの編集</title>
+    <para>
+     1人のObject Gatewayユーザのユーザ情報を編集するには、左端の列にあるチェックボックスをオンにして、ユーザテーブルの左上で<guimenu>Edit (編集)</guimenu>を選択するか、ユーザのIDをクリックします。<xref linkend="oa.rgw_user.add"/>でユーザを追加したときに入力した情報のほかに、次の追加の情報を変更できます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>サブユーザ</term>
+      <listitem>
+       <para>
+        現在編集中のユーザのサブユーザを追加、削除、または編集します。
+       </para>
+       <figure>
+        <title>サブユーザの追加</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_subuser_add.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_subuser_add.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>キー</term>
+      <listitem>
+       <para>
+        現在編集中のユーザのアクセスキーと秘密鍵を追加、削除、または表示します。
+       </para>
+       <para>
+        現在編集中のユーザのS3キーを追加したり、そのサブユーザのSwiftキーを表示したりできます。
+       </para>
+       <figure>
+        <title>S3キーの表示</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_user_s3key_edit.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_user_s3key_edit.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ケーパビリティ</term>
+      <listitem>
+       <para>
+        ユーザのケーパビリティを追加または削除します。ケーパビリティは、<guimenu>buckets (バケット)</guimenu>、<guimenu>zone (ゾーン)</guimenu>、<guimenu>users (ユーザ)</guimenu>、<guimenu>metadata (メタデータ)</guimenu>、および<guimenu>usage (使用量)</guimenu>に適用されます。各ケーパビリティの値は、［read (読み込み)］または［write (書き込み)］、あるいは［*］ (読み込みと書き込みの特権の場合)にできます。
+       </para>
+       <figure>
+        <title>ケーパビリティ</title>
+        <mediaobject>
+         <imageobject role="fo">
+          <imagedata fileref="oa_rgw_user_capabs.png" width="70%" format="PNG"/>
+         </imageobject>
+         <imageobject role="html">
+          <imagedata fileref="oa_rgw_user_capabs.png" width="70%" format="PNG"/>
+         </imageobject>
+        </mediaobject>
+       </figure>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.list">
+    <title>Object Gatewayユーザのバケットの一覧</title>
+    <tip>
+     <para>
+      バケットは、データオブジェクトを保存するためのメカニズムです。1つのユーザアカウントが複数のバケットを持つことができますが、各バケット名は固有である必要があります。「バケット」という用語は通常、Amazon S3 API内で使用されるのに対し、「コンテナ」という用語はOpenStack Swift APIのコンテキストで使用されます。
+     </para>
+    </tip>
+    <para>
+     利用可能なすべてのObject Gatewayのバケットを一覧にするには、<menuchoice><guimenu>Object Gateway</guimenu><guimenu>Buckets (バケット)</guimenu></menuchoice>をクリックします。
+    </para>
+    <figure>
+     <title>Object Gatewayのバケット</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="os_ogw_bucket_list.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="os_ogw_bucket_list.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.add">
+    <title>Object Gatewayユーザのバケットの追加</title>
+    <para>
+     新しいバケットを追加するには、バケットテーブルの左上で<guimenu>Add (追加)</guimenu>をクリックして、新しいバケットの名前と、関連するObject Gatewayユーザを入力します。<guimenu>Submit (送信)</guimenu>をクリックして確認します。
+    </para>
+    <figure>
+     <title>新しいバケットの追加</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_add.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_add.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.view">
+    <title>バケットの詳細の表示</title>
+    <para>
+     Object Gatewayのバケットの詳細を表示するには、バケットテーブルの左端の列にあるチェックボックスをオンにします。
+    </para>
+    <figure>
+     <title>バケットの詳細</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_view.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_view.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.edit">
+    <title>バケットの編集</title>
+    <para>
+     バケットを編集するには、左端の列にあるチェックボックスをオンにして、バケットテーブルの左上で<guimenu>Edit (編集)</guimenu>を選択するか、バケットの名前をクリックします。
+    </para>
+    <figure>
+     <title>Object Gatewayのバケットの編集</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_bucket_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_bucket_edit.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     編集画面で、バケットが属するユーザを変更できます。
+    </para>
+   </sect3>
+   <sect3 xml:id="oa.ogw_bucket.delete">
+    <title>バケットの削除</title>
+    <para>
+     1つまたは複数のObject Gatewayのバケットを削除するには、バケットテーブルの左端の列にあるチェックボックスをオンにして、テーブルの左上で<guimenu>Delete (削除)</guimenu>を選択します。
+    </para>
+    <figure>
+     <title>バケットの削除</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="oa_ogw_buckets_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="oa_ogw_buckets_delete.png" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     削除を確認するには、<guimenu>Delete buckets (バケットの削除)</guimenu>ポップアップウィンドウで「yes」と入力して、<guimenu>Delete (削除)</guimenu>をクリックします。
+    </para>
+    <warning>
+     <title>削除は慎重に</title>
+     <para>
+      Object Gatewayのバケットを削除する場合、バケットが実際に使用中かどうか(たとえば、そのバケットがNFS GaneshaやS3ストレージバックエンドによって使用中かどうかなど)は現在のところ検証されません。
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

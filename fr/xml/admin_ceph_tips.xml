@@ -1,0 +1,670 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tips.xml" version="5.0" xml:id="storage.tips">
+ <title>Conseils et astuces</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:translation>oui</dm:translation>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Ce chapitre fournit des informations pour vous aider à améliorer les performances de votre grappe Ceph et il fournit des conseils sur la configuration de la grappe.
+ </para>
+ <sect1 xml:id="tips.scrubbing">
+  <title>Réglage du nettoyage</title>
+
+  <para>
+   Par défaut, Ceph effectue un nettoyage léger (pour plus de détails, voir <xref linkend="scrubbing"/>), un nettoyage quotidien et un nettoyage hebdomadaire approfondi. Le nettoyage léger (<emphasis>Light</emphasis>) examine la taille des objets et les sommes de contrôle pour s'assurer que les groupes de placement stockent les mêmes données d'objet. Le nettoyage approfondi (<emphasis>Deep</emphasis>) compare le contenu d'un objet à celui de ses répliques pour s'assurer que les contenus réels sont identiques. Le coût de la vérification de l'intégrité des données est une charge d'E/S accrue sur la grappe pendant la procédure de nettoyage.
+  </para>
+
+  <para>
+   Les paramètres par défaut permettent aux OSD de Ceph de lancer le nettoyage à des moments inappropriés, par exemple pendant les périodes de charges importantes. Les clients peuvent rencontrer une latence et des performances médiocres lorsque les opérations de nettoyage sont en conflit avec leurs opérations. Ceph fournit plusieurs paramètres de nettoyage qui peuvent limiter le nettoyage aux périodes pendant lesquelles les charges sont plus faibles ou pendant les heures creuses.
+  </para>
+
+  <para>
+   Si la grappe subit de fortes charges pendant la journée et de faibles charges tard dans la nuit, envisagez de programmer le nettoyage uniquement pendant la nuit, par exemple de 23 h à 6 h :
+  </para>
+
+<screen>
+[osd]
+osd_scrub_begin_hour = 23
+osd_scrub_end_hour = 6
+</screen>
+
+  <para>
+   Si la restriction horaire n'est pas une méthode efficace pour déterminer une planification de nettoyage, vous pouvez utiliser l'option <option>osd_scrub_load_threshold</option>. La valeur par défaut est 0,5, mais elle peut être modifiée pour les conditions de faible charge :
+  </para>
+
+<screen>
+[osd]
+osd_scrub_load_threshold = 0.25
+</screen>
+ </sect1>
+ <sect1 xml:id="tips.stopping_osd_without_rebalancing">
+  <title>Arrêt des OSD sans rééquilibrage</title>
+
+  <para>
+   Vous devrez peut-être arrêter périodiquement les OSD pour des travaux de maintenance. Si vous ne souhaitez pas que CRUSH rééquilibre automatiquement la grappe afin d'éviter d'énormes transferts de données, définissez-la sur <literal>noout</literal> préalablement :
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd set noout
+</screen>
+
+  <para>
+   Lorsque la grappe est définie sur <literal>noout</literal>, vous pouvez commencer à arrêter les OSD dans le domaine en échec nécessitant un travail de maintenance :
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl stop ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Pour plus d'informations, reportez-vous à la <xref linkend="ceph.operating.services.individual"/>.
+  </para>
+
+  <para>
+   Une fois la maintenance terminée, redémarrez les OSD :
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl start ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Une fois les services OSD démarrés, désinstallez la grappe de <literal>noout</literal> :
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd unset noout
+</screen>
+ </sect1>
+ <sect1 xml:id="Cluster_Time_Setting">
+  <title>Synchronisation horaire des noeuds</title>
+
+  <para>
+   Ceph nécessite une synchronisation horaire précise entre des noeuds particuliers. Vous devez configurer un noeud avec votre propre serveur NTP. Même si vous pouvez associer toutes les instances ntpd à un serveur horaire public distant, cette approche n'est pas recommandée avec Ceph. Avec une telle configuration, chaque noeud de la grappe a son propre daemon NTP qui communique continuellement sur Internet avec un ensemble de trois ou quatre serveurs horaires, qui sont tous assez éloignés. Cette solution introduit une grande variabilité de latence qui rend difficile voire impossible le maintien de l'écart des horloges à moins de 0,05 seconde (ce qui est requis par les moniteurs Ceph).
+  </para>
+
+  <para>
+   Par conséquent, utilisez une seule machine comme serveur NTP pour l'ensemble de la grappe. Votre instance ntpd du serveur NTP peut alors pointer vers le serveur NTP distant (public) ou elle peut posséder sa propre source de temps. Les instances ntpd sur tous les noeuds sont ensuite dirigées vers ce serveur local. Une telle solution présente plusieurs avantages, tels que l'élimination du trafic réseau inutile et des différences entre horloges, ce qui réduit la charge sur les serveurs NTP publics. Pour plus de détails sur la configuration du serveur NTP, reportez-vous au manuel <link xlink:href="https://www.suse.com/documentation/sled11/book_sle_admin/data/cha_netz_xntp.html">SUSE Linux Enterprise Server Administration Guide</link> (Guide d'administration de SUSE Linux Enterprise Server).
+  </para>
+
+  <para>
+   Ensuite, pour régler l'heure sur votre grappe, procédez comme suit :
+  </para>
+
+  <important>
+   <title>réglage de l'heure</title>
+   <para>
+    Il peut arriver que vous deviez reculer l'horloge, par exemple, lors du passage de l'heure d'été à l'heure d'hiver. Il est déconseillé de reculer l'horloge sur une période supérieure à celle de l'arrêt de la grappe. Avancer l'horloge ne pose pas de problème.
+   </para>
+  </important>
+
+  <procedure>
+   <title>Synchronisation horaire sur la grappe</title>
+   <step>
+    <para>
+     Arrêtez tous les clients accédant à la grappe Ceph, en particulier ceux qui utilisent iSCSI.
+    </para>
+   </step>
+   <step>
+    <para>
+     Arrêtez votre grappe Ceph. Sur chaque noeud, exécutez :
+    </para>
+<screen>systemctl stop ceph.target</screen>
+    <note>
+     <para>
+      Si vous utilisez Ceph et SUSE OpenStack Cloud, arrêtez également celui-ci.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Vérifiez que votre serveur NTP est correctement configuré : tous les daemons ntpd récupèrent leur temps depuis une source ou des sources sur le réseau local.
+    </para>
+   </step>
+   <step>
+    <para>
+     Réglez l'heure correcte sur votre serveur NTP.
+    </para>
+   </step>
+   <step>
+    <para>
+     Vérifiez que NTP est en cours d'exécution et fonctionne correctement. Sur tous les noeuds, exécutez :
+    </para>
+<screen>status ntpd.service</screen>
+    <para>
+     ou
+    </para>
+<screen>ntpq -p</screen>
+   </step>
+   <step>
+    <para>
+     Démarrez tous les noeuds de surveillance et vérifiez qu'il n'y a pas de décalage d'horloge :
+    </para>
+<screen>systemctl start <replaceable>target</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     Démarrez tous les noeuds OSD.
+    </para>
+   </step>
+   <step>
+    <para>
+     Démarrez les autres services Ceph.
+    </para>
+   </step>
+   <step>
+    <para>
+     Démarrez Cloud SUSE OpenStack si ce produit est installé.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="storage.bp.cluster_mntc.unbalanced">
+  <title>Vérification de l'écriture de données déséquilibrée</title>
+
+  <para>
+   Lorsque les données sont écrites équitablement sur les OSD, la grappe est considérée comme équilibrée. Une <emphasis>pondération</emphasis> est assignée à chaque OSD au sein d'une grappe. La pondération est un nombre relatif qui indique à Ceph la quantité de données à écrire sur l'OSD associé. Plus la pondération est élevée, plus la quantité de données à écrire est importante. Si un OSD a une pondération nulle, aucune donnée n'est écrite dessus. Si la pondération d'un OSD est relativement élevée par rapport aux autres OSD, une grande partie des données est écrite dessus, ce qui déséquilibre la grappe.
+  </para>
+
+  <para>
+   Les grappes déséquilibrées ont des performances médiocres. Dans le cas où un OSD de pondération élevée tombe soudainement en panne, beaucoup de données doivent être déplacées vers d'autres OSD, ce qui ralentit également la grappe.
+  </para>
+
+  <para>
+   Pour éviter cela, vous devez vérifier régulièrement la quantité de données écrites sur les OSD. Si la quantité est comprise entre 30 et 50 % de la capacité d'un groupe d'OSD indiquée par un ensemble de règles donné, vous devez repondérer les OSD. Vérifiez les disques individuels, découvrez lesquels se remplissent plus rapidement que les autres (ou sont généralement plus lents) et diminuez leur pondération en conséquence. Il en va de même pour les OSD sur lesquels la quantité de données écrites est insuffisante : vous pouvez augmenter leur pondération de sorte que Ceph écrive plus de données sur ces OSD. Dans l'exemple suivant, la pondération de l'OSD possédant l'ID 13 passe de 3 à 3,05 :
+  </para>
+
+<screen>$ ceph osd tree | grep osd.13
+ 13  3                   osd.13  up  1
+
+ $ ceph osd crush reweight osd.13 3.05
+ reweighted item id 13 name 'osd.13' to 3.05 in crush map
+
+ $ ceph osd tree | grep osd.13
+ 13  3.05                osd.13  up  1</screen>
+
+  <para/>
+
+  <tip>
+   <title>repondération d'un OSD selon l'utilisation</title>
+   <para>
+    La commande <command>ceph osd reweight-by-utilization</command> <replaceable>seuil</replaceable> automatise le processus de réduction de la pondération des OSD qui sont trop sollicités. Par défaut, la commande réduit les pondérations sur les OSD qui atteignent 120 % de l'utilisation moyenne, mais si vous incluez le seuil, elle utilisera ce pourcentage à la place.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage.tips.ceph_btrfs_subvol">
+  <title>Volume secondaire Btrfs pour /var/lib/ceph</title>
+
+  <para>
+   Par défaut, SUSE Linux Enterprise est installé sur une partition Btrfs. Le répertoire <filename>/var/lib/ceph</filename> doit être exclu des instantanés et des retours à l'état initial Btrfs, particulièrement quand un MON est en cours d'exécution sur le noeud. L'exécuteur <literal>fs</literal> de DeepSea permet de configurer un volume secondaire pour ce chemin d'accès.
+  </para>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.req-new">
+   <title>Configuration requise pour une nouvelle installation</title>
+   <para>
+    Si vous configurez la grappe pour la première fois, les conditions suivantes doivent être réunies pour que vous puissiez utiliser l'exécuteur DeepSea :
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Salt et DeepSea sont correctement installés et fonctionnent conformément à la présente documentation.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      La commande <command>salt-run state.orch ceph.stage.0</command> a été appelée pour synchroniser tous les modules Salt et DeepSea avec les minions.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Ceph n'est pas encore installé, donc ceph.stage.3 n'a pas encore été exécuté et <filename>/var/lib/ceph</filename> n'existe pas encore.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.req-existing">
+   <title>Configuration requise pour une installation existante</title>
+   <para>
+    Si votre grappe est déjà installée, les conditions suivantes sont requises pour que l'exécuteur DeepSea puisse être installé :
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Les noeuds sont mis à niveau vers SUSE Enterprise Storage et la grappe est placée sous le contrôle de DeepSea.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      La grappe Ceph est opérationnelle et saine.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Le processus de mise à niveau a synchronisé les modules Salt et DeepSea sur tous les noeuds de minion.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.automatic">
+   <title>Configuration automatique</title>
+   <procedure>
+    <step>
+     <para>
+      Sur Salt Master, exécutez :
+     </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> state.orch ceph.migrate.subvolume</screen>
+     <para>
+      Sur les noeuds sans répertoire <filename>/var/lib/ceph</filename> existant, procédez ainsi pour un noeud à la fois :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        Créez <filename>/var/lib/ceph</filename> en tant que volume secondaire Btrfs <literal>@/var/lib/ceph</literal>.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Montez le nouveau volume secondaire et mettez à jour <filename>/etc/fstab</filename> en conséquence.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Désactivez la copie sur écriture pour <filename>/var/lib/ceph</filename>.
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Sur les noeuds dotés d'une installation Ceph existante, procédez ainsi pour un noeud à la fois :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        Mettez fin aux processus Ceph en cours d'exécution.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Démontez les OSD sur le noeud.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Créez le sous-volume Btrfs <literal>@/var/lib/ceph</literal> et migrez les données <filename>/var/lib/ceph</filename> existantes.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Montez le nouveau volume secondaire et mettez à jour <filename>/etc/fstab</filename> en conséquence.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Désactivez la copie sur écriture pour <filename>/var/lib/ceph/*</filename> en omettant <filename>/var/lib/ceph/osd/*</filename>.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Montez à nouveau les OSD.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Redémarrez les daemons Ceph.
+       </para>
+      </listitem>
+     </itemizedlist>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="storage.tips.ceph_btrfs_subvol.manually">
+   <title>Configuration manuelle</title>
+   <para>
+    Cette opération utilise le nouvel exécuteur <literal>fs</literal>.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Inspectez l'état de <filename>/var/lib/ceph</filename> sur tous les noeuds et imprimez les suggestions sur la façon de procéder :
+     </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> fs.inspect_var</screen>
+     <para>
+      Cela renvoie l'une des commandes suivantes :
+     </para>
+<screen>salt-run fs.create_var
+salt-run fs.migrate_var
+salt-run fs.correct_var_attrs</screen>
+    </step>
+    <step>
+     <para>
+      Exécutez la commande qui a été renvoyée à l'étape précédente.
+     </para>
+     <para>
+      Si une erreur se produit sur l'un des noeuds, l'exécution s'arrête également pour les autres noeuds, et l'exécuteur tente de revenir sur les modifications effectuées. Consultez les fichiers journaux sur les minions incriminés afin d'identifier le problème. L'exécuteur peut être relancé une fois le problème résolu.
+     </para>
+    </step>
+   </procedure>
+   <para>
+    La commande <command>salt-run fs.help</command> dresse la liste de toutes les commandes d'exécuteur et de module pour le module <literal>fs</literal>.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage.bp.srv_maint.fds_inc">
+  <title>Augmentation du nombre de descripteurs de fichier</title>
+
+  <para>
+   Pour les daemons OSD, les opérations de lecture/écriture sont essentielles au maintien de l'équilibre de la grappe Ceph. Ils ont souvent besoin que plusieurs fichiers soient ouverts pour lire et écrire en même temps. Au niveau du système d'exploitation, le nombre maximal de fichiers ouverts simultanément est appelé « nombre maximal de descripteurs de fichiers ».
+  </para>
+
+  <para>
+   Pour que les OSD ne manquent pas de descripteurs de fichiers, vous pouvez remplacer la valeur par défaut du système d'exploitation et indiquer la nouvelle valeur dans <filename> /etc/ceph/ceph.conf</filename>, par exemple :
+  </para>
+
+<screen>max_open_files = 131072</screen>
+
+  <para>
+   Après avoir modifié la valeur de <option>max_open_files</option>, vous devez redémarrer le service OSD sur le noeud Ceph correspondant.
+  </para>
+ </sect1>
+ <sect1 xml:id="bp.osd_on_exisitng_partitions">
+  <title>Utilisation des partitions existantes pour les OSD incluant des journaux OSD</title>
+
+  <important>
+   <para>
+    Cette section aborde un thème avancé qui concerne uniquement les experts en stockage et les développeurs. Il est généralement nécessaire lors de l'utilisation de journaux de format OSD non standard. Si la taille de la partition OSD est inférieure à 10 Go, sa pondération initiale est arrondie à 0, de sorte qu'aucune donnée n'y est placée. Vous devez donc augmenter sa pondération. Nous dégageons toute responsabilité relative à la saturation des journaux.
+   </para>
+  </important>
+
+  <para>
+   Si vous devez utiliser des partitions de disque existantes comme noeud OSD, il est nécessaire que le journal OSD et les partitions de données résident dans une table de partitions GPT.
+  </para>
+
+  <para>
+   Vous devez définir les types de partition appropriés sur les partitions OSD pour que <systemitem>udev</systemitem> les identifie correctement et définisse l'appartenance sur <literal>ceph:ceph</literal>.
+  </para>
+
+  <para>
+   Par exemple, pour définir le type de partition de la partition de journal <filename>/dev/vdb1</filename> et de la partition de données <filename>/dev/vdb2</filename>, exécutez la commande suivante :
+  </para>
+
+<screen>sudo sgdisk --typecode=1:45b0969e-9b03-4f30-b4c6-b4b80ceff106 /dev/vdb
+sudo sgdisk --typecode=2:4fbd7e29-9d25-41b8-afd0-062c0ceff05d /dev/vdb</screen>
+
+  <tip>
+   <para>
+    Les types de tables de partition Ceph sont répertoriés dans <filename>/usr/lib/udev/rules.d/95-ceph-osd.rules</filename> :
+   </para>
+<screen>cat /usr/lib/udev/rules.d/95-ceph-osd.rules
+# OSD_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="4fbd7e29-9d25-41b8-afd0-062c0ceff05d", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+
+# JOURNAL_UUID
+ACTION=="add", SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="partition", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER:="ceph", GROUP:="ceph", MODE:="660", \
+  RUN+="/usr/sbin/ceph-disk --log-stdout -v trigger /dev/$name"
+ACTION=="change", SUBSYSTEM=="block", \
+  ENV{ID_PART_ENTRY_TYPE}=="45b0969e-9b03-4f30-b4c6-b4b80ceff106", \
+  OWNER="ceph", GROUP="ceph", MODE="660"
+[...]</screen>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage.admin.integration">
+  <title>Intégration des logiciels de virtualisation</title>
+
+  <sect2 xml:id="storage.bp.integration.kvm">
+   <title>Stockage des disques KVM dans une grappe Ceph</title>
+   <para>
+    Vous pouvez créer une image disque pour une machine virtuelle pilotée par KVM, la stocker dans une réserve Ceph, éventuellement convertir le contenu d'une image existante vers cette réserve, puis exécuter la machine virtuelle avec <command>qemu-kvm</command> en utilisant l'image disque stockée dans la grappe. Pour plus d'informations, reportez-vous au <xref linkend="cha.ceph.kvm"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.integration.libvirt">
+   <title>Stockage des disques <systemitem class="library">libvirt</systemitem> dans une grappe Ceph</title>
+   <para>
+    Comme pour KVM (voir <xref linkend="storage.bp.integration.kvm"/>), vous pouvez utiliser Ceph afin de stocker des machines virtuelles basées sur <systemitem class="library">libvirt</systemitem>. L'avantage est que vous pouvez exécuter n'importe quelle solution de virtualisation prise en charge par <systemitem class="library">libvirt</systemitem>, telle que KVM, Xen ou LXC. Pour plus d'informations, reportez-vous au <xref linkend="cha.ceph.libvirt"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage.bp.integration.xen">
+   <title>Stockage des disques Xen dans une grappe Ceph</title>
+   <para>
+    Une façon d'utiliser Ceph pour le stockage des disques Xen est de s'appuyer sur <systemitem class="library">libvirt</systemitem> comme décrit dans le <xref linkend="cha.ceph.libvirt"/>.
+   </para>
+   <para>
+    Une autre option consiste à faire communiquer Xen directement avec le pilote du périphérique de traitement par blocs <systemitem>rbd</systemitem> :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Si vous ne disposez d'aucune image disque préparée pour Xen, créez-en une nouvelle :
+     </para>
+<screen>rbd create myimage --size 8000 --pool mypool</screen>
+    </step>
+    <step>
+     <para>
+      Dressez la liste des images dans la réserve <literal>monpool</literal> afin de vérifier si votre nouvelle image s'y trouve :
+     </para>
+<screen>rbd list mypool</screen>
+    </step>
+    <step>
+     <para>
+      Créez un périphérique de traitement par blocs en assignant l'image <literal>myimage</literal> au module du kernel <systemitem>rbd</systemitem> :
+     </para>
+<screen>sudo rbd map --pool mypool myimage</screen>
+     <tip>
+      <title>nom d'utilisateur et authentification</title>
+      <para>
+       Pour indiquer un nom d'utilisateur, utilisez <option>--id <replaceable>nom-utilisateur</replaceable></option>. En outre, si vous utilisez l'authentification <systemitem>cephx</systemitem>, vous devez également indiquer un secret. Il peut provenir d'un trousseau de clés ou d'un fichier contenant le secret :
+      </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+      <para>
+       ou
+      </para>
+<screen>sudo rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Dressez la liste de tous les périphériques assignés :
+     </para>
+<screen><command>rbd showmapped</command>
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    </step>
+    <step>
+     <para>
+      Vous pouvez à présent configurer Xen afin d'utiliser ce périphérique en tant que disque d'exécution d'une machine virtuelle. Vous pouvez par exemple ajouter la ligne suivante au fichier de configuration de domaine de type <command>xl</command> :
+     </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage.bp.net.firewall">
+  <title>Paramètres de pare-feu pour Ceph</title>
+
+  <warning>
+   <title>échec des phases DeepSea avec le pare-feu</title>
+   <para>
+    Les phases de déploiement DeepSea échouent lorsque le pare-feu est actif (et configuré). Pour réussir les phases, vous devez désactiver le pare-feu en exécutant
+   </para>
+<screen>
+<prompt>root@master # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+   <para>
+    ou définir l'option <option>FAIL_ON_WARNING</option> sur « False » dans le fichier <filename>/srv/pillar/ceph/stack/global.yml</filename> :
+   </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+  </warning>
+
+  <para>
+   Il est recommandé de protéger la communication de la grappe réseau avec SUSE Firewall. Vous pouvez modifier sa configuration en sélectionnant <menuchoice><guimenu>YaST</guimenu><guimenu>Sécurité et utilisateurs</guimenu><guimenu>Pare-feu</guimenu><guimenu>Services autorisés</guimenu></menuchoice>.
+  </para>
+
+  <para>
+   Veuillez trouver ci-après la liste des services Ceph des numéros des ports qui leur sont généralement associés :
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>Ceph Monitor</term>
+    <listitem>
+     <para>
+      Activez le service <guimenu>Ceph MON</guimenu> ou le port 6789 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Ceph OSD ou MDS</term>
+    <listitem>
+     <para>
+      Activez le service <guimenu>Ceph OSD/MDS</guimenu> ou les ports 6800-7300 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Passerelle iSCSI</term>
+    <listitem>
+     <para>
+      Ouvrez le port 3260 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Object Gateway</term>
+    <listitem>
+     <para>
+      Ouvrez le port sur lequel la communication Object Gateway est établie. Il est défini dans le fichier <filename>/etc/ceph.conf</filename> à la ligne commençant par <literal>rgw frontends = </literal>. La valeur par défaut est 80 pour HTTP et 443 pour HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NFS Ganesha</term>
+    <listitem>
+     <para>
+      Par défaut, NFS Ganesha utilise les ports 2049 (service NFS, TCP) et 875 (prise en charge de rquota, TCP). Reportez-vous à la <xref linkend="ganesha.nfsport"/> pour plus d'informations sur la modification des ports par défaut de Ganesha NFS.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Services basés sur Apache, tels qu'openATTIC, SMT ou SUSE Manager</term>
+    <listitem>
+     <para>
+      Ouvrez les ports 80 pour HTTP et 443 pour HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>SSH</term>
+    <listitem>
+     <para>
+      Ouvrez le port 22 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NTP</term>
+    <listitem>
+     <para>
+      Ouvrez le port 123 (UDP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Salt</term>
+    <listitem>
+     <para>
+      Ouvrez les ports 4505 et 4506 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Grafana</term>
+    <listitem>
+     <para>
+      Ouvrez le port 3000 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Prometheus</term>
+    <listitem>
+     <para>
+      Ouvrez le port 9100 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="storage.bp.network_test">
+  <title>Test des performances du réseau</title>
+
+  <para>
+   Pour tester les performances du réseau, l'exécuteur <literal>net</literal> de DeepSea offre les commandes suivantes.
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Un ping simple à tous les noeuds :
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.ping
+Succeeded: 9 addresses from 9 minions average rtt 1.35 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Un ping jumbo à tous les noeuds :
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.jumbo_ping
+Succeeded: 9 addresses from 9 minions average rtt 2.13 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Un test de bande passante :
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.iperf
+Fastest 2 hosts:
+    |_
+      - 192.168.58.106
+      - 2981 Mbits/sec
+    |_
+      - 192.168.58.107
+      - 2967 Mbits/sec
+Slowest 2 hosts:
+    |_
+      - 192.168.58.102
+      - 2857 Mbits/sec
+    |_
+      - 192.168.58.103
+      - 2842 Mbits/sec</screen>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="storage.bd.replacing_disk">
+  <title>Remplacement du disque de stockage</title>
+
+  <para>
+   Si vous souhaitez remplacer un disque de stockage dans une grappe Ceph, vous pouvez le faire pendant le fonctionnement de celle-ci. Le remplacement entraîne alors une augmentation temporaire du transfert de données.
+  </para>
+
+  <para>
+   Si le disque tombe en panne, Ceph doit réécrire au moins la même quantité de données que la capacité du disque défectueux. Si le disque est correctement évacué, puis rajouté pour éviter la perte de redondance pendant le processus, le volume de données réécrites est deux fois plus important. Si le nouveau disque a une taille différente du disque remplacé, certaines données supplémentaires sont redistribuées pour uniformiser l’utilisation de tous les OSD.
+  </para>
+ </sect1>
+</chapter>

@@ -1,0 +1,657 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<!-- Converted by suse-upgrade version 1.1 -->
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="cha.ceph.tiered">
+<!-- ============================================================== -->
+ <title>Cache Tiering</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>editing</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  A <emphasis>cache tier</emphasis> is an additional storage layer implemented
+  between the client and the standard storage. It is designed to speed up
+  access to pools stored on slow hard disks and erasure coded pools.
+ </para>
+ <para>
+  Typically cache tiering involves creating a pool of relatively fast/expensive
+  storage devices (for example, SSD drives) configured to act as a cache tier,
+  and a backing pool of slower and cheaper devices configured to act as a
+  storage tier.
+ </para>
+ <sect1>
+  <title>Tiered Storage Terminology</title>
+
+  <para>
+   Cache tiering recognizes two types of pools: a <emphasis>cache
+   pool</emphasis> and a <emphasis>storage pool</emphasis>.
+  </para>
+
+  <tip>
+   <para>
+    For general information on pools, see <xref linkend="ceph.pools"/>.
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>storage pool</term>
+    <listitem>
+     <para>
+      Either a standard replicated pool that stores several copies of an object
+      in the &ceph; storage cluster, or an erasure coded pool (see
+      <xref linkend="cha.ceph.erasure"/>).
+     </para>
+     <para>
+      The storage pool is sometimes referred to as 'backing' or 'cold' storage.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>cache pool</term>
+    <listitem>
+     <para>
+      A standard replicated pool stored on a relatively small but fast storage
+      device with their own ruleset in a &crushmap;.
+     </para>
+     <para>
+      The cache pool is also referred to as 'hot' storage.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.caution">
+  <title>Points to Consider</title>
+
+  <para>
+   Cache tiering may <emphasis>degrade</emphasis> the cluster performance for
+   specific workloads. The following points show some of its aspects that you
+   need to consider:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>Workload-dependent</emphasis>: Whether a cache will improve
+     performance is dependent on the workload. Because there is a cost
+     associated with moving objects into or out of the cache, it can be more
+     effective when most of the requests touch a small number of objects. The
+     cache pool should be large enough to capture the working set for your
+     workload to avoid thrashing.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Difficult to benchmark</emphasis>: Most performance benchmarks
+     may show low performance with cache tiering. The reason is that they
+     request a big set of objects, and it takes a long time for the cache to
+     'warm up'.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Possibly low performance</emphasis>: For workloads that are not
+     suitable for cache tiering, performance is often slower than a normal
+     replicated pool without cache tiering enabled.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis><systemitem>librados</systemitem> object enumeration</emphasis>:
+     If your application is using <systemitem>librados</systemitem> directly
+     and relies on object enumeration, cache tiering may not work as expected.
+     (This is not a problem for &rgw;, RBD, or &cephfs;.)
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1>
+  <title>When to Use Cache Tiering</title>
+
+  <para>
+   Consider using cache tiering in the following cases:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     You need to access erasure coded pools via &rbd; (RBD).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     You need to access erasure coded pools via iSCSI as it inherits the
+     limitations of RBD. For more information on iSCSI, refer to
+     <xref linkend="cha.ceph.iscsi"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     You have a limited number of high-performance storage and a large
+     collection of low-performance storage, and need to access the stored data
+     faster.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.cachemodes">
+  <title>Cache Modes</title>
+
+  <para>
+   The cache tiering agent handles the migration of data between the cache tier
+   and the backing storage tier. Administrators have the ability to configure
+   how this migration takes place. There are two main scenarios:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>write-back mode</term>
+    <listitem>
+     <para>
+      In write-back mode, &ceph; clients write data to the cache tier and
+      receive an ACK from the cache tier. In time, the data written to the
+      cache tier migrates to the storage tier and gets flushed from the cache
+      tier. Conceptually, the cache tier is overlaid 'in front' of the backing
+      storage tier. When a &ceph; client needs data that resides in the storage
+      tier, the cache tiering agent migrates the data to the cache tier on
+      read, then it is sent to the &ceph; client. Thereafter, the &ceph; client
+      can perform I/O using the cache tier, until the data becomes inactive.
+      This is ideal for mutable, data such as photo or video editing, or
+      transactional data.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>read-only mode</term>
+    <listitem>
+     <para>
+      In read-only mode, &ceph; clients write data directly to the backing
+      tier. On read, &ceph; copies the requested objects from the backing tier
+      to the cache tier. Stale objects get removed from the cache tier based on
+      the defined policy. This approach is ideal for immutable data such as
+      presenting pictures or videos on a social network, DNA data, or X-ray
+      imaging, because reading data from a cache pool that might contain
+      out-of-date data provides weak consistency. Do not use read-only mode for
+      mutable data.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="ses.tiered.hitset">
+  <title>Hit Set</title>
+
+  <sect2 xml:id="ses.tiered.hitset.overview">
+   <title>Overview</title>
+   <para>
+    <emphasis>Hit set</emphasis> parameters allow for tuning of <emphasis>cache
+    pools</emphasis>. Hit sets in &ceph; are usually bloom filters and provide
+    a memory-efficient way of tracking objects that are already in the cache
+    pool.
+   </para>
+   <para>
+    The hit set is a bit array that is used to store the result of a set of
+    hashing functions applied on object names. Initially, all bits are set to
+    <literal>0</literal>. When an object is added to the hit set, its name is
+    hashed and the result is mapped on different positions in the hit set,
+    where the value of the bit is then set to <literal>1</literal>.
+   </para>
+   <para>
+    To find out whether an object exists in the cache, the object name is
+    hashed again. If any bit is <literal>0</literal>, the object is definitely
+    not in the cache and needs to be retrieved from cold storage.
+    <remark role="fixme">How is the modification date retrieved in read mode?</remark>
+   </para>
+   <para>
+    It is possible that the results of different objects are stored in the same
+    location of the hit set. By chance, all bits can be <literal>1</literal>
+    without the object being in the cache. Therefore, hit sets working with a
+    bloom filter can only tell whether an object is definitely not in the cache
+    and needs to be retrieved from cold storage.
+   </para>
+   <para>
+    A cache pool can have more than one hit set tracking file access over time.
+    The setting <literal>hit_set_count</literal> defines how many hit sets are
+    being used, and <literal>hit_set_period</literal> defines for how long each
+    hit set has been used. After the period has expired, the next hit set is
+    used. If the number of hit sets is exhausted, the memory from the oldest
+    hit set is freed and a new hit set is created. The values of
+    <literal>hit_set_count</literal> and <literal>hit_set_period</literal>
+    multiplied by each other define the overall time frame in which access to
+    objects has been tracked.
+   </para>
+   <figure xml:id="ses.tiered.hitset.overview.bloom">
+    <title>Bloom Filter with 3 Stored Objects</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Compared to the number of hashed objects, a hit set based on a bloom filter
+    is very memory-efficient. Less than 10 bits are required to reduce the
+    false positive probability below 1%. The false positive probability can be
+    defined with <literal>hit_set_fpp</literal>. Based on the number of objects
+    in a placement group and the false positive probability &ceph;
+    automatically calculates the size of the hit set.
+   </para>
+   <para>
+    The required storage on the cache pool can be limited with
+    <literal>min_write_recency_for_promote</literal> and
+    <literal>min_read_recency_for_promote</literal>. If the value is set to
+    <literal>0</literal>, all objects are promoted to the cache pool as soon as
+    they are read or written and this persists until they are evicted. Any
+    value greater than <literal>0</literal> defines the number of hit sets
+    ordered by age that are searched for the object. If the object is found in
+    a hit set, it will be promoted to the cache pool.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ses.tiered.hitset.examples">
+   <title>Examples</title>
+   <sect3 xml:id="ses.tiered.hitset.examples.memory">
+    <title>Large Cache Pool and Small Memory</title>
+    <para>
+     If lots of storage and only a small amount of RAM is available, all
+     objects can be promoted to the cache pool as soon as they are accessed.
+     The hit set is kept small. The following is a set of example configuration
+     values:
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses.tiered.hitset.examples.storage">
+    <title>Small Cache Pool and Large Memory</title>
+    <para>
+     If a small amount of storage but a comparably large amount of memory is
+     available, the cache tier can be configured to promote a limited number of
+     objects into the cache pool. Twelve hit sets, of which each is used over a
+     period of 14,400 seconds, provide tracking for a total of 48 hours. If an
+     object has been accessed in the last 8 hours, it is promoted to the cache
+     pool. The set of example configuration values then is:
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ses.tiered.storage">
+  <title>Setting Up an Example Tiered Storage</title>
+
+  <para>
+   This section illustrates how to set up a fast SSD cache tier (hot storage)
+   in front of a standard hard disk (cold storage).
+  </para>
+
+  <tip>
+   <para>
+    The following example is for illustration purposes only and includes a
+    setup with one root and one rule for the SSD part residing on a single
+    &ceph; node.
+   </para>
+   <para>
+    In the production environment, cluster setups typically include more root
+    and rule entries for the hot storage, and also mixed nodes, with both SSDs
+    and SATA disks.
+   </para>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     Prepare a host machine with fast drives, such as SSDs. This cluster node
+     will act as a fast cache tier.
+    </para>
+   </step>
+   <step>
+    <para>
+     Turn the machine into a &ceph; node using &deepsea;. Install the software
+     and configure the host machine as described in
+     <xref linkend="salt.adding.nodes"/>. Let us assume that its name is
+     <replaceable>node-4</replaceable>. This node needs to have 4 OSD disks.
+    </para>
+    <para>
+     This may result in an entry like this in the CRUSH map:
+    </para>
+<screen>[...]
+host node-4 {
+   id -5  # do not change unnecessarily
+   # weight 0.012
+   alg straw
+   hash 0  # rjenkins1
+   item osd.6 weight 0.003
+   item osd.7 weight 0.003
+   item osd.8 weight 0.003
+   item osd.9 weight 0.003
+}
+[...]</screen>
+   </step>
+   <step>
+    <para>
+     Edit the CRUSH map for the hot storage pool mapped to the OSDs backed by
+     the fast SSD drives. Define a second hierarchy with a root node for the
+     SSDs (as 'root ssd'). Additionally, change the weight and a CRUSH rule for
+     the SSDs. For more information on CRUSH map, see
+     <link xlink:href="http://docs.ceph.com/docs/master/rados/operations/crush-map/"/>.
+    </para>
+    <para>
+     Edit the CRUSH map directly with command line tools such as
+     <command>getcrushmap</command> and <command>crushtool</command>:
+    </para>
+    <substeps performance="required">
+     <step>
+      <para>
+       Retrieve the current map and save it as <filename>c.map</filename>:
+      </para>
+<screen>&prompt.cephuser;sudo ceph osd getcrushmap -o c.map</screen>
+     </step>
+     <step>
+      <para>
+       Decompile <filename>c.map</filename> and save it as
+       <filename>c.txt</filename>:
+      </para>
+<screen>&prompt.cephuser;crushtool -d c.map -o c.txt</screen>
+     </step>
+     <step>
+      <para>
+       Edit <filename>c.txt</filename>:
+      </para>
+<screen>[...]
+host node-4 {
+        id -5  # do not change unnecessarily
+        # weight 4.000
+        alg straw
+        hash 0  # rjenkins1
+        item osd.6 weight 1.000
+        item osd.7 weight 1.000
+        item osd.8 weight 1.000
+        item osd.9 weight 1.000
+}
+root ssd {    # newly added root for the SSD hot-storage
+        id -6
+        alg straw
+        hash 0
+        item node-4 weight 4.00
+}
+rule ssd {
+        ruleset 4
+        type replicated
+        min_size 0
+        max_size 4
+        step take ssd
+        step chooseleaf firstn 0 type host
+        step emit
+}
+[...]</screen>
+     </step>
+     <step>
+      <para>
+       Compile the edited <filename>c.txt</filename> file and save it as
+       <filename>ssd.map</filename>:
+      </para>
+<screen>&prompt.cephuser;crushtool -c c.txt -o ssd.map</screen>
+     </step>
+     <step>
+      <para>
+       Finally, install <filename>ssd.map</filename> as the new CRUSH map:
+      </para>
+<screen>&prompt.cephuser;sudo ceph osd setcrushmap -i ssd.map</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     Create the hot storage pool to be used for cache tiering. Use the new
+     'ssd' rule for it:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool create hot-storage 100 100 replicated ssd</screen>
+   </step>
+   <step>
+    <para>
+     Create the cold storage pool using the default 'replicated_ruleset' rule:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+   </step>
+   <step>
+    <para>
+     Then, setting up a cache tier involves associating a backing storage pool
+     with a cache pool, in this case, cold storage (= storage pool) with hot
+     storage (= cache pool):
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd tier add cold-storage hot-storage</screen>
+   </step>
+   <step>
+    <para>
+     To set the cache mode to 'writeback', execute the following:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd tier cache-mode hot-storage writeback</screen>
+    <para>
+     For more information about cache modes, see
+     <xref linkend="sec.ceph.tiered.cachemodes"/>.
+    </para>
+    <para>
+     Writeback cache tiers overlay the backing storage tier, so they require
+     one additional step: you must direct all client traffic from the storage
+     pool to the cache pool. To direct client traffic directly to the cache
+     pool, execute the following, for example:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd tier set-overlay cold-storage hot-storage</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="cache.tier.configure">
+   <title>Configuring a Cache Tier</title>
+   <para>
+    There are several options you can use to configure cache tiers. Use the
+    following syntax:
+   </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+   <sect3>
+    <title>Target Size and Type</title>
+    <para>
+     The following steps describe how to configure a <emphasis>cache
+     pool</emphasis> with the values provided in
+     <xref linkend="ses.tiered.hitset.examples.storage"/>
+    </para>
+    <para>
+     &ceph;'s production cache tiers use a Bloom Filter for the
+     <option>hit_set_type</option>:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_type bloom</screen>
+    <para>
+     The <option>hit_set_count</option> and <option>hit_set_period</option>
+     define how much time each hit set should cover, and how many of such hit
+     sets to store.
+     <remark role="fixme">What are the numbers doing? They're without explanation. https://software.intel.com/en-us/blogs/2015/03/03/ceph-cache-tiering-introduction</remark>
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_count 12
+&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_period 14400
+&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes 1000000000000</screen>
+    <note>
+     <para>
+      A larger <option>hit_set_count</option> results in more RAM consumed by
+      the <systemitem class="process">ceph-osd</systemitem> process.
+     </para>
+    </note>
+    <para>
+     The <option>min_read_recency_for_promote</option> defines how many hit
+     sets to check for the existence of an object when handling a read
+     operation. The result of the check is used to decide whether to promote
+     the object asynchronously. Its value should be between 0 and the
+     <option>hit_set_count</option>. If set to 0, the object is always
+     promoted. If set to 1, the current hit set is checked. And if this object
+     is in the current hit set, it is promoted. Otherwise, it is not. For the
+     other values, the exact number of archive hit sets are checked. The object
+     is promoted if it is found in any of the most recent
+     <option>min_read_recency_for_promote</option> hit sets.
+    </para>
+    <para>
+     You can set a similar parameter,
+     <option>min_write_recency_for_promote</option>, for the write operation:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> min_read_recency_for_promote 2
+&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> min_write_recency_for_promote 2</screen>
+    <note>
+     <para>
+      The longer the period and the higher the
+      <option>min_read_recency_for_promote</option> and
+      <option>min_write_recency_for_promote</option> values, the more RAM the
+      <systemitem class="process">ceph-osd</systemitem> daemon consumes. In
+      particular, when the agent is active to flush or evict cache objects, all
+      <option>hit_set_count</option> hit sets are loaded into RAM.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Cache Sizing</title>
+    <para>
+     The cache tiering agent performs two main functions:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Flushing</term>
+      <listitem>
+       <para>
+        The agent identifies modified (dirty) objects and forwards them to the
+        storage pool for long-term storage.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Evicting</term>
+      <listitem>
+       <para>
+        The agent identifies objects that have not been modified (clean) and
+        evicts the least recently used among them from the cache.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <sect4 xml:id="cache.tier.config.absizing">
+     <title>Absolute Sizing</title>
+     <para>
+      The cache tiering agent can flush or evict objects based on the total
+      number of bytes or the total number of objects. To specify a maximum
+      number of bytes, execute the following:
+     </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+     <para>
+      To specify the maximum number of objects, execute the following:
+     </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+     <note>
+      <para>
+       &ceph; is not able to determine the size of a cache pool automatically,
+       so the configuration on the absolute size is required here. Otherwise,
+       flush and evict will not work. If you specify both limits, the cache
+       tiering agent will begin flushing or evicting when either threshold is
+       triggered.
+      </para>
+     </note>
+     <note>
+      <para>
+       All client requests will be blocked only when
+       <option>target_max_bytes</option> or <option>target_max_objects</option>
+       reached.
+      </para>
+     </note>
+    </sect4>
+    <sect4 xml:id="cache.tier.config.relsizing">
+     <title>Relative Sizing</title>
+     <para>
+      The cache tiering agent can flush or evict objects relative to the size
+      of the cache pool (specified by <option>target_max_bytes</option> or
+      <option>target_max_objects</option> in
+      <xref linkend="cache.tier.config.absizing"/>). When the cache pool
+      consists of a certain percentage of modified (dirty) objects, the cache
+      tiering agent will flush them to the storage pool. To set the
+      <option>cache_target_dirty_ratio</option>, execute the following:
+     </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+     <para>
+      For example, setting the value to 0.4 will begin flushing modified
+      (dirty) objects when they reach 40% of the cache pool's capacity:
+     </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+     <para>
+      When the dirty objects reach a certain percentage of the capacity, flush
+      them at a higher speed. Use
+      <option>cache_target_dirty_high_ratio</option>:
+     </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+     <para>
+      When the cache pool reaches a certain percentage of its capacity, the
+      cache tiering agent will evict objects to maintain free capacity. To set
+      the <option>cache_target_full_ratio</option>, execute the following:
+     </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+    </sect4>
+   </sect3>
+   <sect3>
+    <title>Cache Age</title>
+    <para>
+     You can specify the minimum age of a recently modified (dirty) object
+     before the cache tiering agent flushes it to the backing storage pool:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+    <para>
+     You can specify the minimum age of an object before it will be evicted
+     from the cache tier:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="ceph.tier.gmt_hitset">
+    <title>Use GMT for Hit Set</title>
+    <para>
+     Cache tier setups have a bloom filter called <emphasis>hit set</emphasis>.
+     The filter tests whether an object belongs to a set of either hot or cold
+     objects. The objects are added to the hit set using time stamps appended
+     to their names.
+    </para>
+    <para>
+     If cluster machines are placed in different time zones and the time stamps
+     are derived from the local time, objects in a hit set can have misleading
+     names consisting of future or past time stamps. In the worst case, objects
+     may not exist in the hit set at all.
+    </para>
+    <para>
+     To prevent this, the <option>use_gmt_hitset</option> defaults to '1' on a
+     newly created cache tier setups. This way, you force OSDs to use GMT
+     (Greenwich Mean Time) time stamps when creating the object names for the
+     hit set.
+    </para>
+    <warning>
+     <title>Leave the Default Value</title>
+     <para>
+      Do not touch the default value '1' of <option>use_gmt_hitset</option>. If
+      errors related to this option are not caused by your cluster setup, never
+      change it manually. Otherwise, the cluster behavior may become
+      unpredictable.
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

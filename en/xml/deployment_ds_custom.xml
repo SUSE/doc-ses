@@ -1,0 +1,537 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<chapter xmlns="http://docbook.org/ns/docbook"
+ xmlns:xi="http://www.w3.org/2001/XInclude"
+ xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0"
+ xml:id="ceph.deploy.ds.custom">
+ <title>Customizing the Default Configuration</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 5</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  You can change the default cluster configuration generated in Stage 2 (refer
+  to <xref linkend="deepsea.stage.description"/>). For example, you may need to
+  change network settings, or software that is installed on the &smaster; by
+  default installed. You can perform the former by modifying the pillar updated
+  after Stage 2, while the latter is usually done by creating a custom
+  <literal>sls</literal> file and adding it to the pillar. Details are
+  described in following sections.
+ </para>
+ <sect1 xml:id="using.customized.files">
+  <title>Using Customized Configuration Files</title>
+
+  <para>
+   This section lists several tasks that require adding/changing your own
+   <literal>sls</literal> files. Such a procedure is typically used when you
+   need to change the default deployment process.
+  </para>
+
+  <tip>
+   <title>Prefix Custom .sls Files</title>
+   <para>
+    Your custom .sls files belong to the same subdirectory as &deepsea;'s .sls
+    files. To prevent overwriting your .sls files with the possibly newly added
+    ones from the &deepsea; package, prefix their name with the
+    <filename>custom-</filename> string.
+   </para>
+  </tip>
+
+  <sect2>
+   <title>Disabling a Deployment Step</title>
+   <para>
+    If you address a specific task outside of the &deepsea; deployment process
+    and therefore need to skip it, create a 'no-operation' file following this
+    example:
+   </para>
+   <procedure>
+    <title>Disabling Time Synchronization</title>
+    <step>
+     <para>
+      Create <filename>/srv/salt/ceph/time/disabled.sls</filename> with the
+      following content and save it:
+     </para>
+<screen>disable time setting:
+test.nop</screen>
+    </step>
+    <step>
+     <para>
+      Edit <filename>/srv/pillar/ceph/stack/global.yml</filename>, add the
+      following line, and save it:
+     </para>
+<screen>time_init: disabled</screen>
+    </step>
+    <step>
+     <para>
+      Verify by refreshing the pillar and running the step:
+     </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> saltutil.pillar_refresh
+&prompt.smaster;salt 'admin.ceph' state.apply ceph.time
+admin.ceph:
+  Name: disable time setting - Function: test.nop - Result: Clean
+
+Summary for admin.ceph
+------------
+Succeeded: 1
+Failed:    0
+------------
+Total states run:     1</screen>
+     <note>
+      <title>Unique ID</title>
+      <para>
+       The task ID 'disable time setting' may be any message unique within an
+       <literal>sls</literal> file. Prevent ID collisions by specifying unique
+       descriptions.
+      </para>
+     </note>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="deepsea.replacing_step">
+   <title>Replacing a Deployment Step</title>
+   <para>
+    If you need to replace the default behavior of a specific step with a
+    custom one, create a custom <literal>sls</literal> file with replacement
+    content.
+   </para>
+   <para>
+    By default <filename>/srv/salt/ceph/pool/default.sls</filename> creates an
+    rbd image called 'demo'. In our example, we do not want this image to be
+    created, but we need two images: 'archive1' and 'archive2'.
+   </para>
+   <procedure>
+    <title>Replacing the <emphasis>demo</emphasis> rbd Image with Two Custom rbd Images</title>
+    <step>
+     <para>
+      Create <filename>/srv/salt/ceph/pool/custom.sls</filename> with the
+      following content and save it:
+     </para>
+<screen>wait:
+  module.run:
+    - name: wait.out
+    - kwargs:
+        'status': "HEALTH_ERR"<co xml:id="co.deepsea.replace.wait"/>
+    - fire_event: True
+
+archive1:
+  cmd.run:
+    - name: "rbd -p rbd create archive1 --size=1024"<co xml:id="co.deepsea.replace.rbd"/>
+    - unless: "rbd -p rbd ls | grep -q archive1$"
+    - fire_event: True
+
+archive2:
+  cmd.run:
+    - name: "rbd -p rbd create archive2 --size=768"
+    - unless: "rbd -p rbd ls | grep -q archive2$"
+    - fire_event: True</screen>
+     <calloutlist>
+      <callout arearefs="co.deepsea.replace.wait">
+       <para>
+        The <emphasis role="bold">wait</emphasis> module will pause until the
+        &ceph; cluster does not have a status of <literal>HEALTH_ERR</literal>.
+        In fresh installations, a &ceph; cluster may have this status until a
+        sufficient number of OSDs become available and the creation of pools
+        has completed.
+       </para>
+      </callout>
+      <callout arearefs="co.deepsea.replace.rbd">
+       <para>
+        The <command>rbd</command> command is not idempotent. If the same
+        creation command is re-run after the image exists, the &salt; state
+        will fail. The <emphasis role="bold">unless</emphasis> statement
+        prevents this.
+       </para>
+      </callout>
+     </calloutlist>
+    </step>
+    <step>
+     <para>
+      To call the newly created custom file instead of the default, you need to
+      edit <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>, add
+      the following line, and save it:
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      Verify by refreshing the pillar and running the step:
+     </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> saltutil.pillar_refresh
+&prompt.smaster;salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+   <note>
+    <title>Authorization</title>
+    <para>
+     The creation of pools or images requires sufficient authorization. The
+     <literal>admin.ceph</literal> minion has an admin keyring.
+    </para>
+   </note>
+   <tip>
+    <title>Alternative Way</title>
+    <para>
+     Another option is to change the variable in
+     <filename>/srv/pillar/ceph/stack/ceph/roles/master.yml</filename> instead.
+     Using this file will reduce the clutter of pillar data for other minions.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2>
+   <title>Modifying a Deployment Step</title>
+   <para>
+    Sometimes you may need a specific step to do some additional tasks. We do
+    not recommend modifying the related state file as it may complicate a
+    future upgrade. Instead, create a separate file to carry out the additional
+    tasks identical to what was described in
+    <xref linkend="deepsea.replacing_step"/>.
+   </para>
+   <para>
+    Name the new <literal>sls</literal> file descriptively. For example, if you
+    need to create two rbd images in addition to the demo image, name the file
+    <filename>archive.sls</filename>.
+   </para>
+   <procedure>
+    <title>Creating Two Additional rbd Images</title>
+    <step>
+     <para>
+      Create <filename>/srv/salt/ceph/pool/custom.sls</filename> with the
+      following content and save it:
+     </para>
+<screen>include:
+ - .archive
+ - .default</screen>
+     <tip>
+      <title>Include Precedence</title>
+      <para>
+       In this example, &salt; will create the <emphasis>archive</emphasis>
+       images and then create the <emphasis>demo</emphasis> image. The order
+       does not matter in this example. To change the order, reverse the lines
+       after the <literal>include:</literal> directive.
+      </para>
+      <para>
+       You can add the include line directly to
+       <filename>archive.sls</filename> and all the images will get created as
+       well. However, regardless of where the include line is placed, &salt;
+       processes the steps in the included file first. Although this behavior
+       can be overridden with <emphasis>requires</emphasis> and
+       <emphasis>order</emphasis> statements, a separate file that includes the
+       others guarantees the order and reduces the chances of confusion.
+      </para>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Edit <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>, add
+      the following line, and save it:
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      Verify by refreshing the pillar and running the step:
+     </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> saltutil.pillar_refresh
+&prompt.smaster;salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2>
+   <title>Modifying a Deployment Stage</title>
+   <para>
+    If you need to add a completely separate deployment step, create three new
+    files&mdash;an <literal>sls</literal> file that performs the command, an
+    orchestration file, and a custom file which aligns the new step with the
+    original deployment steps.
+   </para>
+   <para>
+    For example, if you need to run <command>logrotate</command> on all minions
+    as part of the preparation stage:
+   </para>
+   <para>
+    First create an <literal>sls</literal> file and include the
+    <command>logrotate</command> command.
+   </para>
+   <procedure>
+    <title>Running <command>logrotate</command> on all &sminion;s</title>
+    <step>
+     <para>
+      Create a directory such as <filename>/srv/salt/ceph/logrotate</filename>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Create <filename>/srv/salt/ceph/logrotate/init.sls</filename> with the
+      following content and save it:
+     </para>
+<screen>rotate logs:
+  cmd.run:
+    - name: "/usr/sbin/logrotate /etc/logrotate.conf"</screen>
+    </step>
+    <step>
+     <para>
+      Verify that the command works on a minion:
+     </para>
+<screen>&prompt.smaster;salt 'admin.ceph' state.apply ceph.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    Because the orchestration file needs to run before all other preparation
+    steps, add it to the <emphasis>Prep</emphasis> stage 0:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Create <filename>/srv/salt/ceph/stage/prep/logrotate.sls</filename> with
+      the following content and save it:
+     </para>
+<screen>logrotate:
+  salt.state:
+    - tgt: '*'
+    - sls: ceph.logrotate</screen>
+    </step>
+    <step>
+     <para>
+      Verify that the orchestration file works:
+     </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.prep.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    The last file is the custom one which includes the additional step with the
+    original steps:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Create <filename>/srv/salt/ceph/stage/prep/custom.sls</filename> with the
+      following content and save it:
+     </para>
+<screen>include:
+  - .logrotate
+  - .master
+  - .minion</screen>
+    </step>
+    <step>
+     <para>
+      Override the default behavior. Edit
+      <filename>/srv/pillar/ceph/stack/global.yml</filename>, add the following
+      line, and save the file:
+     </para>
+<screen>stage_prep: custom</screen>
+    </step>
+    <step>
+     <para>
+      Verify that Stage 0 works:
+     </para>
+<screen>&prompt.smaster;salt-run state.orch ceph.stage.0</screen>
+    </step>
+   </procedure>
+   <note>
+    <title>Why <filename>global.yml</filename>?</title>
+    <para>
+     The <filename>global.yml</filename> file is chosen over the
+     <filename>cluster.yml</filename> because during the
+     <emphasis>prep</emphasis> stage, no minion belongs to the &ceph; cluster
+     and has no access to any settings in <filename>cluster.yml</filename>.
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ds.disable.reboots">
+   <title>Disabling Updates and Reboots during Stage 0</title>
+   <para>
+    During Stage 0 (refer to <xref linkend="deepsea.stage.description" /> for
+    more information on &deepsea; stages). The &smaster; and &sminion;s may
+    reboot because newly updated packages, for example
+    <package>kernel</package>, require rebooting the system.
+   </para>
+   <para>
+    To prevent updating or rebooting cluster nodes during Stage 0, edit
+    <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename> and add the
+    <option>stage_prep_master</option> or <option>stage_prep_minion</option>
+    options, depending whether you need to modify the behavior of the
+    &smaster;, all &sminion;s, or all nodes.
+   </para>
+   <para>
+    Both options accept the following values:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>default-no-update-no-reboot</term>
+     <listitem>
+      <para>
+       Prevents the nodes form both updating their packages and rebooting.
+      </para>
+     </listitem>
+     </varlistentry>
+     <varlistentry>
+     <term>default-no-update-reboot</term>
+    <listitem>
+     <para>
+      Prevents the nodes from updating their packages, but reboots are allowed.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>default-update-no-reboot</term>
+    <listitem>
+     <para>
+      Prevents the nodes from rebooting, but allows updating their packages.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>default</term>
+    <listitem>
+     <para>
+      Allows both updating the nodes' packages, and rebooting them as well.
+     </para>
+    </listitem>
+   </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="discovered.configuration.modification">
+  <title>Modifying Discovered Configuration</title>
+
+  <para>
+   After you completed Stage 2, you may want to change the discovered
+   configuration. To view the current settings, run:
+  </para>
+
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> pillar.items</screen>
+
+  <para>
+   The output of the default configuration for a single minion is usually
+   similar to the following:
+  </para>
+
+<screen>----------
+    available_roles:
+        - admin
+        - mon
+        - storage
+        - mds
+        - igw
+        - rgw
+        - client-cephfs
+        - client-radosgw
+        - client-iscsi
+        - mds-nfs
+        - rgw-nfs
+        - master
+    cluster:
+        ceph
+    cluster_network:
+        172.16.22.0/24
+    fsid:
+        e08ec63c-8268-3f04-bcdb-614921e94342
+    master_minion:
+        admin.ceph
+    mon_host:
+        - 172.16.21.13
+        - 172.16.21.11
+        - 172.16.21.12
+    mon_initial_members:
+        - mon3
+        - mon1
+        - mon2
+    public_address:
+        172.16.21.11
+    public_network:
+        172.16.21.0/24
+    roles:
+        - admin
+        - mon
+        - mds
+    time_server:
+        admin.ceph
+    time_service:
+        ntp</screen>
+
+  <para>
+   The above mentioned settings are distributed across several configuration
+   files. The directory structure with these files is defined in the
+   <filename>/srv/pillar/ceph/stack/stack.cfg</filename> directory. The
+   following files usually describe your cluster:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/global.yml</filename> - the file affects
+     all minions in the &salt; cluster.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/cluster.yml</filename>
+     - the file affects all minions in the &ceph; cluster called
+     <literal>ceph</literal>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/roles/<replaceable>role</replaceable>.yml</filename>
+     - affects all minions that are assigned the specific role in the
+     <literal>ceph</literal> cluster.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>minions/<replaceable>minion
+     ID</replaceable>/yml</filename> - affects the individual minion.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>Overwriting Directories with Default Values</title>
+   <para>
+    There is a parallel directory tree that stores the default configuration
+    setup in <filename>/srv/pillar/ceph/stack/default</filename>. Do not change
+    values here, as they are overwritten.
+   </para>
+  </note>
+
+  <para>
+   The typical procedure for changing the collected configuration is the
+   following:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Find the location of the configuration item you need to change. For
+     example, if you need to change cluster related setting such as cluster
+     network, edit the file
+     <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Save the file.
+    </para>
+   </step>
+   <step>
+    <para>
+     Verify the changes by running:
+    </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> saltutil.pillar_refresh</screen>
+    <para>
+     and then
+    </para>
+<screen>&prompt.smaster;salt <replaceable>target</replaceable> pillar.items</screen>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

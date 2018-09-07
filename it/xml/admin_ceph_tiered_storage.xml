@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tiered_storage.xml" version="5.0" xml:id="cha.ceph.tiered">
+
+ <title>Suddivisione in livelli di cache</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>modifica</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>sì</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Un <emphasis>livello di cache</emphasis> è uno strato di memorizzazione aggiuntivo implementato tra il client e lo spazio di memorizzazione standard. È progettato per velocizzare l'accesso ai pool memorizzati su dischi rigidi lenti e ai pool con codice di cancellazione.
+ </para>
+ <para>
+  Di norma la suddivisione in livelli di cache prevede la creazione di un pool di dispositivi di memorizzazione relativamente veloci/costosi (ad esempio, le unità SSD) configurati in modo che fungano da livello di cache e un pool di supporto di dispositivi più lenti ed economici configurati per essere utilizzati come livello di memorizzazione.
+ </para>
+ <sect1>
+  <title>Terminologia della memorizzazione in livelli</title>
+
+  <para>
+   Nella suddivisione in livelli di cache vengono riconosciuti due tipi di pool: un <emphasis>pool di cache</emphasis> e un <emphasis>pool di memorizzazione</emphasis>.
+  </para>
+
+  <tip>
+   <para>
+    Per informazioni generali sui pool, vedere <xref linkend="ceph.pools"/>.
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>pool di memorizzazione</term>
+    <listitem>
+     <para>
+      Pool replicato standard in cui vengono memorizzate diverse copie di un oggetto nel cluster di memorizzazione Ceph o pool con codice di cancellazione (vedere <xref linkend="cha.ceph.erasure"/>).
+     </para>
+     <para>
+      Talvolta il pool di memorizzazione è denominato spazio di memorizzazione "di supporto" o "offline sicura".
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>pool di cache</term>
+    <listitem>
+     <para>
+      Pool replicato standard memorizzato in un dispositivo di memorizzazione relativamente piccolo ma veloce, con set di regole proprio in una mappa CRUSH.
+     </para>
+     <para>
+      Il pool di cache è denominato anche spazio di memorizzazione "ad accesso frequente".
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.caution">
+  <title>Aspetti da considerare</title>
+
+  <para>
+   Con la suddivisione in livelli di cache è possibile che le prestazioni vengano <emphasis>compromesse</emphasis> per workload specifici. Nei seguenti punti sono illustrati alcuni aspetti da considerare:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>Dipendenza dal workload</emphasis>: il miglioramento delle prestazioni di una cache dipende dal workload. Poiché lo spostamento di oggetti dentro e fuori la cache comporta dei costi, può essere più efficace quando la maggior parte delle richieste toccano un numero ridotto di oggetti. Il pool di cache deve essere sufficientemente grande per acquisire il working set per il workload in modo da evitare di andare in thrashing.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Difficoltà nel benchmark</emphasis>: la maggior parte dei benchmark delle prestazioni potrebbero indicare rallentamenti con la suddivisione in livelli di cache. Il motivo di tali rallentamenti è dovuto a richieste di set di oggetti di grandi dimensioni per i quali la cache impiega molto tempo per "riscaldarsi".
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Possibili prestazioni lente</emphasis>: per i workload inadatti alla suddivisione in livelli di cache, spesso le prestazioni sono più lente rispetto a un pool replicato normale in cui non è abilitata la suddivisione in livelli di cache.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis><systemitem>Enumerazione di oggetti</systemitem> librados</emphasis>: se l'applicazione utilizza direttamente <systemitem>librados</systemitem> e fa affidamento all'enumerazione di oggetti, è possibile che la suddivisione in livelli di cache non funzioni come previsto (ciò non costituisce un problema per Object Gateway, RBD o CephFS).
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1>
+  <title>Quando utilizzare la suddivisione in livelli di cache</title>
+
+  <para>
+   La suddivisione in livelli di cache va considerata nei seguenti casi:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     È necessario accedere a pool con codice di cancellazione tramite RADOS Block Device (RBD, dispositivo di blocco RADOS).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     È necessario accedere a pool con codice di cancellazione iSCSI in quanto vengono ereditate le limitazioni di RBD. Per ulteriori informazioni su iSCSI, fare riferimento a <xref linkend="cha.ceph.iscsi"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Si dispone di un numero limitato di spazio di memorizzazione a prestazioni elevate e una grande quantità di spazio di memorizzazione con basse prestazioni ed è necessario accedere più velocemente ai dati memorizzati.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.cachemodes">
+  <title>Modalità cache</title>
+
+  <para>
+   L'agente di suddivisione in livelli di cache gestisce la migrazione dei dati tra il livello di cache e il livello di memorizzazione di supporto. Gli amministratori possono configurare la modalità di esecuzione di tale migrazione. Gli scenari principali sono due:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>modalità Write-back</term>
+    <listitem>
+     <para>
+      Nella modalità Write-back, i client Ceph scrivono i dati nel livello di cache e ricevono un messaggio ACK dal livello di cache. In tempo, viene eseguita la migrazione dei dati scritti nel livello di cache al livello di memorizzazione e i dati vengono svuotati dal livello di cache. Concettualmente, il livello di cache è sovrapposto "di fronte" al livello di memorizzazione di supporto. Quando in un client Ceph sono necessari dati che risiedono nel livello di memorizzazione, l'agente di suddivisione in livelli di memorizzazione esegue la migrazione dei dati al livello di cache in lettura, che vengono quindi inviati al client Ceph. In seguito, il client Ceph può eseguire I/O mediante l'uso del livello di cache fino a quando i dati diventano inattivi. Questo è ideale per dati mutabili, come la modifica di foto o video o per i dati transazionali.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>modalità di sola lettura</term>
+    <listitem>
+     <para>
+      Nella modalità di sola lettura, i dati vengono scritti dai client Ceph direttamente nel livello di supporto. In fase di lettura, gli oggetti richiesti vengono copiati da Ceph dal livello di supporto in quello di cache. Gli oggetti inattivi vengono rimossi dal livello di cache in base alla policy definita. Questo approccio è ideale per i dati immutabili, come la presentazione di immagini o video nei social network, i dati DNA o le immagini a raggi X, perché la lettura dei dati da un pool di cache che potrebbe contenere dati obsoleti è poco coerente. Non utilizzare la modalità di sola lettura per i dati mutabili.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="ses.tiered.hitset">
+  <title>Set di accessi</title>
+
+  <sect2 xml:id="ses.tiered.hitset.overview">
+   <title>Panoramica</title>
+   <para>
+    I parametri <emphasis>set di accessi</emphasis> consentono di ottimizzare <emphasis>i pool di cache</emphasis>. Di norma, in Ceph i set di accessi sono filtri di Bloom e rappresentano un modo efficiente per la memoria di tenere traccia degli oggetti già presenti nel pool di cache.
+   </para>
+   <para>
+    Il set di accessi una matrice di bit utilizzata per memorizzare il risultato di un set di funzioni hash applicate sui nomi degli oggetti. Inizialmente tutti i bit sono impostati su <literal>0</literal>. Quando si aggiunge un oggetto al set di accessi, il rispettivo nome viene sottoposto all'hashing e il risultato viene mappato a posizioni diverse nel set di accessi, dove il valore del bit viene impostato quindi su <literal>1</literal>.
+   </para>
+   <para>
+    Per verificare l'esistenza di un oggetto nella cache, il nome oggetto viene sottoposto di nuovo all'hashing. Se un bit corrisponde a <literal>0</literal>, l'oggetto non è sicuramente nella cache e deve essere recuperato dallo spazio di memorizzazione offline sicura. <remark role="fixme">How is the modification date retrieved in read mode?</remark>
+   </para>
+   <para>
+    È possibile che i risultati di oggetti diversi vengano memorizzati nella stessa ubicazione del set di accessi. Per caso, tutti i bit possono corrispondere a <literal>1</literal> senza che l'oggetto sia presente nella cache. Pertanto, i set di accessi in cui viene utilizzato un filtro di Bloom possono solo indicare se un oggetto è decisamente nella cache oppure no e se deve essere recuperato dallo spazio di memorizzazione offline sicura.
+   </para>
+   <para>
+    Un pool di cache può presentare più set di accessi che nel tempo tengono traccia dell'accesso ai file. Con l'impostazione <literal>hit_set_count</literal> si definisce il numero di set di accessi che vengono utilizzati e con <literal>hit_set_period</literal> si definisce per quanto tempo viene utilizzato ciascun set di accessi. Al termine del periodo si utilizza il set di accessi successivo. Se il numero di set di accessi è esaurito, si libera la memoria del set di accessi più datato e viene creato un nuovo set di accessi. I valori di <literal>hit_set_count</literal> e <literal>hit_set_period</literal> moltiplicati l'uno per l'altro definiscono il lasso di tempo complessivo in cui è stato monitorato l'accesso agli oggetti.
+   </para>
+   <figure xml:id="ses.tiered.hitset.overview.bloom">
+    <title>Filtro di Bloom con tre oggetti memorizzati</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Rispetto al numero di oggetti sottoposti ad hashing, un set di accessi basato sul filtro di Bloom è molto efficiente per la memoria. Per ridurre a sotto l'1% la probabilità di falsi positivi, sono necessari meno di 10 bit. È possibile definire la probabilità di falsi positivi con <literal>hit_set_fpp</literal>. In base al numero di oggetti in un gruppo di posizionamento e alla probabilità di falsi positivi, Ceph calcola automaticamente le dimensioni del set di accessi.
+   </para>
+   <para>
+    È possibile limitare lo spazio di memorizzazione richiesto nel pool di cache con <literal>min_write_recency_for_promote</literal> e <literal>min_read_recency_for_promote</literal>. Se il valore è impostato a <literal>0</literal>, tutti gli oggetti vengono promossi al pool di cache non appena vengono letti o scritti fino a quando non vengono rimossi tutti. Qualsiasi valore maggiore di <literal>0</literal> definisce il numero di set di accessi in ordine di età in cui è stata eseguita la ricerca dell'oggetto. Se l'oggetto risulta presente in un set di accessi, verrà promosso al pool di cache.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ses.tiered.hitset.examples">
+   <title>Esempi</title>
+   <sect3 xml:id="ses.tiered.hitset.examples.memory">
+    <title>Grande pool di cache e memoria di piccole dimensioni</title>
+    <para>
+     Se sono disponibili uno spazio di memorizzazione grande e solo una piccola quantità di RAM, tutti gli oggetti possono essere promossi al pool di cache non appena vi si esegue l'accesso. Il set di accessi viene mantenuto piccolo. Di seguito è riportato un set di valori di configurazione di esempio:
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses.tiered.hitset.examples.storage">
+    <title>Pool di cache piccolo e memoria di grandi dimensioni</title>
+    <para>
+     Se sono disponibili uno spazio di memorizzazione piccolo, ma una grande quantità di memoria paragonabile, è possibile configurare il livello di cache in modo che venga promosso al pool di cache un numero limitato di oggetti. Per un totale di 48 ore, il monitoraggio viene fornito da dodici set di accessi, ciascuno dei quali viene utilizzato per un periodo di 14.400 secondi. Se è stato eseguito l'accesso a un oggetto nelle ultime 8 ore, tale oggetto viene promosso al pool di cache. Il set di valori di configurazione di esempio è quindi il seguente: 
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ses.tiered.storage">
+  <title>Configurazione di un esempio di spazio di memorizzazione suddiviso in livelli</title>
+
+  <para>
+   In questa sezione è illustrato come configurare un livello di cache SSD veloce (spazio di memorizzazione ad accesso frequente) di fronte a un disco rigido standard (spazio di memorizzazione offline sicura).
+  </para>
+
+  <tip>
+   <para>
+    L'esempio seguente è solo a fine illustrativo ed è riportata una configurazione con una radice e una regola per la parte SSD che risiede in un singolo nodo Ceph.
+   </para>
+   <para>
+    Nell'ambiente di produzione, di norma nelle configurazioni del cluster sono incluse più voci relative a radice e regola per lo spazio di memorizzazione ad accesso frequente, nonché nodi misti, con entrambi i dischi SSD e SATA.
+   </para>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     Preparare un computer host con unità veloci, come gli SSD. Questo nodo cluster fungerà da livello di cache veloce.
+    </para>
+   </step>
+   <step>
+    <para>
+     Trasformare il computer in un nodo Ceph tramite DeepSea. Installare il software e configurare il computer host come descritto nella <xref linkend="salt.adding.nodes"/>. Presupporre che il nome del nodo sia <replaceable>node-4</replaceable>. Tale nodo deve contenere 4 dischi OSD.
+    </para>
+    <para>
+     Nella mappa CRUSH si potrebbe ottenere una voce come quella seguente:
+    </para>
+<screen>[...]
+host node-4 {
+   id -5  # do not change unnecessarily
+   # weight 0.012
+   alg straw
+   hash 0  # rjenkins1
+   item osd.6 weight 0.003
+   item osd.7 weight 0.003
+   item osd.8 weight 0.003
+   item osd.9 weight 0.003
+}
+[...]</screen>
+   </step>
+   <step>
+    <para>
+     Modificare la mappa CRUSH per il pool di memorizzazione ad accesso frequente mappato agli ODS supportati dalle unità SSD veloci. Definire una seconda gerarchia con un nodo radice per gli SSD (ad esempio "root ssd"). Modificare inoltre il peso e una regola CRUSH per gli SSD. Per ulteriori informazioni sulla mappa CRUSH, vedere <link xlink:href="http://docs.ceph.com/docs/master/rados/operations/crush-map/"/> (in lingua inglese).
+    </para>
+    <para>
+     Modificare direttamente la mappa CRUSH con gli strumenti a riga di comando, come <command>getcrushmap</command> e <command>crushtool</command>:
+    </para>
+    <substeps performance="required">
+     <step>
+      <para>
+       Recuperare l'attuale mappa e salvarla come <filename>c.map</filename>:
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd getcrushmap -o c.map</screen>
+     </step>
+     <step>
+      <para>
+       Decompilare <filename>c.map</filename> e salvarla come <filename>c.txt</filename>:
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -d c.map -o c.txt</screen>
+     </step>
+     <step>
+      <para>
+       Modificare <filename>c.txt</filename>:
+      </para>
+<screen>[...]
+host node-4 {
+        id -5  # do not change unnecessarily
+        # weight 4.000
+        alg straw
+        hash 0  # rjenkins1
+        item osd.6 weight 1.000
+        item osd.7 weight 1.000
+        item osd.8 weight 1.000
+        item osd.9 weight 1.000
+}
+root ssd {    # newly added root for the SSD hot-storage
+        id -6
+        alg straw
+        hash 0
+        item node-4 weight 4.00
+}
+rule ssd {
+        ruleset 4
+        type replicated
+        min_size 0
+        max_size 4
+        step take ssd
+        step chooseleaf firstn 0 type host
+        step emit
+}
+[...]</screen>
+     </step>
+     <step>
+      <para>
+       Compilare il file <filename>c.txt</filename> modificato e salvarlo come <filename>ssd.map</filename>:
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -c c.txt -o ssd.map</screen>
+     </step>
+     <step>
+      <para>
+       Infine, installare <filename>ssd.map</filename> come nuova mappa CRUSH:
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd setcrushmap -i ssd.map</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     Creare un pool di memorizzazione ad accesso frequente da utilizzare per la suddivisione in livelli di cache. A tal fine, utilizzare la nuova regola "ssd":
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create hot-storage 100 100 replicated ssd</screen>
+   </step>
+   <step>
+    <para>
+     Creare il pool di memorizzazione offline sicura utilizzando la regola di default "replicated_ruleset":
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+   </step>
+   <step>
+    <para>
+     Quindi, la configurazione di un livello di cache comporta l'associazione di un pool di memorizzazione di supporto con un pool di cache, in questo caso, spazio di memorizzazione offline sicura (= pool di memorizzazione) con spazio di memorizzazione ad accesso frequente (= pool di cache):
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier add cold-storage hot-storage</screen>
+   </step>
+   <step>
+    <para>
+     Per impostare la modalità di cache a "writeback", eseguire quanto riportato di seguito:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier cache-mode hot-storage writeback</screen>
+    <para>
+     Per ulteriori informazioni sulle modalità di cache, vedere <xref linkend="sec.ceph.tiered.cachemodes"/>.
+    </para>
+    <para>
+     I livelli di cache writeback si sovrappongono al livello di memorizzazione di supporto, pertanto è necessario un passaggio aggiuntivo: indirizzare tutto il traffico del client dal pool di memorizzazione al pool di cache. Per indirizzare il traffico del client direttamente al pool di cache, eseguire quanto riportato di seguito, ad esempio:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier set-overlay cold-storage hot-storage</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="cache.tier.configure">
+   <title>Configurazione di un livello di cache</title>
+   <para>
+    Per configurare i livelli di cache sono disponibili diverse opzioni. Utilizzare la seguente sintassi:
+   </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+   <sect3>
+    <title>Dimensioni e tipo di destinazione</title>
+    <para>
+     Nei passaggi seguenti è illustrato come configurare un <emphasis>pool di cache</emphasis> con i valori forniti nella <xref linkend="ses.tiered.hitset.examples.storage"/>
+    </para>
+    <para>
+     Nei livelli di cache di produzione Ceph viene utilizzato un filtro di Bloom per <option>hit_set_type</option>:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_type bloom</screen>
+    <para>
+     Con <option>hit_set_count</option> e <option>hit_set_period</option> si definiscono la durata di copertura di ciascun set di accesso e quanti di questi memorizzare. <remark role="fixme">What are the numbers doing? They're without explanation. https://software.intel.com/en-us/blogs/2015/03/03/ceph-cache-tiering-introduction</remark>
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_count 12
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_period 14400
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes 1000000000000</screen>
+    <note>
+     <para>
+      Un numero di <option>hit_set_count</option> più grande comporta un maggior consumo di RAM da parte del processo <systemitem class="process">ceph-osd</systemitem>.
+     </para>
+    </note>
+    <para>
+     Con <option>min_read_recency_for_promote</option> si definisce il numero set di accessi in cui verificare l'esistenza di un oggetto durante un'operazione di lettura. Il risultato della verifica viene utilizzato per decidere se promuovere l'oggetto in modo asincrono. Il rispettivo valore deve essere compreso tra 0 e <option>hit_set_count</option>. Se impostato a 0, l'oggetto viene promosso sempre. Se impostato 1, viene verificato l'attuale set di accessi. Inoltre, se tale oggetto rientra nel set di accessi viene promosso. In caso contrario, ciò non avviene. Per gli altri valori, viene verificato il numero esatto di set di accessi all'archivio. L'oggetto viene promosso se viene trovato in uno dei set di accessi <option>min_read_recency_for_promote</option> più recenti.
+    </para>
+    <para>
+     È possibile impostare un parametro simile, <option>min_write_recency_for_promote</option>, per l'operazione di scrittura:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_read_recency_for_promote 2
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_write_recency_for_promote 2</screen>
+    <note>
+     <para>
+      Più lungo è il periodo, più elevati sono i valori di <option>min_read_recency_for_promote</option> e <option>min_write_recency_for_promote</option> e maggior quantità di RAM viene utilizzata dal daemon <systemitem class="process">ceph-osd</systemitem>. In particolare, quando l'agente è attivo per svuotare o rimuovere oggetti dalla cache, tutti i set di accessi <option>hit_set_count</option> vengono caricati nella RAM.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Ridimensionamento della cache</title>
+    <para>
+     L'agente di suddivisione in livelli di cache svolge due funzioni principali:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Svuotamento</term>
+      <listitem>
+       <para>
+        L'agente identifica gli oggetti modificati e li inoltra al pool di memorizzazione per l'archiviazione a lungo termine.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Rimozione</term>
+      <listitem>
+       <para>
+        L'agente identifica gli oggetti non modificati e rimuove dalla cache quelli utilizzati più di recente.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <sect4 xml:id="cache.tier.config.absizing">
+     <title>Ridimensionamento assoluto</title>
+     <para>
+      L'agente di suddivisione in livelli di cache è in grado di svuotare o rimuovere oggetti in base al numero totale di byte o al numero totale di oggetti. Per specificare un numero massimo di byte, eseguire quanto riportato di seguito:
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+     <para>
+      Per specificare un numero massimo di oggetti, eseguire quanto riportato di seguito:
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+     <note>
+      <para>
+       Ceph non è in grado di determinare automaticamente le dimensioni di un pool di cache, pertanto qui è richiesta la configurazione sulle dimensioni assolute. In caso contrario, lo svuotamento e la rimozione risulteranno impossibili. Se si specificano entrambi i limiti, l'agente di suddivisione in livelli di cache inizierà il processo di svuotamento o di rimozione quando viene attivata una delle due soglie.
+      </para>
+     </note>
+     <note>
+      <para>
+       Tutte le richieste del client verranno bloccate solo quando si raggiungono i valori indicati in <option>target_max_bytes</option> o <option>target_max_objects</option>.
+      </para>
+     </note>
+    </sect4>
+    <sect4 xml:id="cache.tier.config.relsizing">
+     <title>Ridimensionamento relativo</title>
+     <para>
+      L'agente di suddivisione in livelli di cache è in grado di svuotare o rimuovere oggetti relativi alle dimensioni del pool di cache (specificate da <option>target_max_bytes</option> o <option>target_max_objects</option> in <xref linkend="cache.tier.config.absizing"/>). Quando il pool di cache è costituito da una determinata percentuale di oggetti modificati, l'agente di suddivisione in livelli di cache li svuoterà nel pool di memorizzazione. Per impostare <option>cache_target_dirty_ratio</option>, eseguire quanto riportato di seguito:
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+     <para>
+      Ad esempio, se si imposta il valore a 0.4 avrà inizio lo svuotamento degli oggetti modificati quando questi raggiungono il 40% di capacità del pool di cache:
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+     <para>
+      Quando gli oggetti modificati raggiungono una determinata percentuale di capacità, svuotarli a una velocità più elevata. Utilizzare <option>cache_target_dirty_high_ratio</option>:
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+     <para>
+      Quando il pool di cache raggiunge una determinata percentuale della rispettiva capacità, l'agente di suddivisione in livelli di cache rimuoverà gli oggetti per mantenere libera la capacità. Per impostare <option>cache_target_full_ratio</option>, eseguire quanto riportato di seguito:
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+    </sect4>
+   </sect3>
+   <sect3>
+    <title>Età della cache </title>
+    <para>
+     È possibile specificare l'età minima di un oggetto modificato di recente prima che l'agente di suddivisione in livelli di cache lo svuoti nel pool di memorizzazione di supporto:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+    <para>
+     È possibile specificare l'età minima di un oggetto prima che questo venga rimosso dal livello di cache:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="ceph.tier.gmt_hitset">
+    <title>Utilizzo di GMT per il set di accessi</title>
+    <para>
+     Nelle configurazioni dei livelli di cache è presente un filtro di Bloom denominato <emphasis>set di accessi</emphasis>. Mediante tale filtro è possibile verificare l'appartenenza di un oggetto a un set di oggetti a caldo o a freddo. Gli oggetti vengono aggiunti al set di accessi aggiungendo le registrazioni dell'orario ai rispettivi nomi.
+    </para>
+    <para>
+     Se i computer del cluster vengono posizionati in fusi orari diversi e le registrazioni dell'orario derivano dall'ora locale, è possibile che gli oggetti in un set di accessi presentino nomi fuorvianti costituiti da registrazioni dell'orario future o passate. Nel caso peggiore, è possibile che gli oggetti non siano affatto presenti nel set di accessi.
+    </para>
+    <para>
+     Per impedire che ciò si verifichi, in una configurazione del livello di cache appena creata <option>use_gmt_hitset</option> è impostato per default a "1". In questo modo si forzano gli OSD a utilizzare le registrazioni dell'orario GMT (Greenwich Mean Time) quando si creano i nomi oggetto per il set di accessi.
+    </para>
+    <warning>
+     <title>lasciare il valore di default</title>
+     <para>
+      Non modificare il valore di default "1" di <option>use_gmt_hitset</option>. Se gli errori correlati a questa opzione non sono causati dalla configurazione del cluster, non modificarla mai manualmente. In caso contrario il comportamento del cluster potrebbe diventare imprevedibile.
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

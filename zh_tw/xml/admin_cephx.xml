@@ -1,0 +1,589 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_cephx.xml" version="5.0" xml:id="cha.storage.cephx">
+ <title>使用 <systemitem class="service">cephx</systemitem> 進行驗證</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>編輯</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  為了識別用戶端並防禦中間人攻擊，Ceph 提供了 <systemitem class="service">cephx</systemitem> 驗證系統。在此環境中，<emphasis>用戶端</emphasis>表示人類使用者 (例如 admin 使用者) 或 Ceph 相關的服務/精靈 (例如 OSD、監控程式或物件閘道)。
+ </para>
+ <note>
+  <para>
+   <systemitem class="service">cephx</systemitem> 通訊協定不會處理 TLS/SSL 之類的傳輸中資料加密。
+  </para>
+ </note>
+ <sect1 xml:id="storage.cephx.arch">
+
+
+  <title>驗證架構</title>
+
+  <para>
+   <systemitem class="service">cephx</systemitem> 使用共用機密金鑰進行驗證，這表示用戶端和監控程式叢集均具有用戶端機密金鑰的副本。驗證通訊協定可讓雙方互相證明各自擁有金鑰的副本，且無需真正透露金鑰。這樣就實現了雙向驗證，即，叢集可確定使用者擁有機密金鑰，而使用者亦可確定叢集擁有機密金鑰的副本。
+  </para>
+
+  <para>
+   Ceph 的一項重要延展性功能就是不需要透過集中式介面即可與 Ceph 物件儲存互動。這表示 Ceph 用戶端可直接與 OSD 互動。為了保護資料，Ceph 提供了 <systemitem class="service">cephx</systemitem> 驗證系統來對 Ceph 用戶端進行驗證。
+  </para>
+
+  <para>
+   每個監控程式都可對用戶端進行驗證並分發金鑰，因此，在使用 <systemitem class="service">cephx</systemitem> 時，不會出現單一故障點或瓶頸。監控程式會傳回驗證資料結構，其中包含獲取 Ceph 服務時要用到的工作階段金鑰。此工作階段金鑰自身已使用用戶端的永久機密金鑰進行了加密，因此，只有用戶端才能向 Ceph monitor 要求服務。然後，用戶端會使用工作階段金鑰向監控程式要求所需的服務，監控程式會為用戶端提供一個票證，用於向實際處理資料的 OSD 驗證用戶端。Ceph monitor 和 OSD 共用一個機密，因此，用戶端可使用監控程式提供的票證向叢集中的任何 OSD 或中繼資料伺服器表明身分。<systemitem class="service">cephx</systemitem> 票證有過期時間，因此，攻擊者無法使用已過期的票證或以不當方式獲取的工作階段金鑰。只要保證用戶端機密金鑰在過期之前不被洩露，這種驗證方式就能防止能夠存取通訊媒體的攻擊者使用另一用戶端的身分建立虛假訊息，或改變另一用戶端的正當訊息。
+  </para>
+
+  <para>
+   若要使用 <systemitem class="service">cephx</systemitem>，管理員必須先設定用戶端/使用者。在下圖中，<systemitem class="username">client.admin</systemitem> 使用者從指令行呼叫 <command>ceph auth get-or-create-key</command> 來產生使用者名稱和機密金鑰。Ceph 的 <command>auth</command> 子系統會產生該使用者名稱和金鑰，在監控程式中儲存一個副本，並將該使用者的機密傳回給 <systemitem class="username">client.admin</systemitem> 使用者。這表示用戶端和監控程式共用一個機密金鑰。
+  </para>
+
+  <figure>
+   <title><systemitem class="service">cephx</systemitem> 的基本驗證</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   若要在監控程式中進行驗證，用戶端需將使用者名稱傳遞給監控程式。監控程式會產生一個工作階段金鑰，並使用與該使用者名稱關聯的機密金鑰來加密該工作階段金鑰，然後將加密的票證傳回給用戶端。之後，用戶端會使用共用的機密金鑰解密資料，以擷取工作階段金鑰。工作階段金鑰可識別目前工作階段的使用者。然後，用戶端會要求與該使用者相關、由工作階段金鑰簽署的票證。監控程式會產生一個票證，以使用者的機密金鑰對其加密，然後將其傳回給用戶端。用戶端解密該票證，並使用它來簽署傳至整個叢集中的 OSD 和中繼資料伺服器的要求。
+  </para>
+
+  <figure>
+   <title><systemitem class="service">cephx</systemitem> 驗證</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <systemitem class="service">cephx</systemitem> 通訊協定會對用戶端機器與 Ceph 伺服器之間進行的通訊進行驗證。完成初始驗證後，將使用監控程式、OSD 和中繼資料伺服器可透過共用機密進行驗證的票證，來簽署用戶端與伺服器之間傳送的每條訊息。
+  </para>
+
+  <figure>
+   <title><systemitem class="service">cephx</systemitem> 驗證 - MDS 和 OSD</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <important>
+   <para>
+    這種驗證提供的保護僅限於 Ceph 用戶端與 Ceph 叢集主機之間，驗證不會延伸到 Ceph 用戶端以外。如果使用者從遠端主機存取 Ceph 用戶端，則不會對使用者主機與用戶端主機之間的連接套用 Ceph 驗證。
+   </para>
+  </important>
+ </sect1>
+ <sect1 xml:id="storage.cephx.keymgmt">
+
+
+  <title>金鑰管理</title>
+
+  <para>
+   本節介紹 Ceph 用戶端使用者，以及如何在 Ceph 儲存叢集中對其進行驗證和授權。<emphasis>使用者</emphasis>是指使用 Ceph 用戶端來與 Ceph 儲存叢集精靈互動的個人或系統參與者 (例如應用程式)。
+  </para>
+
+  <para>
+   Ceph 在啟用驗證和授權 (預設啟用) 的情況下執行時，您必須指定一個使用者名稱，以及包含所指定使用者的機密金鑰的金鑰圈 (通常透過指令行指定)。如果您未指定使用者名稱，Ceph 將使用 <systemitem class="username">client.admin</systemitem> 做為預設使用者名稱。如果您未指定金鑰圈，Ceph 將透過 Ceph 組態檔案中的金鑰圈設定來尋找金鑰圈。例如，如果您在未指定使用者名稱或金鑰圈的情況下執行 <command>ceph health</command> 指令，Ceph 將依如下所示解釋該指令︰
+  </para>
+
+<screen>ceph -n client.admin --keyring=/etc/ceph/ceph.client.admin.keyring health</screen>
+
+  <para>
+   或者，您可以使用 <literal>CEPH_ARGS</literal> 環境變數來避免重複輸入使用者名稱和機密。
+  </para>
+
+  <sect2 xml:id="storage.cephx.keymgmt.backgrnd">
+   <title>背景資訊</title>
+   <para>
+    無論 Ceph 用戶端是何類型 (例如，區塊裝置、物件儲存、檔案系統、原生 API)，Ceph 都會在<emphasis>池</emphasis>中將所有資料儲存為物件。Ceph 使用者需要擁有池存取權才能讀取和寫入資料。此外，Ceph 使用者必須擁有執行權限才能使用 Ceph 的管理指令。以下概念可協助您理解 Ceph 使用者管理。
+   </para>
+   <sect3>
+    <title>使用者</title>
+    <para>
+     使用者是指個人或系統參與者 (例如應用程式)。透過建立使用者，您可以控制誰 (或哪個參與者) 能夠存取您的 Ceph 儲存叢集、其池及池中的資料。
+    </para>
+    <para>
+     Ceph 使用多種<emphasis>類型</emphasis>的使用者。進行使用者管理時，將一律使用 <literal>client</literal> 類型。Ceph 透過句點 (.) 分隔格式來識別使用者，該格式由使用者類型和使用者 ID 組成。例如，<literal>TYPE.ID</literal>、<literal>client.admin</literal> 或 <literal>client.user1</literal>。區分使用者類型的原因在於，Ceph monitor、OSD 和中繼資料伺服器也使用 cephx 通訊協定，但它們並非用戶端。區分使用者類型有助於將用戶端使用者與其他使用者區分開來，從而簡化存取控制、使用者監控和追溯性。
+    </para>
+    <note>
+     <para>
+      Ceph 儲存叢集使用者與 Ceph 物件儲存使用者或 Ceph 檔案系統使用者均不同。Ceph Object Gateway 使用 Ceph 儲存叢集使用者在閘道精靈與儲存叢集之間通訊，但閘道有自己的使用者管理功能來管理最終使用者。Ceph 檔案系統使用 POSIX 語意。與其關聯的使用者空間和 Ceph 儲存叢集使用者不同。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>授權和能力</title>
+    <para>
+     Ceph 使用「能力」(caps) 術語來描述對已驗證的使用者進行授權，允許其運用監控程式、OSD 和中繼資料伺服器的功能。能力還可以限制對池中的資料或池中某個名稱空間的存取。Ceph 管理使用者可在建立或更新使用者時設定使用者的能力。
+    </para>
+    <para>
+     能力語法的格式如下︰
+    </para>
+<screen><replaceable>daemon-type</replaceable> 'allow <replaceable>capability</replaceable>' [...]</screen>
+    <para>
+     下面是每個服務類型的能力清單︰
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>監控程式能力</term>
+      <listitem>
+       <para>
+        包括 <literal>r</literal>、<literal>w</literal>、<literal>x</literal> 和 <literal>allow profile <replaceable>cap</replaceable></literal>。
+       </para>
+<screen>mon 'allow rwx'
+mon 'allow profile osd'</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>OSD 能力</term>
+      <listitem>
+       <para>
+        包括 <literal>r</literal>、<literal>w</literal>、<literal>x</literal>、<literal>class-read</literal>、<literal>class-write</literal> 和 <literal>profile osd</literal>。此外，使用 OSD 能力還能進行池和名稱空間設定。
+       </para>
+<screen>osd 'allow <replaceable>capability</replaceable>' [pool=<replaceable>poolname</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>MDS 能力</term>
+      <listitem>
+       <para>
+        只需要 <literal>allow</literal>，或留為空白。
+       </para>
+<screen>mds 'allow'</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     以下各項描述了每個能力︰
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>allow</term>
+      <listitem>
+       <para>
+        需先於精靈的存取設定指定。僅對 MDS 表示 <literal>rw</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>r</term>
+      <listitem>
+       <para>
+        向使用者授予讀取權限。存取監控程式以擷取 CRUSH 地圖時需具有此能力。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>w</term>
+      <listitem>
+       <para>
+        向使用者授予對物件的寫入權限。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>x</term>
+      <listitem>
+       <para>
+        授予使用者呼叫類別方法 (包括讀取和寫入) 的能力，以及在監控程式中執行 <literal>auth</literal> 操作的能力。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-read</term>
+      <listitem>
+       <para>
+        授予使用者呼叫類別讀取方法的能力。<literal>x</literal> 的子集。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-write</term>
+      <listitem>
+       <para>
+        授予使用者呼叫類別寫入方法的能力。<literal>x</literal> 的子集。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>*</term>
+      <listitem>
+       <para>
+        授予使用者對特定精靈/池的讀取、寫入和執行權限，以及執行管理指令的能力。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile osd</term>
+      <listitem>
+       <para>
+        授予使用者以某個 OSD 身分連接到其他 OSD 或監控程式的權限。授予 OSD 權限，使 OSD 能夠處理複製活動訊號流量和狀態報告。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile mds</term>
+      <listitem>
+       <para>
+        授予使用者以某個 MDS 身分連接到其他 MDS 或監控程式的權限。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-osd</term>
+      <listitem>
+       <para>
+        授予使用者將 OSD 開機的權限。授權給部署工具，使其在將 OSD 開機時有權新增金鑰。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-mds</term>
+      <listitem>
+       <para>
+        授予使用者將中繼資料伺服器開機的權限。授權給部署工具，使其在將中繼資料伺服器開機時有權新增金鑰。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>池</title>
+    <para>
+     池是指使用者在其中儲存資料的邏輯分割區。在 Ceph 部署中，常見的做法是為相似類型的資料建立一個池做為邏輯分割區。例如，將 Ceph 部署為 OpenStack 的後端時，一般的部署方式是為磁碟區、影像、備份和虛擬機器以及使用者 (如 <systemitem class="username">client.glance</systemitem> 或 <systemitem class="username">client.cinder</systemitem>) 建立相應的池。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.usermgmt">
+   <title>管理使用者</title>
+   <para>
+    使用者管理功能可讓 Ceph 叢集管理員能夠直接在 Ceph 叢集中建立、更新和刪除使用者。
+   </para>
+   <para>
+    在 Ceph 叢集中建立或刪除使用者時，可能需要將金鑰分發到用戶端，以便可將金鑰新增至金鑰圈。如需詳細資料，請參閱<xref linkend="storage.cephx.keymgmt.keyringmgmt"/>。
+   </para>
+   <sect3>
+    <title>列出使用者</title>
+    <para>
+     若要列出叢集中的使用者，請執行以下指令︰
+    </para>
+<screen>ceph auth list</screen>
+    <para>
+     Ceph 將列出您叢集中的所有使用者。例如，在包含兩個節點的叢集中，<command>ceph auth list</command> 輸出類似下方所示︰
+    </para>
+<screen>installed auth entries:
+
+osd.0
+        key: AQCvCbtToC6MDhAATtuT70Sl+DymPCfDSsyV4w==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+osd.1
+        key: AQC4CbtTCFJBChAAVq5spj0ff4eHZICxIOVZeA==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+client.admin
+        key: AQBHCbtT6APDHhAA5W00cBchwkQjh3dkKsyPjw==
+        caps: [mds] allow
+        caps: [mon] allow *
+        caps: [osd] allow *
+client.bootstrap-mds
+        key: AQBICbtTOK9uGBAAdbe5zcIGHZL3T/u2g6EBww==
+        caps: [mon] allow profile bootstrap-mds
+client.bootstrap-osd
+        key: AQBHCbtT4GxqORAADE5u7RkpCN/oo4e5W0uBtw==
+        caps: [mon] allow profile bootstrap-osd</screen>
+    <note>
+     <title>TYPE.ID 表示法</title>
+     <para>
+      請注意，針對使用者採用 <literal>TYPE.ID</literal> 表示法，例如，<literal>osd.0</literal> 指定 <literal>osd</literal> 類型的使用者，其 ID 為 <literal>0</literal>。<literal>client.admin</literal> 是 <literal>client</literal> 類型的使用者，其 ID 為 <literal>admin</literal>。另請注意，每個項目都包含一個 <literal>key: <replaceable>value</replaceable></literal> 項目，以及一或多個 <literal>caps:</literal> 項目。
+     </para>
+     <para>
+      您可以將 <option>-o <replaceable>filename</replaceable></option> 選項和 <command>ceph auth list</command> 結合使用，以將輸出儲存到某個檔案。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>獲取有關使用者的資訊</title>
+    <para>
+     若要擷取特定的使用者、金鑰和能力，請執行以下指令︰
+    </para>
+<screen>ceph auth get <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     例如︰
+    </para>
+<screen>ceph auth get client.admin
+exported keyring for client.admin
+[client.admin]
+	key = AQA19uZUqIwkHxAAFuUwvq0eJD4S173oFRxe0g==
+	caps mds = "allow"
+	caps mon = "allow *"
+ caps osd = "allow *"</screen>
+    <para>
+     開發人員也可以執行以下指令︰
+    </para>
+<screen>ceph auth export <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     <command>auth export</command> 指令與 <command>auth get</command> 相同，不過它還會列印內部驗證 ID。
+    </para>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.useradd">
+    <title>新增使用者</title>
+    <para>
+     新增使用者會建立使用者名稱 (<literal>TYPE.ID</literal>)、機密金鑰，以及包含在指令中用於建立該使用者的所有能力。
+    </para>
+    <para>
+     使用者可使用其金鑰向 Ceph 儲存叢集進行驗證。使用者的能力授予該使用者在 Ceph monitor (mon)、Ceph OSD (osd) 或 Ceph 中繼資料伺服器 (mds) 上進行讀取、寫入或執行的能力。
+    </para>
+    <para>
+     可以使用以下幾個指令來新增使用者︰
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>ceph auth add</command>
+      </term>
+      <listitem>
+       <para>
+        此指令是新增使用者的規範方法。它會建立使用者、產生金鑰，並新增所有指定的能力。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create</command>
+      </term>
+      <listitem>
+       <para>
+        此指令往往是建立使用者的最便捷方法，因為它會傳回包含使用者名稱 (在方括號中) 和金鑰的金鑰檔案格式。如果該使用者已存在，此指令只以金鑰檔案格式傳回使用者名稱和金鑰。您可以使用 <option>-o <replaceable>filename</replaceable></option> 選項將輸出儲存到某個檔案。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create-key</command>
+      </term>
+      <listitem>
+       <para>
+        此指令是建立使用者並僅傳回使用者金鑰的便捷方式。對於只需要金鑰的用戶端 (例如 <systemitem class="library">libvirt</systemitem>)，此指令非常實用。如果該使用者已存在，此指令只傳回金鑰。您可以使用 <option>-o <replaceable>filename</replaceable></option> 選項將輸出儲存到某個檔案。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     建立用戶端使用者時，您可以建立不具有能力的使用者。不具有能力的使用者可以進行驗證，但不能執行其他操作。此類用戶端無法從監控程式擷取叢集地圖。但是，如果您希望稍後再新增能力，可以使用 <command>ceph auth caps</command> 指令建立一個不具有能力的使用者。
+    </para>
+    <para>
+     一般的使用者至少對 Ceph monitor 具有讀取能力，並對 Ceph OSD 具有讀取和寫入能力。此外，使用者的 OSD 權限通常限制為只能存取特定的池。
+    </para>
+<screen><prompt>root # </prompt>ceph auth add client.john mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.paul mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.george mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o george.keyring
+<prompt>root # </prompt>ceph auth get-or-create-key client.ringo mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o ringo.key</screen>
+    <important>
+     <para>
+      如果您為某個使用者提供了對 OSD 的能力，但<emphasis>未</emphasis>限制只能存取特定池，則該使用者將有權存取叢集中的<emphasis>所有</emphasis>池。
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>修改使用者能力</title>
+    <para>
+     使用 <command>ceph auth caps</command> 指令可以指定使用者以及變更該使用者的能力。設定新能力會覆寫目前的能力。若要檢視目前的能力，請執行 <command>ceph auth get <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable></command>。若要新增能力，使用以下格式時還需要指定現有能力︰
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable> <replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]' [<replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]']</screen>
+    <para>
+     例如︰
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.john
+<prompt>root # </prompt>ceph auth caps client.john mon 'allow r' osd 'allow rw pool=prague'
+<prompt>root # </prompt>ceph auth caps client.paul mon 'allow rw' osd 'allow rwx pool=prague'
+<prompt>root # </prompt>ceph auth caps client.brian-manager mon 'allow *' osd 'allow *'</screen>
+    <para>
+     若要移除某個能力，可重設該能力。如果希望使用者無權存取以前設定的特定精靈，請指定一個空白字串︰
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps client.ringo mon ' ' osd ' '</screen>
+   </sect3>
+   <sect3>
+    <title>刪除使用者</title>
+    <para>
+     若要刪除使用者，請使用 <command>ceph auth del</command>︰
+    </para>
+<screen><prompt>root # </prompt>ceph auth del <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     其中，<replaceable>TYPE</replaceable> 是 <literal>client</literal>、<literal>osd</literal>、<literal>mon</literal> 或 <literal>mds</literal> 之一，<replaceable>ID</replaceable> 是使用者名稱或精靈的 ID。
+    </para>
+   </sect3>
+   <sect3>
+    <title>列印使用者的金鑰</title>
+    <para>
+     若要將使用者的驗證金鑰列印到標準輸出，請執行以下指令︰
+    </para>
+<screen><prompt>root # </prompt>ceph auth print-key <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     其中，<replaceable>TYPE</replaceable> 是 <literal>client</literal>、<literal>osd</literal>、<literal>mon</literal> 或 <literal>mds</literal> 之一，<replaceable>ID</replaceable> 是使用者名稱或精靈的 ID。
+    </para>
+    <para>
+     當您需要在用戶端軟體 (例如 <systemitem class="library">libvirt</systemitem>) 中填入某個使用者的金鑰時，列印使用者的金鑰非常實用，如以下範例所示︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mount -t ceph host:/ mount_point \
+-o name=client.user,secret=`ceph auth print-key client.user`</screen>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.userimp">
+    <title>輸入使用者</title>
+    <para>
+     若要輸入一或多個使用者，請使用 <command>ceph auth import</command> 並指定金鑰圈︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <note>
+     <para>
+      Ceph 儲存叢集將新增新使用者及其金鑰和能力，並更新現有使用者及其金鑰和能力。
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.keyringmgmt">
+   <title>金鑰圈管理</title>
+   <para>
+    當您透過 Ceph 用戶端存取 Ceph 時，該用戶端會尋找本地金鑰圈。依預設，Ceph 會使用以下四個金鑰圈名稱預先指定金鑰圈設定，因此，除非您要覆寫預設值，否則無需在 Ceph 組態檔案中設定這些名稱︰
+   </para>
+<screen>/etc/ceph/<replaceable>cluster</replaceable>.<replaceable>name</replaceable>.keyring
+/etc/ceph/<replaceable>cluster</replaceable>.keyring
+/etc/ceph/keyring
+/etc/ceph/keyring.bin</screen>
+   <para>
+    <replaceable>cluster</replaceable> 元變數是依 Ceph 組態檔案名稱定義的 Ceph 叢集名稱。<filename>ceph.conf</filename> 表示叢集名稱為 <literal>ceph</literal>，因此金鑰圈名稱為 <literal>ceph.keyring</literal>。<replaceable>name</replaceable> 元變數是使用者類型和使用者 ID (例如 <literal>client.admin</literal>)，因此金鑰圈名稱為 <literal>ceph.client.admin.keyring</literal>。
+   </para>
+   <para>
+    建立使用者 (例如 <systemitem class="username">client.ringo</systemitem>) 之後，必須獲取金鑰並將其新增至 Ceph 用戶端上的金鑰圈，以使該使用者能夠存取 Ceph 儲存叢集。
+   </para>
+   <para>
+    <xref linkend="storage.cephx.keymgmt"/>詳細介紹了如何直接在 Ceph 儲存叢集中列出、獲取、新增、修改和刪除使用者。不過，Ceph 還提供了 <command>ceph-authtool</command> 公用程式，可讓您從 Ceph 用戶端管理金鑰圈。
+   </para>
+   <sect3>
+    <title>建立金鑰圈</title>
+    <para>
+     當您依照<xref linkend="storage.cephx.keymgmt"/>中的程序建立使用者時，需要向 Ceph 用戶端提供使用者金鑰，以使用戶端能擷取指定使用者的金鑰，並向 Ceph 儲存叢集驗證身分。Ceph 用戶端將存取金鑰圈，以查閱使用者名稱並擷取使用者的金鑰︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool --create-keyring /path/to/keyring</screen>
+    <para>
+     建立包含多個使用者的金鑰圈時，我們建議使用叢集名稱 (例如 <replaceable>cluster</replaceable>.keyring) 做為金鑰圈檔案名稱，並將其儲存在 <filename>/etc/ceph</filename> 目錄中，如此，您無需在 Ceph 組態檔案的本地副本中指定檔案名稱，金鑰圈組態預設設定就會選取正確的檔案名稱。例如，可執行以下指令來建立 <filename>ceph.keyring</filename>︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring</screen>
+    <para>
+     建立包含單個使用者的金鑰圈時，我們建議使用叢集名稱、使用者類型和使用者名稱，並將其儲存在 <filename>/etc/ceph</filename> 目錄中。例如，為 <systemitem class="username">client.admin</systemitem> 使用者建立 <filename>ceph.client.admin.keyring</filename>。
+    </para>
+   </sect3>
+   <sect3>
+    <title>將使用者新增至金鑰圈</title>
+    <para>
+     將某個使用者新增至 Ceph 儲存叢集時 (請參閱<xref linkend="storage.cephx.keymgmt.usermgmt.useradd"/>)，您可以擷取該使用者、金鑰和能力，並將該使用者儲存到金鑰圈。
+    </para>
+    <para>
+     如果您只想對每個金鑰圈使用一個使用者，可以將 <option>-o</option> 選項與 <command>ceph auth get</command> 指令結合使用，以金鑰圈檔案格式儲存輸出。例如，若要為 <systemitem class="username">client.admin</systemitem> 使用者建立金鑰圈，請執行以下指令︰
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.admin -o /etc/ceph/ceph.client.admin.keyring</screen>
+    <para>
+     若要將使用者輸入到金鑰圈，可以使用 <command>ceph-authtool</command> 來指定目的地金鑰圈和來源金鑰圈︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring \
+  --import-keyring /etc/ceph/ceph.client.admin.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>建立使用者</title>
+    <para>
+     Ceph 提供 <command>ceph auth add</command> 指令用於直接在 Ceph 儲存叢集中建立使用者。不過，您也可以直接在 Ceph 用戶端金鑰圈中建立使用者、金鑰和能力。然後，可將使用者輸入到 Ceph 儲存叢集︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -n client.ringo --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.keyring</screen>
+    <para>
+     您也可以在建立金鑰圈的同時將新使用者新增至該金鑰圈︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx' --gen-key</screen>
+    <para>
+     在前面的方案中，新使用者 <systemitem class="username">client.ringo</systemitem> 僅存放在金鑰圈中。若要將該新使用者新增至 Ceph 儲存叢集，您仍必須手動新增︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth add client.ringo -i /etc/ceph/ceph.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>修改使用者</title>
+    <para>
+     若要修改金鑰圈中某條使用者記錄的能力，請指定該金鑰圈和使用者，然後指定能力︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx'</screen>
+    <para>
+     若要在 Ceph 叢集環境中更新已修改的使用者，必須將金鑰圈中的變更輸入到 Ceph 叢集中的使用者項目︰
+    </para>
+<screen><prompt>root # </prompt>ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <para>
+     請參閱<xref linkend="storage.cephx.keymgmt.usermgmt.userimp"/>，瞭解有關根據金鑰圈更新 Ceph 儲存叢集使用者的詳細資料。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.cmdline">
+   <title>指令行用法</title>
+   <para>
+    <command>ceph</command> 指令支援以下與使用者名稱和機密操作相關的選項︰
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><option>--id</option> 或 <option>--user</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph 使用類型和 ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>，例如 <systemitem class="username">client.admin</systemitem> 或 <systemitem class="username">client.user1</systemitem>) 來識別使用者。使用 <option>id</option>、<option>name</option> 和 <option>-n</option> 選項可以指定使用者名稱的 ID 部分 (例如 <systemitem class="username">admin</systemitem> 或 <systemitem class="username">user1</systemitem>)。您可以使用 --id 指定使用者，並省略類型。例如，若要指定使用者 client.foo，請輸入以下指令︰
+      </para>
+<screen><prompt>root # </prompt>ceph --id foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph --user foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--name</option> 或 <option>-n</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph 使用類型和 ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>，例如 <systemitem class="username">client.admin</systemitem> 或 <systemitem class="username">client.user1</systemitem>) 來識別使用者。使用 <option>--name</option> 和 <option>-n</option> 選項可以指定完整的使用者名稱。您必須指定使用者類型 (一般為 <literal>client</literal>) 和使用者 ID︰
+      </para>
+<screen><prompt>root # </prompt>ceph --name client.foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph -n client.foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--keyring</option>
+     </term>
+     <listitem>
+      <para>
+       包含一或多個使用者名稱和機密的金鑰圈路徑。<option>--secret</option> 選項提供相同的功能，但它不適用於物件閘道，該閘道將 <option>--secret</option> 用於其他目的。您可以使用 <command>ceph auth get-or-create</command> 來擷取金鑰圈並將其儲存在本地。這是慣用的方法，因為您無需切換金鑰圈路徑就能切換使用者名稱︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo rbd map --id foo --keyring /path/to/keyring mypool/myimage</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

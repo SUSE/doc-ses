@@ -1,0 +1,589 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_cephx.xml" version="5.0" xml:id="cha.storage.cephx">
+ <title>Autenticación con <systemitem class="service">cephx</systemitem></title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>editar</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>sí</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  Para identificar a los clientes y protegerlos frente a ataques de tipo "man-in-the-middle", Ceph proporciona su propio sistema de autenticación: <systemitem class="service">cephx</systemitem>. En este contexto, los <emphasis>clientes</emphasis> son usuarios humanos (por ejemplo, el usuario administrador) o servicios/daemons relacionados con Ceph (por ejemplo, los OSD, los monitores o las pasarelas Object Gateway).
+ </para>
+ <note>
+  <para>
+   El protocolo <systemitem class="service">cephx</systemitem> no se hace cargo del cifrado de datos durante el transporte, como SSL/TLS.
+  </para>
+ </note>
+ <sect1 xml:id="storage.cephx.arch">
+
+
+  <title>Arquitectura de autenticación</title>
+
+  <para>
+   <systemitem class="service">cephx</systemitem> utiliza claves de secreto compartido para la autenticación, lo que significa que tanto el cliente como el clúster de monitor tienen una copia de la clave de secreto del cliente. El protocolo de autenticación permite a ambas partes probarse entre sí que disponen de una copia de la clave sin revelarla. Esto proporciona autenticación mutua, lo que significa que el clúster está seguro de que el usuario posee la clave de secreto, y el usuario está seguro de que el clúster también tiene una copia.
+  </para>
+
+  <para>
+   Una característica fundamental para la capacidad de ampliación de Ceph es que se evita una interfaz centralizada en el almacén de objetos de Ceph. Esto significa que los clientes de Ceph pueden interactuar directamente con los OSD. Para proteger los datos, Ceph proporciona su propio sistema de autenticación, <systemitem class="service">cephx</systemitem>, que autentica a los clientes de Ceph.
+  </para>
+
+  <para>
+   Cada monitor puede autenticar a los clientes y distribuir claves, por lo que no hay un punto único de fallo ni cuellos de botella cuando se utiliza <systemitem class="service">cephx</systemitem>. El monitor devuelve una estructura de datos de autenticación que contiene una clave de sesión que se usará para obtener los servicios de Ceph. Esta clave de sesión está cifrada a su vez con la clave de secreto permanente del cliente, de forma que solo el cliente puede pedir servicios de los monitores de Ceph. El cliente utiliza entonces la clave de sesión para pedir los servicios que desea del monitor, y el monitor proporciona al cliente un ticket que autenticará al cliente en los OSD donde se gestionan realmente los datos. Los monitores de Ceph y los OSD comparten un secreto, por lo que el cliente puede utilizar el ticket proporcionado por el monitor con cualquier OSD o servidor de metadatos del clúster. Los tickets de <systemitem class="service">cephx</systemitem> caducan, por lo que un atacante no puede utilizar un ticket caducado ni una clave de sesión que haya obtenido de forma fraudulenta. Esta forma de autenticación evita que los atacantes con acceso a los medios de comunicación puedan crear mensajes fraudulentos con la identidad de otro cliente, ni tampoco alterar mensajes legítimos de otro cliente, siempre y cuando la clave secreta del cliente no se revele antes de que caduque.
+  </para>
+
+  <para>
+   Para utilizar <systemitem class="service">cephx</systemitem>, un administrador debe configurar primero clientes o usuarios. En el siguiente diagrama, el usuario <systemitem class="username">client.admin</systemitem> invoca <command>ceph auth get-o-create-key</command> en la línea de comandos para generar un nombre de usuario y una clave de secreto. El subsistema <command>auth</command> de Ceph genera el nombre de usuario y la clave, almacena una copia con los monitores y transmite el secreto del usuario de nuevo al usuario <systemitem class="username">client.admin</systemitem>. Esto significa que el cliente y el monitor comparten una clave de secreto.
+  </para>
+
+  <figure>
+   <title>Autenticación básica con <systemitem class="service">cephx</systemitem></title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Para autenticarse con el monitor, el cliente pasa el nombre de usuario al monitor. El monitor genera una clave de sesión, la cifra con la clave de secreto asociada con el nombre de usuario y transmite el ticket cifrado de vuelta al cliente. El cliente descifra los datos con la clave de secreto compartida para recuperar la clave de sesión. La clave de sesión identifica al usuario para la sesión actual. A continuación, el cliente pide un ticket relacionado con el usuario, que está firmado por la clave de sesión. El monitor genera un ticket, lo cifra con la clave de secreto del usuario y lo transmite al cliente. El cliente descifra el ticket y lo utiliza para firmar las peticiones a los OSD y los servidores de metadatos en todo el clúster.
+  </para>
+
+  <figure>
+   <title>Autenticación con <systemitem class="service">cephx</systemitem></title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   El protocolo <systemitem class="service">cephx</systemitem> autentica continuamente las comunicaciones entre el equipo del cliente y los servidores de Ceph. Cada mensaje que se envía entre un cliente y un servidor después de la autenticación inicial se firma con un ticket que los monitores, los OSD y los servidores de metadatos pueden verificar con su secreto compartido.
+  </para>
+
+  <figure>
+   <title>Autenticación con <systemitem class="service">cephx</systemitem>: servidor de metadatos y OSD</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <important>
+   <para>
+    La protección que ofrece esta autenticación se produce entre el cliente de Ceph y los hosts del clúster de Ceph. La autenticación no se extiende más allá del cliente de Ceph. Si el usuario accede al cliente de Ceph desde un host remoto, la autenticación de Ceph no se aplica a la conexión entre el host del usuario y el host del cliente.
+   </para>
+  </important>
+ </sect1>
+ <sect1 xml:id="storage.cephx.keymgmt">
+
+
+  <title>Gestión de claves</title>
+
+  <para>
+   En esta sección se describen los usuarios del cliente de Ceph, así como su autenticación y autorización con el clúster de almacenamiento de Ceph. Los <emphasis>usuarios</emphasis> son personas o actores del sistema, como aplicaciones, que utilizan los clientes de Ceph para interactuar con los daemons del clúster de almacenamiento de Ceph.
+  </para>
+
+  <para>
+   Cuando se ejecuta Ceph con la autenticación y la autorización habilitadas (lo están por defecto), debe especificar un nombre de usuario y un anillo de claves que contenga la clave de secreto del usuario especificado (por lo general, a través de la línea de comandos). Si no especifica un nombre de usuario, Ceph usará <systemitem class="username">client.admin</systemitem> como nombre de usuario por defecto. Si no especifica un anillo de claves, Ceph buscará un anillo de claves mediante el valor correspondiente del archivo de configuración de Ceph. Por ejemplo, si ejecuta el comando <command>ceph health</command> sin especificar un nombre de usuario o un anillo de claves, Ceph interpreta el comando así:
+  </para>
+
+<screen>ceph -n client.admin --keyring=/etc/ceph/ceph.client.admin.keyring health</screen>
+
+  <para>
+   Si lo prefiere, puede utilizar la variable de entorno <literal>CEPH_ARGS</literal> para evitar tener que introducir de nuevo el nombre de usuario y el secreto.
+  </para>
+
+  <sect2 xml:id="storage.cephx.keymgmt.backgrnd">
+   <title>Información básica</title>
+   <para>
+    Independientemente del tipo de cliente de Ceph (por ejemplo, un dispositivo de bloques, almacenamiento de objetos, sistema de archivos o API nativa), Ceph almacena todos los datos como objetos en <emphasis>repositorios</emphasis>. Los usuarios de Ceph necesitan tener acceso a los repositorios a fin de poder leer y escribir los datos. Además, los usuarios de Ceph deben tener permisos de ejecución para usar los comandos de administración de Ceph. Los siguientes conceptos le ayudarán a comprender mejor la gestión de usuarios de Ceph.
+   </para>
+   <sect3>
+    <title>Usuario</title>
+    <para>
+     Un usuario es una persona o un actor del sistema, como una aplicación. Crear usuarios permite controlar quién (o qué) puede acceder a su clúster de almacenamiento de Ceph, sus repositorios y los datos de los repositorios.
+    </para>
+    <para>
+     Ceph usa <emphasis>tipos</emphasis> de usuarios. Para la gestión de los usuarios, el tipo siempre será <literal>cliente</literal>. Ceph identifica a los usuarios con un formato delimitado por punto (.), formado por el tipo de usuario y el ID de usuario. Por ejemplo, <literal>TYPE.ID</literal>, <literal>client.admin</literal> o <literal>client.user1</literal>. Este formato se usa porque los monitores de Ceph, los OSD y los servidores de metadatos también utilizan el protocolo cephx, pero no son clientes. Distinguir el tipo de usuario ayuda a diferenciar entre los usuarios cliente y otros usuarios, además de optimizar el control de acceso, la supervisión del usuario y el seguimiento.
+    </para>
+    <note>
+     <para>
+      Un usuario de clúster de almacenamiento de Ceph no es lo mismo que un usuario de almacenamiento de objetos de Ceph ni un usuario de sistema de archivos de Ceph. Ceph Object Gateway utiliza un usuario de clúster de almacenamiento de Ceph para la comunicación entre el daemon de pasarela y el clúster de almacenamiento, pero la pasarela tiene sus propias funciones de gestión de usuarios para los usuarios finales. El sistema de archivos de Ceph utiliza la semántica de POSIX. El espacio de usuarios asociado a ese sistema no es igual que un usuario de clúster de almacenamiento de Ceph.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Autorización y permisos</title>
+    <para>
+     Ceph usa el término permisos (caps, o "capabilities" en inglés) para describir la autorización de un usuario autenticado para que pueda trabajar con los monitores, los OSD y los servidores de metadatos. Los permisos también pueden restringir el acceso a los datos de un repositorio o a un espacio de nombres en un repositorio. Un usuario administrativo de Ceph define los permisos del usuario cuando lo crea o lo actualiza.
+    </para>
+    <para>
+     La sintaxis de los permisos sigue este formato:
+    </para>
+<screen><replaceable>daemon-type</replaceable> 'allow <replaceable>capability</replaceable>' [...]</screen>
+    <para>
+     A continuación encontrará una lista de permisos para cada tipo de servicio:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Permisos de monitor</term>
+      <listitem>
+       <para>
+        Incluye <literal>r</literal>, <literal>w</literal>, <literal>x</literal> y <literal>allow profile <replaceable>permiso</replaceable></literal>.
+       </para>
+<screen>mon 'allow rwx'
+mon 'allow profile osd'</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Permisos de OSD</term>
+      <listitem>
+       <para>
+        Incluye <literal>r</literal>, <literal>w</literal>, <literal>x</literal>, <literal>class-read</literal>, <literal>class-write</literal> y <literal>profile osd</literal>. Además, los permisos de OSD también permiten configurar el repositorio y el espacio de nombres.
+       </para>
+<screen>osd 'allow <replaceable>capability</replaceable>' [pool=<replaceable>poolname</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>Permiso de servidor de metadatos</term>
+      <listitem>
+       <para>
+        Solo es <literal>allow</literal> o se deja vacío.
+       </para>
+<screen>mds 'allow'</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Las siguientes entradas describen cada permiso:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>allow</term>
+      <listitem>
+       <para>
+        Precede a la configuración de acceso para un daemon. Implica <literal>rw</literal> solo para el servidor de metadatos.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>r</term>
+      <listitem>
+       <para>
+        Proporciona al usuario acceso de lectura. Es necesario para que los monitores puedan recuperar el mapa de CRUSH.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>w</term>
+      <listitem>
+       <para>
+        Proporciona al usuario acceso de escritura a los objetos.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>x</term>
+      <listitem>
+       <para>
+        Proporciona al usuario el permiso para llamar a métodos de clase (tanto de lectura como de escritura) y para llevar a cabo operaciones <literal>auth</literal> en los monitores.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-read</term>
+      <listitem>
+       <para>
+        Proporciona al usuario el permiso para llamar a métodos de lectura de clase. Subconjunto de <literal>x</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-write</term>
+      <listitem>
+       <para>
+        Proporciona al usuario el permiso para llamar a métodos de escritura de clase. Subconjunto de <literal>x</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>*</term>
+      <listitem>
+       <para>
+        Proporciona al usuario permisos de lectura, escritura y ejecución para un daemon o repositorio concreto, así como la capacidad de ejecutar comandos de administración.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile osd</term>
+      <listitem>
+       <para>
+        Proporciona a un usuario permiso para conectarse como un OSD a otros OSD o monitores. Se otorga en los OSD para permitirles gestionar el tráfico de subejecución de réplica y la elaboración de informes de estado.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile mds</term>
+      <listitem>
+       <para>
+        Proporciona a un usuario permiso para conectarse como un servidor de metadatos a otros servidores de metadatos o monitores.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-osd</term>
+      <listitem>
+       <para>
+        Proporciona a un usuario permisos para cargar un OSD. Se delega a las herramientas de distribución para que tengan permisos para añadir claves cuando se carga un OSD.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-mds</term>
+      <listitem>
+       <para>
+        Proporciona a un usuario permisos para cargar un servidor de metadatos. Se delega a las herramientas de distribución para que tengan permisos para añadir claves cuando se carga un servidor de metadatos.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>Repositorios</title>
+    <para>
+     Un repositorio es una partición lógica donde los usuarios almacenan los datos. En distribuciones de Ceph, es común crear un repositorio como una partición lógica para tipos similares de datos. Por ejemplo, al distribuir Ceph como procesador final para OpenStack, una distribución típica tendría repositorios para los volúmenes, las imágenes, las copias de seguridad, las máquinas virtuales y los usuarios como <systemitem class="username">client.glance</systemitem> o <systemitem class="username">client.cinder</systemitem>.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.usermgmt">
+   <title>Gestión de usuarios</title>
+   <para>
+    La funcionalidad de gestión de usuarios proporciona a los administradores de clústeres de Ceph la capacidad de crear, actualizar y suprimir usuarios directamente en el clúster de Ceph.
+   </para>
+   <para>
+    Al crear o suprimir usuarios en el clúster de Ceph, puede ser necesario distribuir claves a los clientes para que se puedan añadir a anillos de claves. Para obtener más información, consulte: <xref linkend="storage.cephx.keymgmt.keyringmgmt"/>.
+   </para>
+   <sect3>
+    <title>Listas de usuarios</title>
+    <para>
+     Para obtener una lista de los usuarios del clúster, ejecute lo siguiente:
+    </para>
+<screen>ceph auth list</screen>
+    <para>
+     Ceph mostrará a todos los usuarios del clúster. Por ejemplo, en un clúster de dos nodos, <command>ceph auth list</command> da como resultado algo parecido a esto:
+    </para>
+<screen>installed auth entries:
+
+osd.0
+        key: AQCvCbtToC6MDhAATtuT70Sl+DymPCfDSsyV4w==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+osd.1
+        key: AQC4CbtTCFJBChAAVq5spj0ff4eHZICxIOVZeA==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+client.admin
+        key: AQBHCbtT6APDHhAA5W00cBchwkQjh3dkKsyPjw==
+        caps: [mds] allow
+        caps: [mon] allow *
+        caps: [osd] allow *
+client.bootstrap-mds
+        key: AQBICbtTOK9uGBAAdbe5zcIGHZL3T/u2g6EBww==
+        caps: [mon] allow profile bootstrap-mds
+client.bootstrap-osd
+        key: AQBHCbtT4GxqORAADE5u7RkpCN/oo4e5W0uBtw==
+        caps: [mon] allow profile bootstrap-osd</screen>
+    <note>
+     <title>notación TYPE.ID</title>
+     <para>
+      Tenga en cuenta que se aplica la notación <literal>TYPE.ID</literal> para los usuarios, de forma que <literal>osd.0</literal> especifica un usuario de tipo <literal>osd</literal> cuyo ID es <literal>0</literal>. <literal>client.admin</literal> es un usuario de tipo <literal>client</literal> cuyo ID es <literal>admin</literal>. Tenga en cuenta también que cada entrada tiene una entrada <literal>key: <replaceable>valor</replaceable> </literal> y una o más entradas <literal>caps:</literal>.
+     </para>
+     <para>
+      Puede utilizar la opción <option>-o <replaceable>nombre de archivo</replaceable> </option> con <command>ceph auth list</command> para guardar el resultado en un archivo.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Obtención de información sobre los usuarios</title>
+    <para>
+     Para recuperar información de un usuario, una clave y permisos concretos, ejecute lo siguiente:
+    </para>
+<screen>ceph auth get <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     Por ejemplo:
+    </para>
+<screen>ceph auth get client.admin
+exported keyring for client.admin
+[client.admin]
+	key = AQA19uZUqIwkHxAAFuUwvq0eJD4S173oFRxe0g==
+	caps mds = "allow"
+	caps mon = "allow *"
+ caps osd = "allow *"</screen>
+    <para>
+     Los desarrolladores también pueden ejecutar lo siguiente:
+    </para>
+<screen>ceph auth export <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     El comando <command>auth export</command> es idéntico al comando <command>auth get</command>, pero también imprime el ID de autenticación interno.
+    </para>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.useradd">
+    <title>Adición de usuarios</title>
+    <para>
+     Al añadir un usuario, se crea un nombre de usuario (<literal>TYPE.ID</literal>), una clave de secreto y cualquier permiso incluido en el comando que se utiliza para crear el usuario.
+    </para>
+    <para>
+     La clave del usuario permite a este autenticarse con el clúster de almacenamiento de Ceph. Los permisos del usuario autorizan a este a leer, escribir o ejecutar en los monitores de Ceph (mon), los OSD de Ceph (osd) o los servidores de metadatos de Ceph (mds).
+    </para>
+    <para>
+     Hay varios comandos disponibles para añadir un usuario:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>ceph auth add</command>
+      </term>
+      <listitem>
+       <para>
+        Este comando es la manera canónica de añadir un usuario. Crea el usuario, genera una clave y añade cualquier permiso especificado.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create</command>
+      </term>
+      <listitem>
+       <para>
+        Este comando suele ser la forma más cómoda de crear un usuario, ya que devuelve un formato de archivo de clave con el nombre de usuario (entre corchetes) y la clave. Si el usuario ya existe, este comando simplemente devuelve el nombre de usuario y la clave con formato de archivo de clave. Puede utilizar la opción <option>-o <replaceable>nombre de archivo</replaceable> </option> para guardar el resultado en un archivo.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create-key</command>
+      </term>
+      <listitem>
+       <para>
+        Este comando es un método sencillo de crear un usuario y devolver (solo) la clave del usuario. Resulta útil para clientes que solo necesitan la clave (por ejemplo, <systemitem class="library">libvirt</systemitem>). Si el usuario ya existe, este comando solo devuelve la clave. Puede utilizar la opción <option>-o <replaceable>nombre de archivo</replaceable> </option> para guardar el resultado en un archivo.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Cuando se crean usuarios de cliente, puede crear un usuario sin permisos. Un usuario sin permisos puede autenticarse, pero nada más. Un cliente de este tipo no puede recuperar el mapa del clúster del monitor. Sin embargo, puede crear un usuario sin permisos si desea añadir los permisos más tarde con el comando <command>ceph auth caps</command>.
+    </para>
+    <para>
+     Un usuario típico tiene al menos el permiso de lectura en el monitor de Ceph y de lectura y escritura en los OSD de Ceph. Además, los permisos de OSD de un usuario a menudo están restringidos al acceso a un repositorio concreto.
+    </para>
+<screen><prompt>root # </prompt>ceph auth add client.john mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.paul mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>root # </prompt>ceph auth get-or-create client.george mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o george.keyring
+<prompt>root # </prompt>ceph auth get-or-create-key client.ringo mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o ringo.key</screen>
+    <important>
+     <para>
+      Si proporciona a un usuario permisos para los OSD, pero <emphasis>no</emphasis> restringe el acceso a repositorios concretos, el usuario tendrá acceso a <emphasis>todos</emphasis> los repositorios del clúster.
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>Modificación de los permisos de usuario</title>
+    <para>
+     El comando <command>ceph auth caps</command> permite especificar un usuario y cambiar sus permisos. Al definir nuevos permisos, se sobrescribirán los existentes. Para ver los permisos actuales, ejecute <command>ceph auth get <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable></command>. Para añadir permisos, también debe especificar los permisos existentes con el formato siguiente:
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable> <replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]' [<replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]']</screen>
+    <para>
+     Por ejemplo:
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.john
+<prompt>root # </prompt>ceph auth caps client.john mon 'allow r' osd 'allow rw pool=prague'
+<prompt>root # </prompt>ceph auth caps client.paul mon 'allow rw' osd 'allow rwx pool=prague'
+<prompt>root # </prompt>ceph auth caps client.brian-manager mon 'allow *' osd 'allow *'</screen>
+    <para>
+     Para eliminar un permiso, puede restablecerlo. Si desea que el usuario no tenga acceso a un daemon concreto que se ha definido previamente, especifique una cadena vacía:
+    </para>
+<screen><prompt>root # </prompt>ceph auth caps client.ringo mon ' ' osd ' '</screen>
+   </sect3>
+   <sect3>
+    <title>Supresión de usuarios</title>
+    <para>
+     Para suprimir un usuario, utilice <command>ceph auth del</command>:
+    </para>
+<screen><prompt>root # </prompt>ceph auth del <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     donde <replaceable>TYPE</replaceable> es <literal>client</literal>, <literal>osd</literal>, <literal>mon</literal> o <literal>mds</literal>, e <replaceable>ID</replaceable> es el nombre del usuario o el ID del daemon.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Impresión de la clave de un usuario</title>
+    <para>
+     Para imprimir la clave de autenticación de un usuario con una salida estándar, ejecute lo siguiente:
+    </para>
+<screen><prompt>root # </prompt>ceph auth print-key <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     donde <replaceable>TYPE</replaceable> es <literal>client</literal>, <literal>osd</literal>, <literal>mon</literal> o <literal>mds</literal>, e <replaceable>ID</replaceable> es el nombre del usuario o el ID del daemon.
+    </para>
+    <para>
+     Imprimir la clave de un usuario resulta útil si necesita completar el software de cliente con la clave de un usuario (por ejemplo, <systemitem class="library">libvirt</systemitem>), tal y como se muestra en el siguiente ejemplo:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo mount -t ceph host:/ mount_point \
+-o name=client.user,secret=`ceph auth print-key client.user`</screen>
+   </sect3>
+   <sect3 xml:id="storage.cephx.keymgmt.usermgmt.userimp">
+    <title>Importación de usuarios</title>
+    <para>
+     Para importar uno o varios usuarios, utilice <command>ceph auth import</command> y especifique un anillo de claves:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <note>
+     <para>
+      El clúster de almacenamiento de Ceph añadirá los nuevos usuarios, sus claves y sus permisos, además de actualizar los usuarios existentes, sus claves y sus permisos.
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.keyringmgmt">
+   <title>Gestión de anillos de claves</title>
+   <para>
+    Si accede a Ceph a través de un cliente de Ceph, el cliente buscará un anillo de claves local. Ceph incluye cuatro nombres de anillos de claves por defecto, por lo que no es necesario definirlos en el archivo de configuración de Ceph, a menos que desee sustituir esos valores por defecto:
+   </para>
+<screen>/etc/ceph/<replaceable>cluster</replaceable>.<replaceable>name</replaceable>.keyring
+/etc/ceph/<replaceable>cluster</replaceable>.keyring
+/etc/ceph/keyring
+/etc/ceph/keyring.bin</screen>
+   <para>
+    La metavariable <replaceable>cluster</replaceable> es el nombre de su clúster de Ceph definido en el archivo de configuración de Ceph. <filename>ceph.conf</filename> significa que el nombre del clúster es <literal>ceph</literal>, como en <literal>ceph.keyring</literal>. La metavariable <replaceable>name</replaceable> es el tipo de usuario y el ID de usuario; por ejemplo, <literal>client.admin</literal>, como en <literal>ceph.client.admin.keyring</literal>.
+   </para>
+   <para>
+    Después de crear un usuario (por ejemplo, <systemitem class="username">client.ringo</systemitem>), debe obtener la clave y añadirla a un anillo de claves en un cliente de Ceph para que el usuario pueda acceder el clúster de almacenamiento de Ceph.
+   </para>
+   <para>
+    En la <xref linkend="storage.cephx.keymgmt"/> se detalla cómo mostrar una lista de usuario y obtener, añadir, modificar y suprimir usuarios directamente en el clúster de almacenamiento de Ceph. Sin embargo, Ceph también proporciona la utilidad <command>ceph-authtool</command>, que permite gestionar anillos de claves desde un cliente de Ceph.
+   </para>
+   <sect3>
+    <title>Creación de un anillo de claves</title>
+    <para>
+     Cuando se utilizan los procedimientos de la <xref linkend="storage.cephx.keymgmt"/> para crear usuarios, debe proporcionar las claves de usuario a los clientes de Ceph para que puedan recuperar la clave para el usuario especificado y autenticarse con el clúster de almacenamiento de Ceph. Los clientes de Ceph acceden a los anillos de claves para buscar un nombre de usuario y recuperar la clave del usuario:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool --create-keyring /path/to/keyring</screen>
+    <para>
+     Cuando se crea un anillo de claves con varios usuarios, es recomendable utilizar el nombre del clúster (por ejemplo <replaceable>cluster</replaceable>.keyring) para el nombre de archivo del anillo de claves y guardarlo en el directorio <filename>/etc/ceph</filename>. De esta forma, la configuración por defecto del anillo de claves tomará el nombre de archivo sin que sea necesario especificarlo en la copia local del archivo de configuración de Ceph. Por ejemplo, para crear <filename>ceph.keyring</filename>, ejecute lo siguiente:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring</screen>
+    <para>
+     Cuando se crea un anillo de claves con un solo usuario, se recomienda usar el nombre del clúster, el tipo de usuario y el nombre de usuario y guardarlo en el directorio <filename>/etc/ceph</filename>. Por ejemplo, <filename>ceph.client.admin.keyring</filename> para el usuario <systemitem class="username">client.admin</systemitem>.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Adición de un usuario a un anillo de claves</title>
+    <para>
+     Cuando se añade un usuario al clúster de almacenamiento de Ceph (consulte la <xref linkend="storage.cephx.keymgmt.usermgmt.useradd"/>), puede recuperar el usuario, la clave y los permisos, y guardar el usuario en un anillo de claves.
+    </para>
+    <para>
+     Si solo desea utilizar un usuario por anillo de claves, el comando <command>ceph auth get</command> con la opción <option>-o</option> guardará el resultado en el formato de archivo del anillo de claves. Por ejemplo, para crear un anillo de claves para el usuario <systemitem class="username">client.admin</systemitem>, ejecute lo siguiente:
+    </para>
+<screen><prompt>root # </prompt>ceph auth get client.admin -o /etc/ceph/ceph.client.admin.keyring</screen>
+    <para>
+     Si desea importar usuarios en un anillo de claves, puede utilizar <command>ceph-authtool</command> para especificar el anillo de claves de destino y el anillo de claves de origen:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring \
+  --import-keyring /etc/ceph/ceph.client.admin.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>Creación de un usuario</title>
+    <para>
+     Ceph proporciona el comando <command>ceph auth add</command> para crear un usuario directamente en el clúster de almacenamiento de Ceph. Sin embargo, también puede crear un usuario, las claves y los permisos directamente en un anillo de claves del cliente de Ceph. A continuación, puede importar el usuario en el clúster de almacenamiento de Ceph:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -n client.ringo --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.keyring</screen>
+    <para>
+     También puede crear un anillo de claves y añadirle simultáneamente un usuario nuevo:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool -C /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx' --gen-key</screen>
+    <para>
+     En las situaciones anteriores, el nuevo usuario <systemitem class="username">client.ringo</systemitem> está solo en el anillo de claves. Para añadir el nuevo usuario al clúster de almacenamiento de Ceph, sigue siendo necesario añadir el nuevo usuario al clúster:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph auth add client.ringo -i /etc/ceph/ceph.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>Modificación de usuarios</title>
+    <para>
+     Para modificar los permisos de un registro de usuario en un anillo de claves, especifique el anillo de claves y el usuario seguidos de los permisos:
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph-authtool /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx'</screen>
+    <para>
+     Para actualizar el usuario modificado en el entorno de clúster de Ceph, debe importar los cambios desde el anillo de claves en la entrada de usuario del clúster de Ceph:
+    </para>
+<screen><prompt>root # </prompt>ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <para>
+     Consulte la <xref linkend="storage.cephx.keymgmt.usermgmt.userimp"/> para obtener información sobre cómo actualizar el clúster de almacenamiento de Ceph desde un anillo de claves.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage.cephx.keymgmt.cmdline">
+   <title>Uso de la línea de comandos</title>
+   <para>
+    El comando <command>ceph</command> admite las siguientes opciones relacionadas con el nombre de usuario y la manipulación del secreto:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><option>--id</option> o <option>--user</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph identifica a los usuarios con un tipo y un ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>; por ejemplo, <systemitem class="username">client.admin</systemitem> o <systemitem class="username">client.user1</systemitem>). Las opciones <option>id</option>, <option>name</option> y <option>-n</option> permiten especificar la parte del ID del nombre de usuario (por ejemplo, <systemitem class="username">admin</systemitem> o <systemitem class="username">user1</systemitem>). Puede especificar el usuario con la opción --id y omitir el tipo. Por ejemplo, para especificar el usuario client.foo, escriba lo siguiente:
+      </para>
+<screen><prompt>root # </prompt>ceph --id foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph --user foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--name</option> o <option>-n</option>
+     </term>
+     <listitem>
+      <para>
+       Ceph identifica a los usuarios con un tipo y un ID (<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>; por ejemplo, <systemitem class="username">client.admin</systemitem> o <systemitem class="username">client.user1</systemitem>). Las opciones <option>--name</option> y <option>-n</option> permiten especificar el nombre completo del usuario. Debe especificar el tipo de usuario (generalmente, <literal>client</literal>) con el ID de usuario:
+      </para>
+<screen><prompt>root # </prompt>ceph --name client.foo --keyring /path/to/keyring health
+<prompt>root # </prompt>ceph -n client.foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--keyring</option>
+     </term>
+     <listitem>
+      <para>
+       La vía al anillo de claves que contiene uno o más nombres de usuario y secretos. La opción <option>--secret</option> ofrece las mismas funciones, pero no funciona con Object Gateway, que utiliza <option>--secret</option> para otro fin. Puede recuperar un anillo de claves con <command>auth ceph get-or-create</command> y almacenarlo localmente. Se trata del enfoque preferido, ya que permite cambiar de nombres de usuario sin tener que cambiar la vía del anillo de claves:
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo rbd map --id foo --keyring /path/to/keyring mypool/myimage</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

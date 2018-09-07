@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tiered_storage.xml" version="5.0" xml:id="cha.ceph.tiered">
+
+ <title>快取分層</title>
+ <info>
+      <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+        <dm:maintainer>tbazant@suse.com</dm:maintainer>
+        <dm:status>編輯</dm:status>
+        <dm:deadline/>
+        <dm:priority/>
+        <dm:translation>yes</dm:translation>
+        <dm:languages/>
+        <dm:release>SES 5</dm:release>
+      </dm:docmanager>
+    </info>
+    <para>
+  <emphasis>快取層</emphasis>是在用戶端與標準儲存之間實作的附加儲存層。該層用於加快存取低速硬碟中儲存的池以及糾刪碼池的速度。
+ </para>
+ <para>
+  一般而言，快取分層涉及到建立一個設定為充當快取層的相對快速且昂貴的儲存裝置 (例如 SSD 磁碟機) 池，以及一個設定為充當儲存層的更慢但更便宜的裝置支援池。
+ </para>
+ <sect1>
+  <title>分層儲存的相關術語</title>
+
+  <para>
+   快取分層可識別兩種類型的池︰<emphasis>快取池</emphasis>和<emphasis>儲存池</emphasis>。
+  </para>
+
+  <tip>
+   <para>
+    如需池的一般資訊，請參閱<xref linkend="ceph.pools"/>。
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>儲存池</term>
+    <listitem>
+     <para>
+      在 Ceph 儲存叢集中儲存一個物件的多個副本的標準副本池，或糾刪碼池 (請參閱<xref linkend="cha.ceph.erasure"/>)。
+     </para>
+     <para>
+      儲存池有時稱為「支援」儲存或「冷」儲存。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>快取池</term>
+    <listitem>
+     <para>
+      標準副本池，儲存在相對較小但速度較快的儲存裝置上，在 CRUSH 地圖中具有自己的規則集。
+     </para>
+     <para>
+      快取池也稱為「熱」儲存。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.caution">
+  <title>需考量的要點</title>
+
+  <para>
+   快取分層可能會<emphasis>降低</emphasis>特定工作負載的叢集效能。以下幾點指出了您需要考量的有關快取分層的幾個方面︰
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>取決於工作負載</emphasis>︰快取能否提高效能取決於工作負載。由於將物件移入或移出快取會耗費資源，因此，如果大多數要求只涉及到少量的物件，則使用快取可能更高效。快取池的大小應該足以接收工作負載的工作集，以避免效能大幅波動。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>難以進行基準測試</emphasis>︰大多數效能基準測試可能會反映使用快取分層時效能較低。原因在於，這些基準測試要求了大量的物件，而快取的「預熱」需要較長時間。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>效能可能較低</emphasis>︰對於不適合進行快取分層的工作負載而言，其效能往往比不啟用快取分層的普通副本池更低。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis><systemitem>librados</systemitem> 物件列舉</emphasis>︰如果應用程式直接使用 <systemitem>librados</systemitem> 並依賴於物件列舉，則快取分層可能無法依預期運作 (對於物件閘道、RBD 或 CephFS 而言，這不會造成問題)。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1>
+  <title>何時使用快取分層</title>
+
+  <para>
+   在以下情況下，可考慮使用快取分層︰
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     需要透過 RADOS 區塊裝置 (RBD) 存取糾刪碼池。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     需要透過 iSCSI (因為它沿襲了 RBD 的限制) 存取糾刪碼池。如需 iSCSI 的詳細資訊，請參閱<xref linkend="cha.ceph.iscsi"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     您的高效能儲存數量有限，而低效能儲存眾多，您需要更快地存取儲存的資料。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sec.ceph.tiered.cachemodes">
+  <title>快取模式</title>
+
+  <para>
+   快取分層代理程式可處理快取層與支援儲存層之間的資料移轉。管理員可以設定如何進行這種移轉。主要有兩種方案︰
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>寫回模式</term>
+    <listitem>
+     <para>
+      在寫回模式下，Ceph 用戶端將資料寫入快取層，並從快取層接收確認回應。一段時間後，寫入快取層的資料將移轉至儲存層，並從快取層中衝洗出去。從概念上講，快取層疊加在支援儲存層的「前面」。當 Ceph 用戶端需要存放於儲存層中的資料時，快取分層代理程式會在讀取時將資料移轉至快取層，然後，資料將傳送到 Ceph 用戶端。因此，用戶端可以使用快取層執行 I/O，直到資料變為非使用中狀態。這種做法非常適合可變的資料，例如，相片或視訊編輯，或交易資料。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>唯讀模式</term>
+    <listitem>
+     <para>
+      在唯讀模式下，Ceph 用戶端將資料直接寫入支援層。在讀取時，Ceph 將要求的物件從支援層複製到快取層。系統會根據定義的規則從快取層中移除過時物件。這種做法非常適合不可變的資料，例如，在社交網路上呈現的圖片或視訊、DNA 資料或 X 光影像，因為從可能包含過時資料的快取池中讀取資料會導致一致性很差。不要對可變的資料使用唯讀模式。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="ses.tiered.hitset">
+  <title>命中集</title>
+
+  <sect2 xml:id="ses.tiered.hitset.overview">
+   <title>綜覽</title>
+   <para>
+    使用<emphasis>命中集</emphasis>參數可以調整<emphasis>快取池</emphasis>。Ceph 中的命中集通常是布隆過濾器，提供節省記憶體使用量的方式來追蹤已存放於快取池的物件。
+   </para>
+   <para>
+    命中集是一個位元陣列，用於儲存對物件名稱套用的一組雜湊函數的結果。所有位元最初都設定為 <literal>0</literal>。將一個物件新增至命中集後，系統會對該物件的名稱進行雜湊，並且結果將對應在命中集中的不同位置，那時，相應位元的值會設定為 <literal>1</literal>。
+   </para>
+   <para>
+    為了確定某個物件是否存在於快取中，將會再次對物件名稱進行雜湊。如果任一位元為 <literal>0</literal>，則表示該物件一定不在快取中，需要從冷儲存中擷取它。<remark role="fixme">How is the modification date retrieved in read mode?</remark>
+   </para>
+   <para>
+    不同物件的結果可能會儲存在命中集的同一位置。在巧合的情況下，可能所有位元都是 <literal>1</literal>，而物件卻不在快取中。因此，處理布隆過濾器的命中集只能確定某個物件是否一定不在快取中，需要從冷儲存擷取它。
+   </para>
+   <para>
+    一個快取池可以使用多個命中集來追蹤各期間的檔案存取。<literal>hit_set_count</literal> 設定定義所用的命中集數量，<literal>hit_set_period</literal> 定義每個命中集已使用了多長時間。該時期過期後，將使用下一個命中集。如果用盡了命中集，將會釋放最舊命中集的記憶體，並建立一個新的命中集。將 <literal>hit_set_count</literal> 和 <literal>hit_set_period</literal> 的值相乘可定義已追蹤物件存取的整個時間範圍。
+   </para>
+   <figure xml:id="ses.tiered.hitset.overview.bloom">
+    <title>包含 3 個儲存物件的布隆過濾器</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    與進行雜湊的物件數量相比，基於布隆過濾器的命中集非常節省記憶體的使用量。只需使用不到 10 個位元即可將誤報率降低到 1% 以下。可以使用 <literal>hit_set_fpp</literal> 定義誤報率。Ceph 可根據放置群組中的物件數量及誤報率自動計算命中集的大小。
+   </para>
+   <para>
+    可以使用 <literal>min_write_recency_for_promote</literal> 和 <literal>min_read_recency_for_promote</literal> 限制快取池中所需的儲存。如果將值設定為 <literal>0</literal>，則所有物件在被讀取或寫入後，會立即提升到快取池，並且在被逐出之前會一直保持這種模式。使用大於 <literal>0</literal> 的任何值可定義在其中搜尋物件的命中集 (已依存留期排序) 的數量。如果在某個命中集中找到了該物件，會將該物件提升到快取池。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ses.tiered.hitset.examples">
+   <title>範例</title>
+   <sect3 xml:id="ses.tiered.hitset.examples.memory">
+    <title>大型快取池和少量記憶體</title>
+    <para>
+     如果有大量的儲存，但只有少量的 RAM 可用，則所有物件在被存取後可立即提升到快取池。命中集保持較小的規模。下面是一組範例組態值︰
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses.tiered.hitset.examples.storage">
+    <title>小型快取池和大量記憶體</title>
+    <para>
+     如果只有少量的儲存，但可用的記憶體量相對較大，則可以將快取層設定為將有限數量的物件提升到快取池。如果有 12 個命中集，並且在 14,400 秒期限內可以使用其中每個命中集，則這些命中集總共可提供 48 小時的追蹤。如果在過去 8 小時內存取了某個物件，該物件將提升到快取池。這種情況的一組範例組態值如下︰
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ses.tiered.storage">
+  <title>設定範例分層儲存</title>
+
+  <para>
+   本節說明如何在標準硬碟 (冷儲存) 的前面設定一個高速 SSD 快取層 (熱儲存)。
+  </para>
+
+  <tip>
+   <para>
+    下面的範例只是用於說明，其中的設定包含存在於單個 Ceph 節點上的 SSD 部件的一個根及一條規則。
+   </para>
+   <para>
+    在生產環境中，叢集設定一般包含熱儲存以及混合節點 (配有 SSD 和 SATA 磁碟) 的更多根和規則項目。
+   </para>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     準備一部配有 SSD 等高速磁碟機的主機。此叢集節點將充當高速快取層。
+    </para>
+   </step>
+   <step>
+    <para>
+     使用 DeepSea 將該機器轉變成 Ceph 節點。依<xref linkend="salt.adding.nodes"/>所述安裝軟體並設定主機機器。我們假設此節點名為 <replaceable>node-4</replaceable>。此節點需要有 4 個 OSD 磁碟。
+    </para>
+    <para>
+     這可能會在 CRUSH 地圖中產生類似下方所示的項目︰
+    </para>
+<screen>[...]
+host node-4 {
+   id -5  # do not change unnecessarily
+   # weight 0.012
+   alg straw
+   hash 0  # rjenkins1
+   item osd.6 weight 0.003
+   item osd.7 weight 0.003
+   item osd.8 weight 0.003
+   item osd.9 weight 0.003
+}
+[...]</screen>
+   </step>
+   <step>
+    <para>
+     編輯熱儲存池 (與受高速 SSD 磁碟機支援的 OSD 對應) 的 CRUSH 地圖。定義另一個包含 SSD 根節點的階層 (指令為「root ssd」)。此外，請變更 SSD 的權數和 CRUSH 規則。如需 CRUSH 地圖的詳細資訊，請參閱 <link xlink:href="http://docs.ceph.com/docs/master/rados/operations/crush-map/"/>。
+    </para>
+    <para>
+     使用 <command>getcrushmap</command> 和 <command>crushtool</command> 這類指令行工具直接編輯 CRUSH 地圖。
+    </para>
+    <substeps performance="required">
+     <step>
+      <para>
+       擷取目前地圖，並將其儲存為 <filename>c.map</filename>︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd getcrushmap -o c.map</screen>
+     </step>
+     <step>
+      <para>
+       反編譯 <filename>c.map</filename>，並將其儲存為 <filename>c.txt</filename>︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -d c.map -o c.txt</screen>
+     </step>
+     <step>
+      <para>
+       編輯 <filename>c.txt</filename>︰
+      </para>
+<screen>[...]
+host node-4 {
+        id -5  # do not change unnecessarily
+        # weight 4.000
+        alg straw
+        hash 0  # rjenkins1
+        item osd.6 weight 1.000
+        item osd.7 weight 1.000
+        item osd.8 weight 1.000
+        item osd.9 weight 1.000
+}
+root ssd {    # newly added root for the SSD hot-storage
+        id -6
+        alg straw
+        hash 0
+        item node-4 weight 4.00
+}
+rule ssd {
+        ruleset 4
+        type replicated
+        min_size 0
+        max_size 4
+        step take ssd
+        step chooseleaf firstn 0 type host
+        step emit
+}
+[...]</screen>
+     </step>
+     <step>
+      <para>
+       編譯已編輯的 <filename>c.txt</filename> 檔案，並將其儲存為 <filename>ssd.map</filename>︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>crushtool -c c.txt -o ssd.map</screen>
+     </step>
+     <step>
+      <para>
+       最後，安裝 <filename>ssd.map</filename> 以做為新的 CRUSH 地圖︰
+      </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd setcrushmap -i ssd.map</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     建立用於快取分層的熱儲存池。對該池使用新的「ssd」規則︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create hot-storage 100 100 replicated ssd</screen>
+   </step>
+   <step>
+    <para>
+     使用預設的「replicated_ruleset」規則建立冷儲存池︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+   </step>
+   <step>
+    <para>
+     然後，設定快取層的過程就涉及到將支援儲存池與快取池關聯，在本例中，需要將冷儲存 (即儲存池) 與熱儲存 (即快取池) 關聯︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier add cold-storage hot-storage</screen>
+   </step>
+   <step>
+    <para>
+     若要將快取模式設定為「寫回」，請執行以下指令︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier cache-mode hot-storage writeback</screen>
+    <para>
+     如需快取模式的詳細資訊，請參閱<xref linkend="sec.ceph.tiered.cachemodes"/>。
+    </para>
+    <para>
+     寫回快取層疊加在支援儲存池上，因此需要執行一個額外的步驟︰必須將來自儲存池的所有用戶端流量導向至快取池。例如，若要將用戶端流量直接導向至快取池，請執行以下指令︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd tier set-overlay cold-storage hot-storage</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="cache.tier.configure">
+   <title>設定快取層</title>
+   <para>
+    可以使用多個選項來設定快取層。使用以下語法︰
+   </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+   <sect3>
+    <title>目標大小和類型</title>
+    <para>
+     以下步驟說明如何使用<xref linkend="ses.tiered.hitset.examples.storage"/>中提供的值設定<emphasis>快取池</emphasis>
+    </para>
+    <para>
+     Ceph 的生產快取層針對 <option>hit_set_type</option> 使用布隆過濾器︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_type bloom</screen>
+    <para>
+     <option>hit_set_count</option> 和 <option>hit_set_period</option> 定義每個命中集應該經歷的時長，以及要儲存多少個這樣的命中集。<remark role="fixme">What are the numbers doing? They're without explanation. https://software.intel.com/en-us/blogs/2015/03/03/ceph-cache-tiering-introduction</remark>
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_count 12
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_period 14400
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes 1000000000000</screen>
+    <note>
+     <para>
+      <option>hit_set_count</option> 越大，<systemitem class="process">ceph-osd</systemitem> 程序耗費的 RAM 就越多。
+     </para>
+    </note>
+    <para>
+     <option>min_read_recency_for_promote</option> 定義在處理讀取操作時，要在多少個命中集中檢查某個物件是否存在。檢查結果用於確定是否要以非同步方式提升該物件。此參數的值應介於 0 到 <option>hit_set_count</option> 之間。如果設定為 0，則永遠提升該物件。如果設定為 1，則檢查目前命中集。如果此物件在目前命中集中，則提升此物件。否則，將不提升。如果設定為其他值，則檢查相應數量的歸檔命中集。如果在任何最近的 <option>min_read_recency_for_promote</option> 命中集中找到了該物件，則提升該物件。
+    </para>
+    <para>
+     您可以針對寫入操作設定類似的參數，即 <option>min_write_recency_for_promote</option>︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_read_recency_for_promote 2
+<prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> min_write_recency_for_promote 2</screen>
+    <note>
+     <para>
+      期間越長，<option>min_read_recency_for_promote</option> 和 <option>min_write_recency_for_promote</option> 的值越大，<systemitem class="process">ceph-osd</systemitem> 精靈耗費的 RAM 就越多。特別是，當代理程式正在衝洗或逐出快取物件時，所有 <option>hit_set_count</option> 命中集都會載入到 RAM 中。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>快取大小調整</title>
+    <para>
+     快取分層代理程式執行兩項主要功能︰
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>衝洗</term>
+      <listitem>
+       <para>
+        代理程式識別已修改的 (髒) 物件，並將其轉遞到儲存池以長期儲存。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>逐出</term>
+      <listitem>
+       <para>
+        代理程式識別未曾修改的 (乾淨) 物件，並將其中最近用得最少的物件從快取中逐出。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <sect4 xml:id="cache.tier.config.absizing">
+     <title>絕對大小調整</title>
+     <para>
+      快取分層代理程式可根據位元組總數或物件總數來衝洗或逐出物件。若要指定最大位元組數，請執行以下指令︰
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+     <para>
+      若要指定最大物件數，請執行以下指令︰
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+     <note>
+      <para>
+       Ceph 無法自動確定快取池的大小，因此便需要設定絕對大小。否則，衝洗和逐出功能將無法正常運作。如果您指定了這兩項限制，則一旦觸發任一閾值，快取分層代理程式即開始執行衝洗或逐出。
+      </para>
+     </note>
+     <note>
+      <para>
+       僅當達到 <option>target_max_bytes</option> 或 <option>target_max_objects</option> 時，才會阻擋所有用戶端要求。
+      </para>
+     </note>
+    </sect4>
+    <sect4 xml:id="cache.tier.config.relsizing">
+     <title>相對大小調整</title>
+     <para>
+      快取分層代理程式可以根據快取池的相對大小 (透過<xref linkend="cache.tier.config.absizing"/>中所述的 <option>target_max_bytes</option> 或 <option>target_max_objects</option> 指定) 衝洗或逐出物件。當快取池中的已修改 (髒) 物件達到特定百分比時，快取分層代理程式會將這些物件衝洗到儲存池。若要設定 <option>cache_target_dirty_ratio</option>，請執行以下指令︰
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+     <para>
+      例如，如果將值設定為 0.4，則當已修改 (髒) 物件的大小達到快取池容量的 40% 時，就會開始衝洗這些物件。
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+     <para>
+      當髒物件的大小達到容量的特定百分比時，將以更高的速度衝洗。使用 <option>cache_target_dirty_high_ratio</option>︰
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+     <para>
+      當快取池的大小達到其容量的特定百分比時，快取分層代理程式會逐出物件，以維持可用容量。若要設定 <option>cache_target_full_ratio</option>，請執行以下指令︰
+     </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+    </sect4>
+   </sect3>
+   <sect3>
+    <title>快取存留期</title>
+    <para>
+     您可以指定在快取分層代理程式將最近修改的 (髒) 物件衝洗到支援儲存池之前，這些物件至少可存留的時間︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+    <para>
+     您可以指定在將某個物件逐出快取層之前，該物件至少可存留的時間︰
+    </para>
+<screen><prompt>cephadm &gt; </prompt>sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="ceph.tier.gmt_hitset">
+    <title>對命中集使用 GMT</title>
+    <para>
+     快取層設定包含一個稱作<emphasis>命中集</emphasis>的布隆過濾器。該過濾器測試某個物件是屬於一組熱物件還是冷物件。物件將新增至命中集，其名稱後面附有時戳。
+    </para>
+    <para>
+     如果叢集機器位於不同的時區，且時戳根據當地時間衍生，則命中集中物件的名稱可能會包含將來或過去的時戳，致使使用者產生誤解。在最壞的情況下，物件可能根本不在命中集中。
+    </para>
+    <para>
+     為防止這種問題發生，在新建立的快取層設定中，<option>use_gmt_hitset</option> 預設設為「1」。這樣，您便可以在建立命中集的物件名稱時，強制 OSD 使用 GMT (格林威治標準時間) 時戳。
+    </para>
+    <warning>
+     <title>保留預設值</title>
+     <para>
+      不要變更 <option>use_gmt_hitset</option> 的預設值「1」。如果與此選項相關的錯誤不是因叢集設定造成，切勿手動變更此選項。否則，叢集的行為可能變得無法預測。
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>
