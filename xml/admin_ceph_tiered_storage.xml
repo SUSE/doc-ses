@@ -25,10 +25,10 @@
   access to pools stored on slow hard disks and erasure coded pools.
  </para>
  <para>
-  Typically cache tiering involves creating a pool of relatively fast/expensive
-  storage devices (for example, SSD drives) configured to act as a cache tier,
-  and a backing pool of slower and cheaper devices configured to act as a
-  storage tier.
+  Typically cache tiering involves creating a pool of relatively fast storage
+  devices (for example SSD drives) configured to act as a cache tier, and a
+  backing pool of slower and cheaper devices configured to act as a storage
+  tier. The size of the cache pool is usually 10-20% of the storage pool.
  </para>
  <sect1>
   <title>Tiered Storage Terminology</title>
@@ -127,13 +127,15 @@
   <itemizedlist>
    <listitem>
     <para>
-     You need to access erasure coded pools via &rbd; (RBD).
+     Your erasure coded pools are stored on &filestore; and you need to access
+     them via &rbd;. For more information on RBD, see
+     <xref linkend="ceph.rbd"/>.
     </para>
    </listitem>
    <listitem>
     <para>
-     You need to access erasure coded pools via iSCSI as it inherits the
-     limitations of RBD. For more information on iSCSI, refer to
+     Your erasure coded pools are stored on &filestore; and you need to access
+     them via &iscsi;. For more information on iSCSI, refer to
      <xref linkend="cha.ceph.iscsi"/>.
     </para>
    </listitem>
@@ -190,112 +192,37 @@
    </varlistentry>
   </variablelist>
  </sect1>
- <sect1 xml:id="ses.tiered.hitset">
-  <title>Hit Set</title>
+ <sect1 xml:id="ceph.tier.erasure">
+  <title>Erasure Coded Pool and Cache Tiering</title>
 
-  <sect2 xml:id="ses.tiered.hitset.overview">
-   <title>Overview</title>
-   <para>
-    <emphasis>Hit set</emphasis> parameters allow for tuning of <emphasis>cache
-    pools</emphasis>. Hit sets in &ceph; are usually bloom filters and provide
-    a memory-efficient way of tracking objects that are already in the cache
-    pool.
-   </para>
-   <para>
-    The hit set is a bit array that is used to store the result of a set of
-    hashing functions applied on object names. Initially, all bits are set to
-    <literal>0</literal>. When an object is added to the hit set, its name is
-    hashed and the result is mapped on different positions in the hit set,
-    where the value of the bit is then set to <literal>1</literal>.
-   </para>
-   <para>
-    To find out whether an object exists in the cache, the object name is
-    hashed again. If any bit is <literal>0</literal>, the object is definitely
-    not in the cache and needs to be retrieved from cold storage.
-    <remark role="fixme">How is the modification date retrieved in read mode?</remark>
-   </para>
-   <para>
-    It is possible that the results of different objects are stored in the same
-    location of the hit set. By chance, all bits can be <literal>1</literal>
-    without the object being in the cache. Therefore, hit sets working with a
-    bloom filter can only tell whether an object is definitely not in the cache
-    and needs to be retrieved from cold storage.
-   </para>
-   <para>
-    A cache pool can have more than one hit set tracking file access over time.
-    The setting <literal>hit_set_count</literal> defines how many hit sets are
-    being used, and <literal>hit_set_period</literal> defines for how long each
-    hit set has been used. After the period has expired, the next hit set is
-    used. If the number of hit sets is exhausted, the memory from the oldest
-    hit set is freed and a new hit set is created. The values of
-    <literal>hit_set_count</literal> and <literal>hit_set_period</literal>
-    multiplied by each other define the overall time frame in which access to
-    objects has been tracked.
-   </para>
-   <figure xml:id="ses.tiered.hitset.overview.bloom">
-    <title>Bloom Filter with 3 Stored Objects</title>
-    <mediaobject>
-     <imageobject role="fo">
-      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
-     </imageobject>
-     <imageobject role="html">
-      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
-     </imageobject>
-    </mediaobject>
-   </figure>
-   <para>
-    Compared to the number of hashed objects, a hit set based on a bloom filter
-    is very memory-efficient. Less than 10 bits are required to reduce the
-    false positive probability below 1%. The false positive probability can be
-    defined with <literal>hit_set_fpp</literal>. Based on the number of objects
-    in a placement group and the false positive probability &ceph;
-    automatically calculates the size of the hit set.
-   </para>
-   <para>
-    The required storage on the cache pool can be limited with
-    <literal>min_write_recency_for_promote</literal> and
-    <literal>min_read_recency_for_promote</literal>. If the value is set to
-    <literal>0</literal>, all objects are promoted to the cache pool as soon as
-    they are read or written and this persists until they are evicted. Any
-    value greater than <literal>0</literal> defines the number of hit sets
-    ordered by age that are searched for the object. If the object is found in
-    a hit set, it will be promoted to the cache pool.
-   </para>
-  </sect2>
+  <para>
+   Erasure coded pools require more resources than replicated pools. To
+   overcome these limitations, we recommended to set a cache tier before the
+   erasure coded pool. This it a requirement when using &filestore;.
+  </para>
 
-  <sect2 xml:id="ses.tiered.hitset.examples">
-   <title>Examples</title>
-   <sect3 xml:id="ses.tiered.hitset.examples.memory">
-    <title>Large Cache Pool and Small Memory</title>
-    <para>
-     If lots of storage and only a small amount of RAM is available, all
-     objects can be promoted to the cache pool as soon as they are accessed.
-     The hit set is kept small. The following is a set of example configuration
-     values:
-    </para>
-<screen>hit_set_count = 1
-hit_set_period = 3600
-hit_set_fpp = 0.05
-min_write_recency_for_promote = 0
-min_read_recency_for_promote = 0</screen>
-   </sect3>
-   <sect3 xml:id="ses.tiered.hitset.examples.storage">
-    <title>Small Cache Pool and Large Memory</title>
-    <para>
-     If a small amount of storage but a comparably large amount of memory is
-     available, the cache tier can be configured to promote a limited number of
-     objects into the cache pool. Twelve hit sets, of which each is used over a
-     period of 14,400 seconds, provide tracking for a total of 48 hours. If an
-     object has been accessed in the last 8 hours, it is promoted to the cache
-     pool. The set of example configuration values then is:
-    </para>
-<screen>hit_set_count = 12
-hit_set_period = 14400
-hit_set_fpp = 0.01
-min_write_recency_for_promote = 2
-min_read_recency_for_promote = 2</screen>
-   </sect3>
-  </sect2>
+  <para>
+   For example, if the <quote>hot-storage</quote> pool is made of fast storage,
+   the <quote>ecpool</quote> created in
+   <xref linkend="cha.ceph.erasure.erasure-profiles"/> can be speeded up with:
+  </para>
+
+<screen>&prompt.root;ceph osd tier add ecpool hot-storage
+&prompt.root;ceph osd tier cache-mode hot-storage writeback
+&prompt.root;ceph osd tier set-overlay ecpool hot-storage</screen>
+
+  <para>
+   This will place the <quote>hot-storage</quote> pool as a tier of ecpool in
+   write-back mode so that every write and read to the ecpool is actually using
+   the hot-storage and benefits from its flexibility and speed.
+  </para>
+
+<screen>&prompt.root;rbd --pool ecpool create --size 10 myvolume</screen>
+
+  <para>
+   For more information about cache tiering, see
+   <xref linkend="cha.ceph.tiered"/>.
+  </para>
  </sect1>
  <sect1 xml:id="ses.tiered.storage">
   <title>Setting Up an Example Tiered Storage</title>
@@ -460,168 +387,98 @@ rule ssd {
 <screen>&prompt.cephuser;sudo ceph osd tier set-overlay cold-storage hot-storage</screen>
    </step>
   </procedure>
+ </sect1>
+ <sect1 xml:id="cache.tier.configure">
+  <title>Configuring a Cache Tier</title>
 
-  <sect2 xml:id="cache.tier.configure">
-   <title>Configuring a Cache Tier</title>
-   <para>
-    There are several options you can use to configure cache tiers. Use the
-    following syntax:
-   </para>
+  <para>
+   There are several options you can use to configure cache tiers. Use the
+   following syntax:
+  </para>
+
 <screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
-   <sect3>
-    <title>Target Size and Type</title>
+
+  <sect2 xml:id="ses.tiered.hitset">
+   <title>Hit Set</title>
+   <para>
+    <emphasis>Hit set</emphasis> parameters allow for tuning of <emphasis>cache
+    pools</emphasis>. Hit sets in &ceph; are usually bloom filters and provide
+    a memory-efficient way of tracking objects that are already in the cache
+    pool.
+   </para>
+   <para>
+    The hit set is a bit array that is used to store the result of a set of
+    hashing functions applied on object names. Initially, all bits are set to
+    <literal>0</literal>. When an object is added to the hit set, its name is
+    hashed and the result is mapped on different positions in the hit set,
+    where the value of the bit is then set to <literal>1</literal>.
+   </para>
+   <para>
+    To find out whether an object exists in the cache, the object name is
+    hashed again. If any bit is <literal>0</literal>, the object is definitely
+    not in the cache and needs to be retrieved from cold storage.
+   </para>
+   <para>
+    It is possible that the results of different objects are stored in the same
+    location of the hit set. By chance, all bits can be <literal>1</literal>
+    without the object being in the cache. Therefore, hit sets working with a
+    bloom filter can only tell whether an object is definitely not in the cache
+    and needs to be retrieved from cold storage.
+   </para>
+   <para>
+    A cache pool can have more than one hit set tracking file access over time.
+    The setting <literal>hit_set_count</literal> defines how many hit sets are
+    being used, and <literal>hit_set_period</literal> defines for how long each
+    hit set has been used. After the period has expired, the next hit set is
+    used. If the number of hit sets is exhausted, the memory from the oldest
+    hit set is freed and a new hit set is created. The values of
+    <literal>hit_set_count</literal> and <literal>hit_set_period</literal>
+    multiplied by each other define the overall time frame in which access to
+    objects has been tracked.
+   </para>
+   <figure xml:id="ses.tiered.hitset.overview.bloom">
+    <title>Bloom Filter with 3 Stored Objects</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Compared to the number of hashed objects, a hit set based on a bloom filter
+    is very memory-efficient. Less than 10 bits are required to reduce the
+    false positive probability below 1%. The false positive probability can be
+    defined with <literal>hit_set_fpp</literal>. Based on the number of objects
+    in a placement group and the false positive probability &ceph;
+    automatically calculates the size of the hit set.
+   </para>
+   <para>
+    The required storage on the cache pool can be limited with
+    <literal>min_write_recency_for_promote</literal> and
+    <literal>min_read_recency_for_promote</literal>. If the value is set to
+    <literal>0</literal>, all objects are promoted to the cache pool as soon as
+    they are read or written and this persists until they are evicted. Any
+    value greater than <literal>0</literal> defines the number of hit sets
+    ordered by age that are searched for the object. If the object is found in
+    a hit set, it will be promoted to the cache pool. Keep in mind that backup
+    of objects may also cause them to be promoted to the cache. A full backup
+    with the value of '0' can cause all data to be promoted to the cache tier
+    while active data gets removed from the cache tier. Therefore, changing
+    this setting based on the backup strategy may be useful.
+   </para>
+   <note>
     <para>
-     The following steps describe how to configure a <emphasis>cache
-     pool</emphasis> with the values provided in
-     <xref linkend="ses.tiered.hitset.examples.storage"/>
+     The longer the period and the higher the
+     <option>min_read_recency_for_promote</option> and
+     <option>min_write_recency_for_promote</option> values, the more RAM the
+     <systemitem class="process">ceph-osd</systemitem> daemon consumes. In
+     particular, when the agent is active to flush or evict cache objects, all
+     <option>hit_set_count</option> hit sets are loaded into RAM.
     </para>
-    <para>
-     &ceph;'s production cache tiers use a Bloom Filter for the
-     <option>hit_set_type</option>:
-    </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_type bloom</screen>
-    <para>
-     The <option>hit_set_count</option> and <option>hit_set_period</option>
-     define how much time each hit set should cover, and how many of such hit
-     sets to store.
-     <remark role="fixme">What are the numbers doing? They're without explanation. https://software.intel.com/en-us/blogs/2015/03/03/ceph-cache-tiering-introduction</remark>
-    </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_count 12
-&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> hit_set_period 14400
-&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes 1000000000000</screen>
-    <note>
-     <para>
-      A larger <option>hit_set_count</option> results in more RAM consumed by
-      the <systemitem class="process">ceph-osd</systemitem> process.
-     </para>
-    </note>
-    <para>
-     The <option>min_read_recency_for_promote</option> defines how many hit
-     sets to check for the existence of an object when handling a read
-     operation. The result of the check is used to decide whether to promote
-     the object asynchronously. Its value should be between 0 and the
-     <option>hit_set_count</option>. If set to 0, the object is always
-     promoted. If set to 1, the current hit set is checked. And if this object
-     is in the current hit set, it is promoted. Otherwise, it is not. For the
-     other values, the exact number of archive hit sets are checked. The object
-     is promoted if it is found in any of the most recent
-     <option>min_read_recency_for_promote</option> hit sets.
-    </para>
-    <para>
-     You can set a similar parameter,
-     <option>min_write_recency_for_promote</option>, for the write operation:
-    </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> min_read_recency_for_promote 2
-&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> min_write_recency_for_promote 2</screen>
-    <note>
-     <para>
-      The longer the period and the higher the
-      <option>min_read_recency_for_promote</option> and
-      <option>min_write_recency_for_promote</option> values, the more RAM the
-      <systemitem class="process">ceph-osd</systemitem> daemon consumes. In
-      particular, when the agent is active to flush or evict cache objects, all
-      <option>hit_set_count</option> hit sets are loaded into RAM.
-     </para>
-    </note>
-   </sect3>
-   <sect3>
-    <title>Cache Sizing</title>
-    <para>
-     The cache tiering agent performs two main functions:
-    </para>
-    <variablelist>
-     <varlistentry>
-      <term>Flushing</term>
-      <listitem>
-       <para>
-        The agent identifies modified (dirty) objects and forwards them to the
-        storage pool for long-term storage.
-       </para>
-      </listitem>
-     </varlistentry>
-     <varlistentry>
-      <term>Evicting</term>
-      <listitem>
-       <para>
-        The agent identifies objects that have not been modified (clean) and
-        evicts the least recently used among them from the cache.
-       </para>
-      </listitem>
-     </varlistentry>
-    </variablelist>
-    <sect4 xml:id="cache.tier.config.absizing">
-     <title>Absolute Sizing</title>
-     <para>
-      The cache tiering agent can flush or evict objects based on the total
-      number of bytes or the total number of objects. To specify a maximum
-      number of bytes, execute the following:
-     </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
-     <para>
-      To specify the maximum number of objects, execute the following:
-     </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
-     <note>
-      <para>
-       &ceph; is not able to determine the size of a cache pool automatically,
-       so the configuration on the absolute size is required here. Otherwise,
-       flush and evict will not work. If you specify both limits, the cache
-       tiering agent will begin flushing or evicting when either threshold is
-       triggered.
-      </para>
-     </note>
-     <note>
-      <para>
-       All client requests will be blocked only when
-       <option>target_max_bytes</option> or <option>target_max_objects</option>
-       reached.
-      </para>
-     </note>
-    </sect4>
-    <sect4 xml:id="cache.tier.config.relsizing">
-     <title>Relative Sizing</title>
-     <para>
-      The cache tiering agent can flush or evict objects relative to the size
-      of the cache pool (specified by <option>target_max_bytes</option> or
-      <option>target_max_objects</option> in
-      <xref linkend="cache.tier.config.absizing"/>). When the cache pool
-      consists of a certain percentage of modified (dirty) objects, the cache
-      tiering agent will flush them to the storage pool. To set the
-      <option>cache_target_dirty_ratio</option>, execute the following:
-     </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
-     <para>
-      For example, setting the value to 0.4 will begin flushing modified
-      (dirty) objects when they reach 40% of the cache pool's capacity:
-     </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
-     <para>
-      When the dirty objects reach a certain percentage of the capacity, flush
-      them at a higher speed. Use
-      <option>cache_target_dirty_high_ratio</option>:
-     </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
-     <para>
-      When the cache pool reaches a certain percentage of its capacity, the
-      cache tiering agent will evict objects to maintain free capacity. To set
-      the <option>cache_target_full_ratio</option>, execute the following:
-     </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
-    </sect4>
-   </sect3>
-   <sect3>
-    <title>Cache Age</title>
-    <para>
-     You can specify the minimum age of a recently modified (dirty) object
-     before the cache tiering agent flushes it to the backing storage pool:
-    </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
-    <para>
-     You can specify the minimum age of an object before it will be evicted
-     from the cache tier:
-    </para>
-<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
-   </sect3>
+   </note>
    <sect3 xml:id="ceph.tier.gmt_hitset">
     <title>Use GMT for Hit Set</title>
     <para>
@@ -651,6 +508,140 @@ rule ssd {
       unpredictable.
      </para>
     </warning>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>Cache Sizing</title>
+   <para>
+    The cache tiering agent performs two main functions:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>Flushing</term>
+     <listitem>
+      <para>
+       The agent identifies modified (dirty) objects and forwards them to the
+       storage pool for long-term storage.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>Evicting</term>
+     <listitem>
+      <para>
+       The agent identifies objects that have not been modified (clean) and
+       evicts the least recently used among them from the cache.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <sect3 xml:id="cache.tier.config.absizing">
+    <title>Absolute Sizing</title>
+    <para>
+     The cache tiering agent can flush or evict objects based on the total
+     number of bytes or the total number of objects. To specify a maximum
+     number of bytes, execute the following:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+    <para>
+     To specify the maximum number of objects, execute the following:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+    <note>
+     <para>
+      &ceph; is not able to determine the size of a cache pool automatically,
+      so the configuration on the absolute size is required here. Otherwise,
+      flush and evict will not work. If you specify both limits, the cache
+      tiering agent will begin flushing or evicting when either threshold is
+      triggered.
+     </para>
+    </note>
+    <note>
+     <para>
+      All client requests will be blocked only when
+      <option>target_max_bytes</option> or <option>target_max_objects</option>
+      reached.
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="cache.tier.config.relsizing">
+    <title>Relative Sizing</title>
+    <para>
+     The cache tiering agent can flush or evict objects relative to the size of
+     the cache pool (specified by <option>target_max_bytes</option> or
+     <option>target_max_objects</option> in
+     <xref linkend="cache.tier.config.absizing"/>). When the cache pool
+     consists of a certain percentage of modified (dirty) objects, the cache
+     tiering agent will flush them to the storage pool. To set the
+     <option>cache_target_dirty_ratio</option>, execute the following:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+    <para>
+     For example, setting the value to 0.4 will begin flushing modified (dirty)
+     objects when they reach 40% of the cache pool's capacity:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+    <para>
+     When the dirty objects reach a certain percentage of the capacity, flush
+     them at a higher speed. Use
+     <option>cache_target_dirty_high_ratio</option>:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+    <para>
+     When the cache pool reaches a certain percentage of its capacity, the
+     cache tiering agent will evict objects to maintain free capacity. To set
+     the <option>cache_target_full_ratio</option>, execute the following:
+    </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>Cache Age</title>
+   <para>
+    You can specify the minimum age of a recently modified (dirty) object
+    before the cache tiering agent flushes it to the backing storage pool:
+   </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+   <para>
+    You can specify the minimum age of an object before it will be evicted from
+    the cache tier:
+   </para>
+<screen>&prompt.cephuser;sudo ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ses.tiered.hitset.examples">
+   <title>Examples</title>
+   <sect3 xml:id="ses.tiered.hitset.examples.memory">
+    <title>Large Cache Pool and Small Memory</title>
+    <para>
+     If lots of storage and only a small amount of RAM is available, all
+     objects can be promoted to the cache pool as soon as they are accessed.
+     The hit set is kept small. The following is a set of example configuration
+     values:
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses.tiered.hitset.examples.storage">
+    <title>Small Cache Pool and Large Memory</title>
+    <para>
+     If a small amount of storage but a comparably large amount of memory is
+     available, the cache tier can be configured to promote a limited number of
+     objects into the cache pool. Twelve hit sets, of which each is used over a
+     period of 14,400 seconds, provide tracking for a total of 48 hours. If an
+     object has been accessed in the last 8 hours, it is promoted to the cache
+     pool. The set of example configuration values then is:
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
    </sect3>
   </sect2>
  </sect1>
