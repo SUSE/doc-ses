@@ -120,6 +120,175 @@ device 3 osd.3class ssd
   <para>
    As a general rule, an OSD daemon maps to a single disk.
   </para>
+
+  <sect2 xml:id="crush.devclasses">
+   <title>Device Classes</title>
+   <para>
+    The flexibility of the &crushmap; in controlling data placement is one of
+    the &ceph;'s strengths. It is also one of the most difficult parts of the
+    cluster to manage. <emphasis>Device classes</emphasis> automate one of the
+    most common reasons why &crushmap;s are directly manually edited.
+   </para>
+   <sect3>
+    <title>The CRUSH Management Problem</title>
+    <para>
+     &ceph; clusters are frequently built with multiple types of storage
+     devices: HDDs, SSDs, NVMe’s, or even mixed classes of the above. We call
+     these different types of storage devices <emphasis>device
+     classes</emphasis> to avoid confusion between the
+     <emphasis>type</emphasis> property of CRUSH buckets (e.g., host, rack,
+     row, see <xref linkend="datamgm.buckets" /> for more details). &ceph; OSDs
+     backed by SSDs are much faster than those backed by spinning disks, making
+     them better suited for certain workloads. &ceph; makes it easy to create
+     RADOS pools for different data sets or workloads and to assign different
+     CRUSH rules to control data placement for those pools.
+    </para>
+    <figure>
+     <title>OSDs with Mixed Device Classes</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="device_classes.svg" width="70%" format="PNG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="device_classes.svg" width="70%" format="PNG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     However, setting up the CRUSH rules to place data only on a certain class
+     of device is tedious. Rules work in terms of the CRUSH hierarchy, but if
+     the devices are mixed into the same hosts or racks (as in the sample
+     hierarchy above), they will (by default) be mixed together and appear in
+     the same subtrees of the hierarchy. Manually separating them out into
+     separate trees involve creating multiple versions of each intermediate
+     node for each device class in previous versions of &productname;.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Device Classes</title>
+    <para>
+     An elegant solution that &ceph; offers is to add a property called
+     <emphasis>device class</emphasis> to each OSD. By default, OSDs will
+     automatically set their device classes to either 'hdd', 'ssd', or 'nvme'
+     based on the hardware properties exposed by the Linux kernel. These device
+     classes are reported in a new column of the <command>ceph osd
+     tree</command> command output:
+    </para>
+<screen>&prompt.cephuser;ceph osd tree
+ ID CLASS WEIGHT   TYPE NAME      STATUS REWEIGHT PRI-AFF
+ -1       83.17899 root default
+ -4       23.86200     host cpach
+ 2   hdd  1.81898         osd.2      up  1.00000 1.00000
+ 3   hdd  1.81898         osd.3      up  1.00000 1.00000
+ 4   hdd  1.81898         osd.4      up  1.00000 1.00000
+ 5   hdd  1.81898         osd.5      up  1.00000 1.00000
+ 6   hdd  1.81898         osd.6      up  1.00000 1.00000
+ 7   hdd  1.81898         osd.7      up  1.00000 1.00000
+ 8   hdd  1.81898         osd.8      up  1.00000 1.00000
+ 15  hdd  1.81898         osd.15     up  1.00000 1.00000
+ 10  nvme 0.93100         osd.10     up  1.00000 1.00000
+ 0   ssd  0.93100         osd.0      up  1.00000 1.00000
+ 9   ssd  0.93100         osd.9      up  1.00000 1.00000</screen>
+    <para>
+     If the automatic device class detection fails for example because the
+     device driver is not properly exposing information about the device via
+     <filename>/sys/block</filename>, you can adjust device classes from the
+     command line:
+    </para>
+<screen>
+&prompt.cephuser;ceph osd crush rm-device-class osd.2 osd.3
+done removing class of osd(s): 2,3
+&prompt.cephuser;ceph osd crush set-device-class ssd osd.2 osd.3
+set osd(s) 2,3 to class 'ssd'
+</screen>
+   </sect3>
+   <sect3>
+    <title>CRUSH Placement Rules</title>
+    <para>
+     CRUSH rules can restrict placement to a specific device class. For
+     example, you can create a 'fast'
+     <emphasis role="bold">replicated</emphasis> pool that distributes data
+     only over SSD disks by using the command
+    </para>
+<screen>
+ ceph osd crush rule create-replicated <replaceable>RULE_NAME</replaceable> <replaceable>ROOT</replaceable> <replaceable>FAILURE_DOMAIN_TYPE</replaceable> <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+    <para>
+     For example:
+    </para>
+<screen>
+&cephuser;ceph osd crush rule create-replicated fast default host ssd
+</screen>
+    <para>
+     The process for creating <emphasis role="bold">erasure code</emphasis>
+     rules is slightly different. First, you create an erasure code profile
+     that includes a property for your desired device class. Then use that
+     profile when creating the erasure coded pool:
+    </para>
+<screen>
+&cephuser;ceph osd erasure-code-profile set myprofile \
+ k=4 m=2 crush-device-class=ssd crush-failure-domain=host
+&cephuser;ceph osd pool create mypool 64 erasure myprofile
+</screen>
+    <para>
+     If you need to manually edit the &crushmap; to customize your rule, the
+     syntax has been extended to allow the device class to be specified. For
+     example, the CRUSH rule generated by the above commands looks like:
+    </para>
+<screen>
+rule ecpool {
+  id 2
+  type erasure
+  min_size 3
+  max_size 6
+  step set_chooseleaf_tries 5
+  step set_choose_tries 100
+  step take default <emphasis role="bold">class ssd</emphasis>
+  step chooseleaf indep 0 type host
+  step emit
+}
+</screen>
+    <para>
+     The important difference there is that the 'take' command includes the
+     additional 'class <replaceable>CLASS_NAME</replaceable>' suffix.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Additional Commands</title>
+    <para>
+     To list device classes used in a &crushmap;, run:
+    </para>
+<screen>
+&cephuser;ceph osd crush class ls
+[
+  "hdd",
+  "ssd"
+]
+</screen>
+    <para>
+     To list OSDs that belong to a 'ssd' class, run:
+    </para>
+<screen>
+&cephuser;ceph osd crush class ls-osd ssd
+0
+1
+</screen>
+   </sect3>
+   <sect3>
+    <title>For More Information</title>
+    <para>
+     Find more details on &crushmap;s in <xref linkend="op.crush" />.
+    </para>
+    <para>
+     Find more details on &ceph; pools in general in
+     <xref linkend="ceph.pools"/>.
+    </para>
+    <para>
+     Find more details about erasure coded pools in
+     <xref linkend="cha.ceph.erasure" />.
+    </para>
+   </sect3>
+  </sect2>
  </sect1>
  <sect1 xml:id="datamgm.buckets">
   <title>Buckets</title>
@@ -1092,145 +1261,5 @@ row=foo rack=bar host=foo-bar-1</screen>
     </listitem>
    </varlistentry>
   </variablelist>
- </sect1>
- <sect1 xml:id="op.mixed_ssd_hdd">
-  <title>Mixed Storage Devices on the Same Node</title>
-
-  <para>
-   It can be desirable to configure a &ceph; cluster such that each node has a
-   mix of SSDs and HDDs, with one storage pool on the fast SSDs and one storage
-   pool on the slower HDDs. To do this, the &crushmap; needs to be edited.
-  </para>
-
-  <para>
-   The default &crushmap; will have a simple hierarchy, where the default root
-   contains hosts, and the hosts contain OSDs, for example:
-  </para>
-
-<screen>&prompt.cephuser;ceph osd tree
- ID CLASS WEIGHT   TYPE NAME      STATUS REWEIGHT PRI-AFF
- -1       83.17899 root default
- -4       23.86200     host cpach
- 2   hdd  1.81898         osd.2      up  1.00000 1.00000
- 3   hdd  1.81898         osd.3      up  1.00000 1.00000
- 4   hdd  1.81898         osd.4      up  1.00000 1.00000
- 5   hdd  1.81898         osd.5      up  1.00000 1.00000
- 6   hdd  1.81898         osd.6      up  1.00000 1.00000
- 7   hdd  1.81898         osd.7      up  1.00000 1.00000
- 8   hdd  1.81898         osd.8      up  1.00000 1.00000
- 15  hdd  1.81898         osd.15     up  1.00000 1.00000
- 10  nvme 0.93100         osd.10     up  1.00000 1.00000
- 0   ssd  0.93100         osd.0      up  1.00000 1.00000
- 9   ssd  0.93100         osd.9      up  1.00000 1.00000 </screen>
-
-  <para>
-   This provides no distinction between disk types. In order to split the OSDs
-   into SSDs and HDDs, we need to create a second hierarchy in the &crushmap;:
-  </para>
-
-<screen>&prompt.cephuser;ceph osd crush add-bucket ssd root</screen>
-
-  <para>
-   Having created the new root for SSDs, we need to add hosts to it. This means
-   creating new host entries. But because the same host name cannot appear more
-   than once in a &crushmap;, this uses fake host names. These fake host names
-   do not need to be resolvable by DNS. CRUSH does not care what the host names
-   are, they only need to create the right hierarchies. The one thing that
-   <emphasis>does</emphasis> need to be changed in order to support fake host
-   names is that you must set
-  </para>
-
-<screen>osd crush update on start = false</screen>
-
-  <remark>mweiss: This is not required in case the "root default " is </remark>
-
-  <para>
-   in the
-   <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/global.conf</filename>
-   file, and then run &deepsea; Stage 3 to distribute the change (refer to
-   <xref
-    linkend="ds.custom.cephconf"/> for more information):
-  </para>
-
-<screen>
-&prompt.smaster;salt-run state.orch ceph.stage.3
-</screen>
-
-  <para>
-   Otherwise the OSDs you move will be reset later to their original location
-   in the default root, and the cluster will not behave as expected.
-  </para>
-
-  <para>
-   Once that setting is changed, add the new fake hosts to the SSD root:
-  </para>
-
-<screen>&prompt.cephuser;ceph osd crush add-bucket node1-ssd host
-&prompt.cephuser;ceph osd crush move node1-ssd root=ssd
-&prompt.cephuser;ceph osd crush add-bucket node2-ssd host
-&prompt.cephuser;ceph osd crush move node2-ssd root=ssd
-&prompt.cephuser;ceph osd crush add-bucket node3-ssd host
-&prompt.cephuser;ceph osd crush move node3-ssd root=ssd</screen>
-
-  <para>
-   Finally, for each SSD OSD, move the OSD to the SSD root. In this example, we
-   assume that osd.0, osd.1 and osd.2 are physically hosted on SSDs:
-  </para>
-
-<screen>&prompt.cephuser;ceph osd crush add osd.0 1 root=ssd
-&prompt.cephuser;ceph osd crush set osd.0 1 root=ssd host=node1-ssd
-&prompt.cephuser;ceph osd crush add osd.1 1 root=ssd
-&prompt.cephuser;ceph osd crush set osd.1 1 root=ssd host=node2-ssd
-&prompt.cephuser;ceph osd crush add osd.2 1 root=ssd
-&prompt.cephuser;ceph osd crush set osd.2 1 root=ssd host=node3-ssd</screen>
-
-  <para>
-   The CRUSH hierarchy should now look like this:
-  </para>
-
-<screen>&prompt.cephuser;ceph osd tree
-ID WEIGHT  TYPE NAME                   UP/DOWN REWEIGHT PRIMARY-AFFINITY
--5 3.00000 root ssd
--6 1.00000     host node1-ssd
- 0 1.00000         osd.0                    up  1.00000          1.00000
--7 1.00000     host node2-ssd
- 1 1.00000         osd.1                    up  1.00000          1.00000
--8 1.00000     host node3-ssd
- 2 1.00000         osd.2                    up  1.00000          1.00000
--1 0.11096 root default
--2 0.03699     host node1
- 3 0.01849         osd.3                    up  1.00000          1.00000
- 6 0.01849         osd.6                    up  1.00000          1.00000
--3 0.03699     host node2
- 4 0.01849         osd.4                    up  1.00000          1.00000
- 7 0.01849         osd.7                    up  1.00000          1.00000
--4 0.03699     host node3
- 5 0.01849         osd.5                    up  1.00000          1.00000
- 8 0.01849         osd.8                    up  1.00000          1.00000</screen>
-
-  <para>
-   Now, create a CRUSH rule that targets the SSD root:
-  </para>
-
-<screen>&prompt.cephuser;ceph osd crush rule create-simple ssd_replicated_ruleset ssd host</screen>
-
-  <para>
-   The original default <option>replicated_ruleset</option> (with ID 0) will
-   target the HDDs. The new <option>ssd_replicated_ruleset</option> (with ID 1)
-   will target the SSDs.
-  </para>
-
-  <para>
-   Any existing pools will still be using the HDDs, because they are in the
-   default hierarchy in the &crushmap;. A new pool can be created to use SSDs
-   only:
-  </para>
-
-<screen>&prompt.cephuser;ceph osd pool create ssd-pool 64 64
-&prompt.cephuser;ceph osd pool set ssd-pool crush_rule ssd_replicated_ruleset</screen>
-
-  <remark>mweiss: It is possible to specify the correct rule already during initial pool creation (better than adjusting it later)</remark>
-
-  <remark>Also application enable is required since 5</remark>
  </sect1>
 </chapter>
