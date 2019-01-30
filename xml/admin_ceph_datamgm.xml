@@ -274,6 +274,216 @@ rule ecpool {
 1
 </screen>
    </sect3>
+   <sect3 xml:id="device_classes.reclassify">
+    <title>Migrating from a Legacy SSD Rule to Device Classes</title>
+    <para>
+     In &productname; prior to version 5, you needed to manually edit the
+     &crushmap; and maintain a parallel hierarchy for each specialized device
+     type (e.g. SSD) in order to write rules that apply to these devices. Since
+     &productname; 5, the device class feature has enabled this transparently.
+    </para>
+    <para>
+     You can transform a legacy rule and hierarchy to the new class-based rules
+     by using the <command>crushtool</command> command. There are several types
+     of transformation possible:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>crushtool --reclassify-root <replaceable>ROOT_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        This command takes everything in the hierarchy beneath
+        <replaceable>ROOT_NAME</replaceable> and adjusts any rules that
+        reference that root via
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable>
+</screen>
+       <para>
+        to instead
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable> class <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+       <para>
+        It renumbers the buckets so that the old IDs are used for the specified
+        class’s 'shadow tree'. As a consequence, no data movement occurs.
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-root</command></title>
+        <para>
+         Consider the following existing rule:
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+        <para>
+         If you reclassify the root 'default' as class 'hdd', the rule will
+         become
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default class hdd
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+       </example>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --set-subtree-class <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        This method marks every device in the subtree rooted at
+        <replaceable>BUCKET_NAME</replaceable> with the specified device class.
+       </para>
+       <para>
+        <option>--set-subtree-class</option> is normally used in conjunction
+        with the <option>--reclassify-root</option> option to ensure that all
+        devices in that root are labeled with the correct class. However some
+        of those devices may intentionally have a different class, and
+        therefore you do not want to relabel them. In such cases, exclude the
+        <option>--set-subtree-class</option> option. Keep in mind that such
+        remapping will not be perfect, because the previous rule is distributed
+        across devices of multiple classes but the adjusted rules will only map
+        to devices of the specified device class.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>MATCH_PATTERN</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>DEFAULT_PATTERN</replaceable></command></term>
+      <listitem>
+       <para>
+        This method allows merging a parallel type-specific hierarchy with the
+        normal hierarchy. For example, many users have &crushmap;s similar to
+        the following one:
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-bucket</command></title>
+<screen>
+host node1 {
+   id -2           # do not change unnecessarily
+   # weight 109.152
+   alg straw
+   hash 0  # rjenkins1
+   item osd.0 weight 9.096
+   item osd.1 weight 9.096
+   item osd.2 weight 9.096
+   item osd.3 weight 9.096
+   item osd.4 weight 9.096
+   item osd.5 weight 9.096
+   [...]
+}
+
+host node1-ssd {
+   id -10          # do not change unnecessarily
+   # weight 2.000
+   alg straw
+   hash 0  # rjenkins1
+   item osd.80 weight 2.000
+   [...]
+}
+
+root default {
+   id -1           # do not change unnecessarily
+   alg straw
+   hash 0  # rjenkins1
+   item node1 weight 110.967
+   [...]
+}
+
+root ssd {
+   id -18          # do not change unnecessarily
+   # weight 16.000
+   alg straw
+   hash 0  # rjenkins1
+   item node1-ssd weight 2.000
+   [...]
+}
+</screen>
+       </example>
+       <para>
+        This function reclassifies each bucket that matches a given pattern.
+        The pattern can look like <literal>%suffix</literal> or
+        <literal>prefix%</literal>. In the above example, you would use the
+        pattern <literal>%-ssd</literal>. For each matched bucket, the
+        remaining portion of the name that matches the '%' wildcard specifies
+        the base bucket. All devices in the matched bucket are labeled with the
+        specified device class and then moved to the base bucket. If the base
+        bucket does not exist (for example if 'node12-ssd' exists but 'node12'
+        does not), then it is created and linked underneath the specified
+        default parent bucket. The old bucket IDs are preserved for the new
+        shadow buckets to prevent data movement. Rules with the
+        <literal>take</literal> steps that reference the old buckets are
+        adjusted.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>BASE_BUCKET</replaceable></command></term>
+      <listitem>
+       <para>
+        You can use the <option>--reclassify-bucket</option> option without a
+        wildcard to map a single bucket. For example, in the previous example,
+        we want the 'ssd' bucket to be mapped to the default bucket.
+       </para>
+       <para>
+        The final command to convert the map comprised of the above fragments
+        would be as follows:
+       </para>
+<screen>
+&prompt.cephuser;ceph osd getcrushmap -o original
+&prompt.cephuser;crushtool -i original --reclassify \
+  --set-subtree-class default hdd \
+  --reclassify-root default hdd \
+  --reclassify-bucket %-ssd ssd default \
+  --reclassify-bucket ssd ssd default \
+  -o adjusted
+</screen>
+       <para>
+        In order to verify that the conversion is correct, there is a
+        <option>--compare</option> option that tests a large sample of inputs
+        to the &crushmap; and compares if the same result comes back out. These
+        inputs are controlled by the same options that apply to the
+        <option>--test</option>. For the above example the command would be as
+        follows:
+       </para>
+<screen>
+&cephuser;crushtool -i original --compare adjusted
+rule 0 had 0/10240 mismatched mappings (0)
+rule 1 had 0/10240 mismatched mappings (0)
+maps appear equivalent
+</screen>
+       <tip>
+        <para>
+         If there were differences, you would see what ratio of inputs are
+         remapped in the parentheses.
+        </para>
+       </tip>
+       <para>
+        If you are satisfied with the adjusted &crushmap;, you can apply it to
+        the cluster:
+       </para>
+<screen>
+&prompt.cephuser;ceph osd setcrushmap -i adjusted
+</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
    <sect3>
     <title>For More Information</title>
     <para>
