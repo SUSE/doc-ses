@@ -3287,6 +3287,263 @@ rgw_override_bucket_index_max_shards = 12
    </sect3>
   </sect2>
  </sect1>
+ <sect1 xml:id="ogw.storage_classes">
+<!-- http://docs.ceph.com/docs/nautilus/radosgw/placement/ -->
+
+  <title>Pool Placement and Storage Classes</title>
+
+  <sect2 xml:id="ogw.storage_classes.placement_targets">
+   <title>Placement Targets</title>
+   <para>
+    Placement targets control which pools are associated with a particular
+    bucket. A bucket’s placement target is selected on creation, and cannot
+    be modified. You can display its 'placement_rule' by running the following
+    command:
+   </para>
+<screen>
+&prompt.cephuser;radosgw-admin bucket stats
+</screen>
+   <para>
+    The zonegroup configuration contains a list of placement targets with an
+    initial target named 'default-placement'. The zone configuration then maps
+    each zonegroup placement target name onto its local storage. This zone
+    placement information includes the 'index_pool' name for the bucket index,
+    the 'data_extra_pool' name for metadata about incomplete multipart uploads,
+    and a 'data_pool' name for each storage class.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ogw.storage_classes.itself">
+   <title>Storage Classes</title>
+   <para>
+    Storage classes help customizing the placement of object data. S3 Bucket
+    Lifecycle rules can automate the transition of objects between storage
+    classes.
+   </para>
+   <para>
+    Storage classes are defined in terms of placement targets. Each zonegroup
+    placement target lists its available storage classes with an initial class
+    named 'STANDARD'. The zone configuration is responsible for providing a
+    'data_pool' pool name for each of the zonegroup’s storage classes.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ogw.storage_classes.zone_config">
+   <title>Zonegroup/Zone Configuration</title>
+   <para>
+    Use the <command>radosgw-admin</command> command on the zonegroups and
+    zones to configure their placement. You can query the zonegroup placement
+    configuration using the following command:
+   </para>
+<screen>
+&prompt.cephuser;radosgw-admin zonegroup get
+{
+    "id": "ab01123f-e0df-4f29-9d71-b44888d67cd5",
+    "name": "default",
+    "api_name": "default",
+    ...
+    "placement_targets": [
+        {
+            "name": "default-placement",
+            "tags": [],
+            "storage_classes": [
+                "STANDARD"
+            ]
+        }
+    ],
+    "default_placement": "default-placement",
+    ...
+}
+</screen>
+   <para>
+    To query the zone placement configuration, run:
+   </para>
+<screen>
+&prompt.cephuser;radosgw-admin zone get
+{
+    "id": "557cdcee-3aae-4e9e-85c7-2f86f5eddb1f",
+    "name": "default",
+    "domain_root": "default.rgw.meta:root",
+    ...
+    "placement_pools": [
+        {
+            "key": "default-placement",
+            "val": {
+                "index_pool": "default.rgw.buckets.index",
+                "storage_classes": {
+                    "STANDARD": {
+                        "data_pool": "default.rgw.buckets.data"
+                    }
+                },
+                "data_extra_pool": "default.rgw.buckets.non-ec",
+                "index_type": 0
+            }
+        }
+    ],
+    ...
+}
+</screen>
+   <note>
+    <title>No Previous Multisite Configuration</title>
+    <para>
+     If you have not done any previous multisite configuration, a 'default'
+     zone and zonegroup are created for you, and changes to the zone/zonegroup
+     will not take effect until you restart the &cogw;s. If you have created a
+     realm for multisite, the zone/zonegroup changes will take effect after you
+     commit the changes with the <command>radosgw-admin period update
+     --commit</command> command.
+    </para>
+   </note>
+   <sect3>
+    <title>Adding a Placement Target</title>
+    <para>
+     To create a new placement target named 'temporary', start by adding it to
+     the zonegroup:
+    </para>
+<screen>
+&prompt.cephuser;radosgw-admin zonegroup placement add \
+      --rgw-zonegroup default \
+      --placement-id temporary
+</screen>
+    <para>
+     Then provide the zone placement info for that target:
+    </para>
+<screen>
+&prompt.cephuser;radosgw-admin zone placement add \
+      --rgw-zone default \
+      --placement-id temporary \
+      --data-pool default.rgw.temporary.data \
+      --index-pool default.rgw.temporary.index \
+      --data-extra-pool default.rgw.temporary.non-ec
+</screen>
+   </sect3>
+   <sect3>
+    <title>Adding a Storage Class</title>
+    <para>
+     To add a new storage class named 'COLD' to the 'default-placement' target,
+     start by adding it to the zonegroup:
+    </para>
+<screen>
+&prompt.cephuser;radosgw-admin zonegroup placement add \
+      --rgw-zonegroup default \
+      --placement-id default-placement \
+      --storage-class COLD
+</screen>
+    <para>
+     Then provide the zone placement info for that storage class:
+    </para>
+<screen>
+&prompt.cephuser;radosgw-admin zone placement add \
+      --rgw-zone default \
+      --placement-id default-placement \
+      --storage-class COLD \
+      --data-pool default.rgw.cold.data \
+      --compression lz4
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ogw.storage_classes.customizing_placement">
+   <title>Customizing Placement</title>
+   <sect3>
+    <title>Default Palcement</title>
+    <para>
+     By default, new buckets will use the zonegroup’s 'default_placement'
+     target. You can change this zonegroup setting with:
+    </para>
+<screen>
+&prompt.cephuser;radosgw-admin zonegroup placement default \
+      --rgw-zonegroup default \
+      --placement-id new-placement
+</screen>
+   </sect3>
+   <sect3>
+    <title>User Placement</title>
+    <para>
+     A &cogw; user can override the zonegroup’s default placement target by
+     setting a non-empty 'default_placement' field in the user info. Similarly,
+     the 'default_storage_class' can override the 'STANDARD' storage class
+     applied to objects by default.
+    </para>
+<screen>
+&prompt.cephuser;radosgw-admin user info --uid testid
+{
+    ...
+    "default_placement": "",
+    "default_storage_class": "",
+    "placement_tags": [],
+    ...
+}
+</screen>
+    <para>
+     If a zonegroup’s placement target contains any tags, users will be
+     unable to create buckets with that placement target unless their user info
+     contains at least one matching tag in its 'placement_tags' field. This can
+     be useful to restrict access to certain types of storage.
+    </para>
+    <para>
+     The <command>radosgw-admin</command> command cannot modify these fields
+     directly, therefore you need to edit the JSON format manually:
+    </para>
+<screen>
+&prompt.cephuser;radosgw-admin metadata get user:<replaceable>USER-ID</replaceable> > user.json
+&prompt.cephuser;vi user.json     # edit the file as required
+&prompt.cephuser;radosgw-admin metadata put user:<replaceable>USER-ID</replaceable> &lt; user.json
+</screen>
+   </sect3>
+   <sect3>
+    <title>S3 Bucket Placement</title>
+    <para>
+     When creating a bucket with the S3 protocol, a placement target can be
+     provided as part of the <option>LocationConstraint</option> to override
+     the default placement targets from the user and zonegroup.
+    </para>
+    <para>
+     Normally, the <option>LocationConstraint</option> needs to match the
+     zonegroup’s <option>api_name</option>:
+    </para>
+<screen>
+&lt;LocationConstraint>default&lt;/LocationConstraint>
+</screen>
+    <para>
+     You can add a custom placement target to the <option>api_name</option>
+     following a colon:
+    </para>
+<screen>
+&lt;LocationConstraint>default:new-placement&lt;/LocationConstraint>
+</screen>
+   </sect3>
+   <sect3>
+    <title>&swift; Bucket Placement</title>
+    <para>
+     When creating a bucket with the Swift protocol, you can provide a
+     placement target in the HTTP header's 'X-Storage-Policy':
+    </para>
+<screen>
+ X-Storage-Policy: <replaceable>NEW-PLACEMENT</replaceable>
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ogw.storage_classes.usage">
+   <title>Using Storage Classes</title>
+   <para>
+    All placement targets have a 'STANDARD' storage class which is applied to
+    new objects by default. You can override this default with its
+    'default_storage_class'.
+   </para>
+   <para>
+    To create an object in a non-default storage class, provide that storage
+    class name in an HTTP header with the request. The S3 protocol uses the
+    'X-Amz-Storage-Class' header, while the &swift; protocol uses the
+    'X-Object-Storage-Class' header.
+   </para>
+   <para>
+    You can use <emphasis>S3 Object Lifecycle Management</emphasis> to move
+    object data between storage classes using 'Transition' actions.
+   </para>
+  </sect2>
+ </sect1>
  <sect1 xml:id="ceph.rgw.fed">
 <!-- https://github.com/theanalyst/ceph/blob/doc/multisite-rgw/doc/radosgw/multisite.rst -->
 
