@@ -473,6 +473,223 @@ Full list of resources:
    </procedure>
   </sect2>
  </sect1>
+ <sect1 xml:id="sec.ganesha.active_active">
+  <title>Active-Active Configuration</title>
+
+  <para>
+   This section provides an example of simple active-active &ganesha; setup.
+   The aim is to deploy two &ganesha; servers layered on top of the same
+   existing &cephfs;. The servers will be two &ceph; cluster nodes with
+   separate addresses. The clients need to be distributed between them
+   manually. <quote>Failover</quote> in this configuration means manually
+   unmounting and remounting the other server on the client.
+  </para>
+
+  <sect2 xml:id="sec.ganesha.active_active.prerequisites">
+   <title>Prerequisites</title>
+   <para>
+    For our example configuration, you need the following:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Running &ceph; cluster. See <xref linkend="ceph.install.stack" /> for
+      details on deploying and configuring &ceph; cluster by using &deepsea;.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      At least one configured &cephfs;. See
+      <xref linkend="cha.ceph.as.cephfs" /> for more details on deploying and
+      configuring &cephfs;.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Two &ceph; cluster nodes with &ganesha; deployed. See
+      <xref linkend="cha.as.ganesha" /> for more details on deploying
+      &ganesha;.
+     </para>
+     <tip>
+      <title>Use Dedicated Servers</title>
+      <para>
+       Although &ganesha; nodes can share resources with other &ceph; related
+       services, we recommend to use dedicated servers to improve performance.
+      </para>
+     </tip>
+    </listitem>
+   </itemizedlist>
+   <para>
+    After you deploy the teo &ganesha; nodes, verify that the cluster is
+    operational and the default &cephfs; pools are there:
+   </para>
+<screen>
+&prompt.cephuser;rados lspools
+cephfs_data
+cephfs_metadata
+</screen>
+  </sect2>
+
+  <sect2 xml:id="sec.ganesha.active_active.configure">
+   <title>Configure &ganesha;</title>
+   <para>
+    Check that both &ganesha; nodes have the file
+    <filename>/etc/ganesha/ganesha.conf</filename> files installed. The
+    <package>nfs-ganesha-ceph</package> package ships with a sample
+    <filename>/etc/ganesha/ceph.conf</filename> file that you can tweak as
+    needed. Following is an example of <filename>ceph.conf</filename>:
+   </para>
+<screen>
+NFS_CORE_PARAM
+{
+    Enable_NLM = false;
+    Enable_RQUOTA = false;
+    Protocols = 4;
+}
+NFSv4
+{
+    RecoveryBackend = rados_cluster;
+    Minor_Versions = 1,2;
+}
+CACHEINODE {
+    Dir_Chunk = 0;
+    NParts = 1;
+    Cache_Size = 1;
+}
+EXPORT
+{
+    Export_ID=100;
+    Protocols = 4;
+    Transports = TCP;
+    Path = /;
+    Pseudo = /ceph/;
+    Access_Type = RW;
+    Attr_Expiration_Time = 0;
+    FSAL {
+        Name = CEPH;
+    }
+}
+RADOS_KV
+{
+    pool = "cephfs_metadata";
+    namespace = "ganesha";
+    #nodeid = "a";
+}
+</screen>
+   <para>
+    Because legacy versions of NFS prevent us from lifting the grace period
+    early and therefore prolong a server restart, we disable options for NFS
+    prior to version 4.2. We also disable most of the &ganesha; caching as
+    &ceph; libraries do aggressive caching already.
+   </para>
+   <para>
+    The 'rados_cluster' recovery back-end stores its info in &rados; objects.
+    Although it is not a lot of data, we want it highly available. We utilize
+    the &cephfs; metadata pool for this purpose, and declare a new 'ganesha'
+    namespace in it to keep it distinct from &cephfs; objects.
+   </para>
+   <note>
+    <title>Cluster Node Id's</title>
+    <para>
+     Most of the configuration is identical between the two hosts, however the
+     <option>nodeid</option> option in the 'RADOS_KV' block needs to be a
+     unique string for each node. By default, &ganesha; sets
+     <option>nodeid</option> to the host name of the node.
+    </para>
+    <para>
+     If you need to use a different fixed values other than host names, you can
+     for example set <option>nodeid = 'a'</option> on one node and
+     <option>nodeid = 'b'</option> on the other one.
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ganesha.active_active.grace_db">
+   <title>Populate the Cluster Grace Database</title>
+   <para>
+    We need to verify that all of the nodes in the cluster know about each
+    other. This done via a &rados; object that is shared between the hosts.
+    &ganesha; uses this object to communicate the current state with respect to
+    a grace period.
+   </para>
+   <para>
+    The <package>nfs-ganesha-rados-grace</package> package contains a command
+    line tool for querying and manipulating this database. If the package is
+    not installed on at least one of the nodes, install it with
+   </para>
+<screen>
+&prompt.root;zypper install nfs-ganesha-rados-grace
+</screen>
+   <para>
+    We will use the command to create the DB and add both
+    <option>nodeid</option>'s. In our example, the two &ganesha; nodes are
+    named <literal>ses6min1.example.com</literal> and
+    <literal>ses6min2.example.com</literal> One one of the &ganesha; hosts, run
+   </para>
+<screen>
+&prompt.cephuser;ganesha-rados-grace -p cephfs.a.meta -n ganesha add ses6min1.example.com
+&prompt.cephuser;ganesha-rados-grace -p cephfs.a.meta -n ganesha add ses6min2.example.com
+&prompt.cephuser;ganesha-rados-grace -p cephfs.a.meta -n ganesha
+cur=1 rec=0
+======================================================
+ses6min1.example.com     E
+ses6min2.example.com     E
+</screen>
+   <para>
+    This creates the grace database and adds both 'ses6min1.example.com' and
+    'ses6min2.example.com' to it. The last command dumps the current state.
+    Newly added hosts are always considered to be enforcing the grace period so
+    they both have the 'E' flag set. The 'cur' and 'rec' values show the
+    current and recovery epochs, which is how we keep track of what hosts are
+    allowed to perform recovery and when.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ganesha.active_active.restart_servers">
+   <title>Restart &ganesha; Services</title>
+   <para>
+    On both &ganesha; nodes, restart the related services:
+   </para>
+<screen>
+&prompt.root;systemctl status nfs-ganesha.service
+</screen>
+   <para>
+    After the services are restarted, check the grace database:
+   </para>
+<screen>
+&prompt.cephuser;ganesha-rados-grace -p cephfs_metadata -n ganesha
+cur=3 rec=0
+======================================================
+ses6min1.example.com
+ses6min2.example.com
+</screen>
+   <note>
+    <title>Cleared the 'E' Flag</title>
+    <para>
+     Note that both nodes have cleared their 'E' flags, indicating that they
+     are no longer enforcing the grace period and are now in normal operation
+     mode.
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ganesha.active_active.conclusion">
+   <title>Conclusion</title>
+   <para>
+    After you complete all the preceding steps, you can mount the exported NFS
+    file system from either of the two &ganesha; servers, and perform normal
+    NFS operations against them.
+   </para>
+   <para>
+    Our example configuration assumes that if one of the two &ganesha; servers
+    goes down, that you will restart it manually within 5 minutes. After 5
+    minutes, the &mds; may cancel the session that the &ganesha; client held
+    and all of the state associated with it. If the session’s capabilities
+    get cancelled before the rest of the cluster goes into the grace period,
+    the server’s clients may not be able to recover all of their state.
+   </para>
+  </sect2>
+ </sect1>
  <sect1 xml:id="sec.as.ganesha.info">
   <title>More Information</title>
 
