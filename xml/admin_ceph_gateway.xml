@@ -891,7 +891,7 @@ rgw_frontends = beast port=80 ssl_port=443 ssl_certificate=/etc/ceph/rgw.pem</sc
     <title>Requirements and Assumptions</title>
     <para>
      Let us assume a simple multisite configuration as described in
-     <xref linkend="ceph-rgw-fed"/> consisting of the 2 zones
+     <xref linkend="ceph-rgw-fed"/> consists of 2 zones:
      <literal>us-east</literal> and <literal>us-west</literal>. Now we add a
      third zone <literal>us-east-es</literal> which is a zone that only
      processes metadata from the other sites. This zone can be in the same or a
@@ -2692,342 +2692,255 @@ rgw_override_bucket_index_max_shards = 12
    </para>
   </sect2>
  </sect1>
+
  <sect1 xml:id="ceph-rgw-fed">
-<!-- https://github.com/theanalyst/ceph/blob/doc/multisite-rgw/doc/radosgw/multisite.rst -->
-
   <title>Multisite &ogw;s</title>
-
+  <para>&ceph; supports several multi-site configuration options for the
+    &ceph; &ogw;:</para>
   <variablelist>
    <varlistentry>
-    <term>Zone</term>
+    <term>Multi-zone</term>
     <listitem>
      <para>
-      A logical grouping of one or more &ogw; instances. There must be one zone
-      designated as the <emphasis>master</emphasis> zone in a
-      <emphasis>zonegroup</emphasis>, which handles all bucket and user
-      creation.
+      A more advanced configuration consists of one zone group and multiple
+      zones, each zone with one or more ceph-radosgw instances. Each zone
+      is backed by its own &ceph; Storage Cluster. Multiple zones in a zone
+      group provides disaster recovery for the zone group should one of
+      the zones experience a significant failure. Each zone is
+      active and may receive write operations. In addition to disaster
+      recovery, multiple active zones may also serve as a foundation for
+      content delivery networks.
      </para>
     </listitem>
    </varlistentry>
    <varlistentry>
-    <term>Zonegroup</term>
+    <term>Multi-zone-group</term>
     <listitem>
      <para>
-      A zonegroup consists of multiple zones. There should be a master
-      zonegroup that will handle changes to the system configuration.
+      Formerly called regions, &ceph; &ogw; supports multiple
+      zone groups, each zone group with one or more zones. Objects stored to
+      zones in one zone group within the same realm as another zone group will
+      share a global object namespace, ensuring unique object IDs across zone
+      groups and zones.
      </para>
     </listitem>
    </varlistentry>
    <varlistentry>
-    <term>Zonegroup map</term>
+    <term>Multiple Realms</term>
     <listitem>
      <para>
-      A configuration structure that holds the map of the entire system, for
-      example which zonegroup is the master, relationships between different
-      zonegroups, and certain configuration options such as storage policies.
+      &ceph; &ogw; supports the notion of realms, which
+      can be a single zone group or multiple zone groups and a globally unique
+      namespace for the realm. Multiple realms provide the ability to support
+      numerous configurations and namespaces.
      </para>
-    </listitem>
-   </varlistentry>
-   <varlistentry>
-    <term>Realm</term>
-    <listitem>
-     <para>
-      A container for zonegroups. This allows for separation of zonegroups
-      between clusters. It is possible to create multiple realms, making it
-      easier to run completely different configurations in the same cluster.
-     </para>
-    </listitem>
-   </varlistentry>
-   <varlistentry>
-    <term>Period</term>
-    <listitem>
-     <para>
-      A period holds the configuration structure for the current state of the
-      realm. Every period contains a unique ID and an epoch. Every realm has an
-      associated current period, holding the current state of configuration of
-      the zonegroups and storage policies. Any configuration change for a
-      non-master zone will increment the period's epoch. Changing the master
-      zone to a different zone will trigger the following changes:
-     </para>
-     <itemizedlist>
-      <listitem>
-       <para>
-        A new period is generated with a new period ID and epoch of 1.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        Realm's current period is updated to point to the newly generated
-        period ID.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        Realm's epoch is incremented.
-       </para>
-      </listitem>
-     </itemizedlist>
     </listitem>
    </varlistentry>
   </variablelist>
-
   <para>
-   You can configure each &ogw; to participate in a federated architecture,
-   working in an active zone configuration while allowing for writes to
-   non-master zones.
+   You can configure each &ogw; to work in an active-active zone
+   configuration, allowing for writes to non-master zones.
+   The multi-site configuration is stored within a container called a realm.
+   The realm stores zone groups, zones, and a time period with multiple
+   epochs for tracking changes to the configuration. The
+   <literal>ceph-radosgw</literal> daemons handle the synchronization, eliminating the
+   need for a separate synchronization agent. This approach
+   to synchronization allows the &ceph; &ogw; to operate with an
+   active-active configuration instead of active-passive.
   </para>
-
-  <sect2 xml:id="ceph-rgw-fed-term">
-   <title>Terminology</title>
+  <sect2 xml:id="ceph-rgw-multi-req-assump">
+   <title>Requirements and Assumptions</title>
    <para>
-    A description of terms specific to a federated architecture follows:
+     A multi-site configuration requires at least two &ceph; storage clusters;
+     at least two &ceph; &ogw; instances, one for each &ceph; storage cluster.
+     The following configuration assumes at least two &ceph; storage clusters
+     are in geographically separate locations; however, the configuration can
+     work on the same site. For example, named <literal>rgw1</literal> and
+     <literal>rgw2</literal>.
    </para>
+   <important>
+     <para>We do not recommend running a single &ceph; cluster unless you have
+       low latency WAN connections.</para>
+   </important>
+   <para>A multi-site configuration requires a master zone group and a
+     master zone. Additionally, each zone group requires a master zone.
+     Zone groups may have one or more secondary or non-master zones.
+     In this guide, the <literal>rgw1</literal> host serves as the master zone
+     of the master zone group and the <literal>rgw2</literal> host serves as the
+     secondary zone of the master zone group.</para>
   </sect2>
 
-  <sect2 xml:id="ceph-rgw-fed-intro">
-   <title>Example Cluster Setup</title>
+  <sect2 xml:id="ceph-rgw-config-master-zone">
+   <title>Configuring a Master Zone</title>
    <para>
-    In this example, we will focus on creating a single zonegroup with three
-    separate zones, which actively synchronize their data. Two zones belong to
-    the same cluster, while the third belongs to a different one. There is no
-    synchronization agent involved in mirroring data changes between the
-    &ogw;s. This allows for a much simpler configuration scheme and
-    active-active configurations. Note that metadata operations&mdash;such as
-    creating a new user&mdash;still need to go through the master zone.
-    However, data operations&mdash;such as creation of buckets and
-    objects&mdash;can be handled by any of the zones.
+     All gateways in a multi-site configuration retrieve their configuration
+     from a <literal>ceph-radosgw</literal> daemon on a host within the master zone group and master
+     zone. To configure your gateways in a multi-site configuration, choose
+     a <literal>ceph-radosgw</literal> instance to configure the master zone group and master zone.
    </para>
-  </sect2>
-
-  <sect2 xml:id="ceph-rgw-fed-keys">
-   <title>System Keys</title>
-   <para>
-    While configuring zones, &ogw; expects creation of an S3-compatible system
-    user together with their access and secret keys. This allows another &ogw;
-    instance to pull the configuration remotely with the access and secret
-    keys. For more information on creating S3 users, see
-    <xref linkend="adding-s3-swift-users"/>.
-   </para>
-   <tip>
-    <para>
-     It is useful to generate the access and secret keys before the zone
-     creation itself because it makes scripting and use of configuration
-     management tools easier later on.
-    </para>
-   </tip>
-   <para>
-    For the purpose of this example, let us assume that the access and secret
-    keys are set in the environment variables:
-   </para>
-<screen># SYSTEM_ACCESS_KEY=1555b35654ad1656d805
-# SYSTEM_SECRET_KEY=h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q==</screen>
-   <para>
-    Generally, access keys consist of 20 alphanumeric characters, while secret
-    keys consist of 40 alphanumeric characters (they can contain +/= characters
-    as well). You can generate these keys in the command line:
-   </para>
-<screen># SYSTEM_ACCESS_KEY=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 20 | head -n 1)
-# SYSTEM_SECRET_KEY=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 40 | head -n 1)</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph-rgw-fed-naming">
-   <title>Naming Conventions</title>
-   <para>
-    This example describes the process of setting up a master zone. We will
-    assume a zonegroup called <literal>us</literal> spanning the United States,
-    which will be our master zonegroup. This will contain two zones written in
-    a <replaceable>ZONEGROUP</replaceable>-<replaceable>ZONE</replaceable>
-    format. This is our convention only and you can choose a format that you
-    prefer. In summary:
-   </para>
-   <itemizedlist>
-    <listitem>
-     <para>
-      Master zonegroup: United States <literal>us</literal>
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      Master zone: United States, East Region 1: <literal>us-east-1</literal>
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      Secondary zone: United States, West Region: <literal>us-west</literal>
-     </para>
-    </listitem>
-   </itemizedlist>
-   <para>
-    This will be a part of a larger realm named <literal>gold</literal>. The
-    <literal>us-east-1</literal> is the primary cluster.
-    <literal>us-west</literal> is in a different &ceph; cluster.
-   </para>
-  </sect2>
-
-  <sect2 xml:id="ceph-rgw-fed-pools">
-   <title>Default Pools</title>
-   <para>
-    When configured with the appropriate permissions, &ogw; creates default
-    pools on its own. The <literal>pg_num</literal> and
-    <literal>pgp_num</literal> values are taken from the
-    <filename>ceph.conf</filename> configuration file. Pools related to a zone
-    by default follow the convention of
-    <replaceable>ZONE-NAME</replaceable>.<replaceable>POOL-NAME</replaceable>.
-    For example, for the <literal>us-east-1</literal> zone, it will be the
-    following pools:
-   </para>
-<screen>.rgw.root
-us-east-1.rgw.control
-us-east-1.rgw.gc
-us-east-1.rgw.log
-us-east-1.rgw.buckets.index
-us-east-1.rgw.buckets.data
-us-east-1.rgw.meta</screen>
-   <para>
-    These pools can be created in other zones as well, by replacing
-    <literal>us-east-1</literal> with the appropriate zone name.
-    The Zone definition lists many more pools that this, but many of them are
-    consolidated via rados namespaces. The authoritative source of information
-    about the various pools and namespaces is the zone info which lists all the
-    pools used and namespaces if any. For eg. many of the user's metadata are
-    stored in namespaces within the meta pool.</para>
-    <screen>
-    "gc_pool": "us-east-1.rgw.log:gc",
-    "lc_pool": "us-east-1.rgw.log:lc",
-    "log_pool": "us-east-1.rgw.log",
-    "intent_log_pool": "us-east-1.rgw.log:intent",
-    "usage_log_pool": "us-east-1.rgw.log:usage",
-    "reshard_pool": "us-east-1.rgw.log:reshard",
-    "user_keys_pool": "us-east-1.rgw.meta:users.keys",
-    "user_email_pool": "us-east-1.rgw.meta:users.email",
-    "user_swift_pool": "us-east-1.rgw.meta:users.swift",
-    "user_uid_pool": "us-east-1.rgw.meta:users.uid",
-    </screen>
-  </sect2>
-
-  <sect2 xml:id="ceph-rgw-fed-realm">
+  <sect3 xml:id="ceph-rgw-fed-realm">
    <title>Creating a Realm</title>
+   <para>A realm contains the multi-site configuration of zone groups and
+     zones and also serves to enforce a globally unique namespace within the realm.
    <para>
-    Configure a realm called <literal>gold</literal> and make it the default
-    realm:
+    Create a new realm called <literal>gold</literal> for the multi-site
+    configuration by opening a command line interface on a host identified
+    to serve in the master zone group and zone. Then, execute the following:
    </para>
-<screen>&prompt.cephuser;radosgw-admin realm create --rgw-realm=gold --default
+<screen>&prompt.cephuser;radosgw-admin realm create --rgw-realm=gold --default</screen>
+   <para>If the cluster has a single realm, specify the <option>--default</option>
+   flag. If <option>--default</option> is specified, <literal>radosgw-admin</literal> uses this realm by default.
+   If <option>--default</option> is not specified, adding zone-groups and zones requires specifying
+   either the <option>--rgw-realm</option> flag or the <option>--realm-id</option> flag to identify the realm when
+   adding zone groups and zones.</para>
+   <para>After creating the realm, <literal>radosgw-admin</literal> returns the realm
+     configuration:</para>
+<screen>
 {
   "id": "4a367026-bd8f-40ee-b486-8212482ddcd7",
   "name": "gold",
   "current_period": "09559832-67a4-4101-8b3f-10dfcd6b2707",
   "epoch": 1
 }</screen>
-   <para>
-    Note that every realm has an ID, which allows for flexibility such as
-    renaming the realm later if needed. The <literal>current_period</literal>
-    changes whenever we change anything in the master zone. The
-    <literal>epoch</literal> is incremented when there is a change in the
-    master zone's configuration which results in a change of the current
-    period.
-   </para>
-  </sect2>
+   <note>
+     <para>&ceph; generates a unique ID for the realm, which allows the
+       renaming of a realm if the need arises.</para>
+   </note>
+ </sect3>
 
-  <sect2 xml:id="ceph-rgw-fed-deldefzonegrp">
-   <title>Deleting the Default Zonegroup</title>
+ <sect3 xml:id="ceph-rgw-fed-createmasterzonegrp">
+  <title>Creating a Master Zone Group</title>
+  <para>
+    A realm must have at least one zone group to serve as the
+    master zone group for the realm. Create a new master zone group for
+    the multi-site configuration by opening a command line interface
+    on a host identified to serve in the master zone group and zone.
+    Create a master zone group called <literal>us</literal> by executing the following:</para>
+<screen>&prompt.cephuser;radosgw-admin zonegroup create --rgw-zonegroup=us \
+--endpoints=http://rgw1:80 --master --default</screen>
+  <para>If the realm only has a single zone group, specify the
+    <option>--default</option> flag. If <option>--default</option> is specified,
+    <literal>radosgw-admin</literal> uses this zone group by default when adding new zones.
+    If <option>--default</option> is not specified, adding zones requires
+    either the <option>--rgw-zonegroup</option> flag or the <option>--zonegroup-id</option> flag to identify the
+    zone group when adding or modifying zones.</para>
+  <para>After creating the master zone group, <literal>radosgw-admin</literal> returns
+  the zone group configuration. For example:</para>
+<screen>{
+ "id": "d4018b8d-8c0d-4072-8919-608726fa369e",
+ "name": "us",
+ "api_name": "us",
+ "is_master": "true",
+ "endpoints": [
+     "http:\/\/rgw1:80"
+ ],
+ "hostnames": [],
+ "hostnames_s3website": [],
+ "master_zone": "",
+ "zones": [],
+ "placement_targets": [],
+ "default_placement": "",
+ "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7"
+}</screen>
+</sect3>
+ <sect3 xml:id="ceph-rgw-fed-masterzone">
+  <title>Creating a Master Zone</title>
+  <important>
+    <para>
+       Zones must be created on a &ceph; &ogw; node that will be within the zone.
+    </para>
+  </important>
+  <para>
+   Create a new master zone for the multi-site configuration by opening
+   a command line interface on a host identified to serve in the master
+   zone group and zone. Execute the following:
+  </para>
+<screen>&prompt.cephuser;radosgw-admin zone create --rgw-zonegroup=us --rgw-zone=us-east-1 \
+--endpoints=http://rgw1:80 --access-key=<replaceable>$SYSTEM_ACCESS_KEY</replaceable> --secret=<replaceable>$SYSTEM_SECRET_KEY</replaceable></screen>
+  <note>
+    <para>
+      The <option>--access-key</option> and <option>--secret</option> are not
+      specified. These settings are added to the zone once the user is created
+      in the next section.</para>
+  </note>
+  <important>
+    <para>The following steps assume a multi-site configuration using newly
+      installed systems that are not storing data yet. <emphasis>DO NOT DELETE</emphasis>
+      the default zone and its pools if you are already using it to store data,
+      or the data will be deleted and unrecoverable.</para>
+  </important>
+  <para>After creating the master zone, <literal>radosgw-admin</literal> returns
+  the zone group configuration. For example:</para>
+<screen>
+{
+ "id": "83859a9a-9901-4f00-aa6d-285c777e10f0",
+ "name": "us-east-1",
+ "domain_root": "us-east-1/gc.rgw.data.root",
+ "control_pool": "us-east-1/gc.rgw.control",
+ "gc_pool": "us-east-1/gc.rgw.gc",
+ "log_pool": "us-east-1/gc.rgw.log",
+ "intent_log_pool": "us-east-1/gc.rgw.intent-log",
+ "usage_log_pool": "us-east-1/gc.rgw.usage",
+ "user_keys_pool": "us-east-1/gc.rgw.users.keys",
+ "user_email_pool": "us-east-1/gc.rgw.users.email",
+ "user_swift_pool": "us-east-1/gc.rgw.users.swift",
+ "user_uid_pool": "us-east-1/gc.rgw.users.uid",
+ "system_key": {
+     "access_key": "1555b35654ad1656d804",
+     "secret_key": "h7GhxuBLTrlhVUyxSPUKUV8r\/2EI4ngqJxD7iBdBYLhwluN30JaT3Q=="
+ },
+ "placement_pools": [
+     {
+         "key": "default-placement",
+         "val": {
+             "index_pool": "us-east-1/gc.rgw.buckets.index",
+             "data_pool": "us-east-1/gc.rgw.buckets.data",
+             "data_extra_pool": "us-east-1/gc.rgw.buckets.non-ec",
+             "index_type": 0
+         }
+     }
+ ],
+ "metadata_heap": "us-east-1/gc.rgw.meta",
+ "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7"
+}</screen>
+</sect3>
+  <sect3 xml:id="ceph-rgw-fed-deldefzonegrp">
+   <title>Deleting the Default Zone and Group</title>
    <para>
     The default installation of &ogw; creates the default zonegroup called
-    <literal>default</literal>. Because we no longer need the default
-    zonegroup, remove it.
+    <literal>default</literal>. Delete the default zone if it exists.
+    Make sure to remove it from the default zone group first.
    </para>
 <screen>&prompt.cephuser;radosgw-admin zonegroup delete --rgw-zonegroup=default</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph-rgw-fed-createmasterzonegrp">
-   <title>Creating a Master Zonegroup</title>
-   <para>
-    Create a master zonegroup called <literal>us</literal>. The zonegroup will
-    manage the zonegroup map and propagate changes to the rest of the system.
-    By marking the zonegroup as default, you allow explicitly mentioning the
-    rgw-zonegroup switch for later commands.
-   </para>
-<screen>&prompt.cephuser;radosgw-admin zonegroup create --rgw-zonegroup=us \
---endpoints=http://rgw1:80 --master --default
-{
-  "id": "d4018b8d-8c0d-4072-8919-608726fa369e",
-  "name": "us",
-  "api_name": "us",
-  "is_master": "true",
-  "endpoints": [
-      "http:\/\/rgw1:80"
-  ],
-  "hostnames": [],
-  "hostnames_s3website": [],
-  "master_zone": "",
-  "zones": [],
-  "placement_targets": [],
-  "default_placement": "",
-  "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7"
-}</screen>
-   <para>
-    Alternatively, you can mark a zonegroup as default with the following
-    command:
-   </para>
-<screen>&prompt.cephuser;radosgw-admin zonegroup default --rgw-zonegroup=us</screen>
-  </sect2>
-
-  <sect2 xml:id="ceph-rgw-fed-masterzone">
-   <title>Creating a Master Zone</title>
-   <para>
-    Now create a default zone and add it to the default zonegroup. Note that
-    you will use this zone for metadata operations such as user creation:
-   </para>
-<screen>&prompt.cephuser;radosgw-admin zone create --rgw-zonegroup=us --rgw-zone=us-east-1 \
---endpoints=http://rgw1:80 --access-key=<replaceable>$SYSTEM_ACCESS_KEY</replaceable> --secret=<replaceable>$SYSTEM_SECRET_KEY</replaceable>
-{
-  "id": "83859a9a-9901-4f00-aa6d-285c777e10f0",
-  "name": "us-east-1",
-  "domain_root": "us-east-1/gc.rgw.data.root",
-  "control_pool": "us-east-1/gc.rgw.control",
-  "gc_pool": "us-east-1/gc.rgw.gc",
-  "log_pool": "us-east-1/gc.rgw.log",
-  "intent_log_pool": "us-east-1/gc.rgw.intent-log",
-  "usage_log_pool": "us-east-1/gc.rgw.usage",
-  "user_keys_pool": "us-east-1/gc.rgw.users.keys",
-  "user_email_pool": "us-east-1/gc.rgw.users.email",
-  "user_swift_pool": "us-east-1/gc.rgw.users.swift",
-  "user_uid_pool": "us-east-1/gc.rgw.users.uid",
-  "system_key": {
-      "access_key": "1555b35654ad1656d804",
-      "secret_key": "h7GhxuBLTrlhVUyxSPUKUV8r\/2EI4ngqJxD7iBdBYLhwluN30JaT3Q=="
-  },
-  "placement_pools": [
-      {
-          "key": "default-placement",
-          "val": {
-              "index_pool": "us-east-1/gc.rgw.buckets.index",
-              "data_pool": "us-east-1/gc.rgw.buckets.data",
-              "data_extra_pool": "us-east-1/gc.rgw.buckets.non-ec",
-              "index_type": 0
-          }
-      }
-  ],
-  "metadata_heap": "us-east-1/gc.rgw.meta",
-  "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7"
-}</screen>
-   <para>
-    Note that the <option>--rgw-zonegroup</option> and
-    <option>--default</option> switches add the zone to a zonegroup and make it
-    the default zone. Alternatively, the same can also be done with the
-    following commands:
-   </para>
-<screen>&prompt.cephuser;radosgw-admin zone default --rgw-zone=us-east-1
-&prompt.cephuser;radosgw-admin zonegroup add --rgw-zonegroup=us --rgw-zone=us-east-1</screen>
+   <para>Delete the default pools in your &ceph; storage cluster if they exist:</para>
+   <important>
+     <para>The following step assumes a multi-site configuration using newly
+       installed systems that are not currently storing data. <emphasis>DO NOT DELETE</emphasis>
+       the default zone group if you are already using it to store data.</para>
+   </important>
+<screen>&prompt.cephuser;ceph osd pool rm default.rgw.control default.rgw.control --yes-i-really-really-mean-it
+&prompt.cephuser;ceph osd pool rm default.rgw.data.root default.rgw.data.root --yes-i-really-really-mean-it
+&prompt.cephuser;ceph osd pool rm default.rgw.gc default.rgw.gc --yes-i-really-really-mean-it
+&prompt.cephuser;ceph osd pool rm default.rgw.log default.rgw.log --yes-i-really-really-mean-it
+#&prompt.cephuser;ceph osd pool rm default.rgw.users.uid default.rgw.users.uid --yes-i-really-really-mean-it</screen>
+</sect3>
    <sect3 xml:id="ceph-rgw-fed-masterzone-createuser">
     <title>Creating System Users</title>
     <para>
-     To access zone pools, you need to create a system user. Note that you will
-     need these keys when configuring the secondary zone as well.
+     The <literal>ceph-radosgw</literal> daemons must authenticate before pulling realm and
+     period information. In the master zone, create a system user to
+     facilitate authentication between daemons:
     </para>
 <screen>&prompt.cephuser;radosgw-admin user create --uid=zone.user \
 --display-name="Zone User" --access-key=<replaceable>$SYSTEM_ACCESS_KEY</replaceable> \
 --secret=<replaceable>$SYSTEM_SECRET_KEY</replaceable> --system</screen>
-   </sect3>
+    <para>Make a note of the <option>access_key</option> and <option>secret_key</option>
+    as the secondary zones require them to authenticate with the master zone.</para>
+    <para>Add the system user to the master zone:</para>
+<screen>&prompt.cephuser;radosgw-admin zone modify --rgw-zone=us-east --access-key={access-key} --secret={secret}
+&prompt.cephuser;radosgw-admin period update --commit</screen>
+</sect3>
+
    <sect3 xml:id="ceph-rgw-fed-masterzone-updateperiod">
     <title>Update the Period</title>
     <para>
@@ -3121,7 +3034,8 @@ us-east-1.rgw.meta</screen>
   "realm_name": "gold",
   "realm_epoch": 2
 }</screen>
-   </sect3>
+</sect3>
+
    <sect3 xml:id="ceph-rgw-fed-masterzone-startrgw">
     <title>Start the &ogw;</title>
     <para>
@@ -3141,7 +3055,7 @@ rgw_zone=us-east-1</screen>
   </sect2>
 
   <sect2 xml:id="ceph-rgw-fed-secondaryzone">
-   <title>Creating a Secondary Zone</title>
+   <title>Creating Secondary Zones</title>
    <para>
    </para>
    <para>
