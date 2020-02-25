@@ -23,6 +23,173 @@
   basis. If several processes are located on the same machine, the CPU, RAM,
   disk and network requirements need to be added up.
  </para>
+
+<sect1 xml:id="network-overview">
+  <title>Network Overview</title>
+  <para>
+    &ceph; has several logical networks:
+  </para>
+  <itemizedlist>
+    <listitem>
+      <para>
+        A trusted internal network, the back-end network called the
+        the <literal>cluster network</literal>.
+      </para>
+    </listitem>
+    <listitem>
+      <para>
+        A public client network called <literal>public network</literal>.
+      </para>
+    </listitem>
+    <listitem>
+      <para>
+        Client networks for gateways, these are optional.
+      </para>
+    </listitem>
+  </itemizedlist>
+   <para>
+     The trusted internal network is the back-end network between the OSD nodes for
+     replication, re-balancing and recovery.Ideally, this network provides twice the
+     bandwidth of the public network with default 3-way replication since the
+     primary OSD sends 2 copies to other OSDs via this network.
+     The public network is between clients and gateways on the one side to
+     talk to monitors, managers, MDS nodes, OSD nodes. It is also used by
+     monitors, managers, and MDS nodes to talk with OSD nodes.
+   </para>
+   <figure xml:id="network-overview-figure">
+    <title>Network Overview</title>
+    <mediaobject>
+     <imageobject role="html">
+      <imagedata fileref="network-overview-diagram.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+
+  <sect2 xml:id="ceph-install-ceph-deploy-network">
+   <title>Network Recommendations</title>
+   <para>
+    For the &ceph; network environment, we recommend two bonded 25 GbE (or faster)
+    network interfaces bonded using 802.3ad (LACP). The use of two network interfaces
+    provides aggregation and fault-tolerance. The bond should then be used to provide
+    two VLAN interfaces, one for the public network, and the second for the cluster network.
+    Details on bonding the interfaces can be found in
+    <link xlink:href="https://documentation.suse.com/sles/15-SP1/html/SLES-all/cha-network.html#sec-network-iface-bonding"/>.
+   </para>
+   <para>
+     Fault tolerance can be enhanced through isolating the components into failure domains.
+     To improve fault tolerance of the network, bonding one interface from two
+     separate Network Interface Cards (NIC) offers protection against failure
+     of a single NIC. Similarly, creating a bond across two switches protects
+     against failure of a switch. We recommend consulting with the network
+     equipment vendor in order to architect the level of fault tolerance required.
+   </para>
+   <important>
+    <title>Administration Network not Supported</title>
+    <para>
+     Additional administration network setup&mdash;that enables for example
+     separating SSH, &salt;, or DNS networking&mdash;is neither tested nor
+     supported.
+    </para>
+   </important>
+
+   <tip>
+    <title>Nodes Configured via DHCP</title>
+    <para>
+     If your storage nodes are configured via DHCP, the default timeouts may not
+     be sufficient for the network to be configured correctly before the various
+     &ceph; daemons start. If this happens, the &ceph; MONs and OSDs will not
+     start correctly (running <command>systemctl status ceph\*</command> will
+     result in "unable to bind" errors). To avoid this issue, we recommend
+     increasing the DHCP client timeout to at least 30 seconds on each node in
+     your storage cluster. This can be done by changing the following settings
+     on each node:
+    </para>
+    <para>
+     In <filename>/etc/sysconfig/network/dhcp</filename>, set
+    </para>
+ <screen>DHCLIENT_WAIT_AT_BOOT="30"</screen>
+    <para>
+     In <filename>/etc/sysconfig/network/config</filename>, set
+    </para>
+ <screen>WAIT_FOR_INTERFACES="60"</screen>
+   </tip>
+
+   <sect3 xml:id="storage-bp-net-private">
+    <title>Adding a Private Network to a Running Cluster</title>
+    <para>
+     If you do not specify a cluster network during &ceph; deployment, it
+     assumes a single public network environment. While &ceph; operates fine
+     with a public network, its performance and security improves when you set a
+     second private cluster network. To support two networks, each &ceph; node
+     needs to have at least two network cards.
+    </para>
+    <para>
+     You need to apply the following changes to each &ceph; node. It is
+     relatively quick to do for a small cluster, but can be very time consuming
+     if you have a cluster consisting of hundreds or thousands of nodes.
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Stop &ceph; related services on each cluster node.
+      </para>
+      <para>
+       Add a line to <filename>/etc/ceph/ceph.conf</filename> to define the
+       cluster network, for example:
+      </para>
+ <screen>cluster network = 10.0.0.0/24</screen>
+      <para>
+       If you need to specifically assign static IP addresses or override
+       <option>cluster network</option> settings, you can do so with the
+       optional <option>cluster addr</option>.
+      </para>
+     </step>
+     <step>
+      <para>
+       Check that the private cluster network works as expected on the OS level.
+      </para>
+     </step>
+     <step>
+      <para>
+       Start &ceph; related services on each cluster node.
+      </para>
+ <screen>&prompt.root;systemctl start ceph.target</screen>
+     </step>
+    </procedure>
+  </sect3>
+
+   <sect3 xml:id="storage-bp-net-subnets">
+    <title>Monitor Nodes on Different Subnets</title>
+    <para>
+     If the monitor nodes are on multiple subnets, for example they are located
+     in different rooms and served by different switches, you need to adjust the
+     <filename>ceph.conf</filename> file accordingly. For example, if the nodes
+     have IP addresses 192.168.123.12, 1.2.3.4, and 242.12.33.12, add the
+     following lines to their <literal>global</literal> section:
+    </para>
+ <screen>[global]
+ [...]
+ mon host = 192.168.123.12, 1.2.3.4, 242.12.33.12
+ mon initial members = MON1, MON2, MON3
+ [...]</screen>
+    <para>
+     Additionally, if you need to specify a per-monitor public address or
+     network, you need to add a
+     <literal>[mon.<replaceable>X</replaceable>]</literal> section for each
+     monitor:
+    </para>
+ <screen>[mon.MON1]
+ public network = 192.168.123.0/24
+
+ [mon.MON2]
+ public network = 1.2.3.0/24
+
+ [mon.MON3]
+ public network = 242.12.33.12/0</screen>
+</sect3>
+</sect2>
+</sect1>
+
  <sect1 xml:id="multi-architecture">
   <title>Multiple Architecture Configurations</title>
 
@@ -107,7 +274,7 @@
     </listitem>
     <listitem>
      <para>
-      Separate 10 GbE networks (public/client and back-end), required 4x 10
+      Separate 10 GbE networks (public/client and internal), required 4x 10
       GbE, recommended 2x 25 GbE.
      </para>
     </listitem>
@@ -376,129 +543,21 @@
    iSCSI nodes should have six to eight CPU cores and 16 GB of RAM.
   </para>
  </sect1>
- <sect1 xml:id="ceph-install-ceph-deploy-network">
-  <title>Network Recommendations</title>
+
+ <sect1 xml:id="req-ses-other">
+  <title>&productname; &productnumber; and Other &suse; Products</title>
 
   <para>
-   For the &ceph; cluster network environment, we recommend two bonded 25 GbE
-   network interfaces. The network interfaces should be split into a public
-   client part, and a trusted internal part using VLANs. Use the 802.3ad
-   bonding mode to provide maximum bandwidth and resiliency. Find more details
-   about configuring bonded network interfaces in
-   <link xlink:href="https://documentation.suse.com/sles/15-SP1/html/SLES-all/cha-network.html#sec-network-iface-bonding"/>
+   This section contains important information about integrating &productname;
+   &productnumber; with other &suse; products.
   </para>
 
-  <para>
-   The public VLAN serves to provide the service to the customers, while the
-   internal part provides for the authenticated &ceph; network communication.
-   The main reason for this is that although &ceph; provides authentication and
-   protection against attacks once secret keys are in place, the messages used
-   to configure these keys may be transferred openly and are vulnerable.
-  </para>
-
-  <important>
-   <title>Administration Network not Supported</title>
+  <sect2 xml:id="req-ses-suma">
+   <title>&susemgr;</title>
    <para>
-    Additional administration network setup&mdash;that enables for example
-    separating SSH, &salt;, or DNS networking&mdash;is neither tested nor
-    supported.
+    &susemgr; and &productname; are not integrated, therefore &susemgr; cannot
+    currently manage a &productname; cluster.
    </para>
-  </important>
-
-  <tip>
-   <title>Nodes Configured via DHCP</title>
-   <para>
-    If your storage nodes are configured via DHCP, the default timeouts may not
-    be sufficient for the network to be configured correctly before the various
-    &ceph; daemons start. If this happens, the &ceph; MONs and OSDs will not
-    start correctly (running <command>systemctl status ceph\*</command> will
-    result in "unable to bind" errors) To avoid this issue, we recommend
-    increasing the DHCP client timeout to at least 30 seconds on each node in
-    your storage cluster. This can be done by changing the following settings
-    on each node:
-   </para>
-   <para>
-    In <filename>/etc/sysconfig/network/dhcp</filename>, set
-   </para>
-<screen>DHCLIENT_WAIT_AT_BOOT="30"</screen>
-   <para>
-    In <filename>/etc/sysconfig/network/config</filename>, set
-   </para>
-<screen>WAIT_FOR_INTERFACES="60"</screen>
-  </tip>
-
-  <sect2 xml:id="storage-bp-net-private">
-   <title>Adding a Private Network to a Running Cluster</title>
-   <para>
-    If you do not specify a cluster network during &ceph; deployment, it
-    assumes a single public network environment. While &ceph; operates fine
-    with a public network, its performance and security improves when you set a
-    second private cluster network. To support two networks, each &ceph; node
-    needs to have at least two network cards.
-   </para>
-   <para>
-    You need to apply the following changes to each &ceph; node. It is
-    relatively quick to do for a small cluster, but can be very time consuming
-    if you have a cluster consisting of hundreds or thousands of nodes.
-   </para>
-   <procedure>
-    <step>
-     <para>
-      Stop &ceph; related services on each cluster node.
-     </para>
-     <para>
-      Add a line to <filename>/etc/ceph/ceph.conf</filename> to define the
-      cluster network, for example:
-     </para>
-<screen>cluster network = 10.0.0.0/24</screen>
-     <para>
-      If you need to specifically assign static IP addresses or override
-      <option>cluster network</option> settings, you can do so with the
-      optional <option>cluster addr</option>.
-     </para>
-    </step>
-    <step>
-     <para>
-      Check that the private cluster network works as expected on the OS level.
-     </para>
-    </step>
-    <step>
-     <para>
-      Start &ceph; related services on each cluster node.
-     </para>
-<screen>&prompt.root;systemctl start ceph.target</screen>
-    </step>
-   </procedure>
-  </sect2>
-
-  <sect2 xml:id="storage-bp-net-subnets">
-   <title>Monitor Nodes on Different Subnets</title>
-   <para>
-    If the monitor nodes are on multiple subnets, for example they are located
-    in different rooms and served by different switches, you need to adjust the
-    <filename>ceph.conf</filename> file accordingly. For example, if the nodes
-    have IP addresses 192.168.123.12, 1.2.3.4, and 242.12.33.12, add the
-    following lines to their <literal>global</literal> section:
-   </para>
-<screen>[global]
-[...]
-mon host = 192.168.123.12, 1.2.3.4, 242.12.33.12
-mon initial members = MON1, MON2, MON3
-[...]</screen>
-   <para>
-    Additionally, if you need to specify a per-monitor public address or
-    network, you need to add a
-    <literal>[mon.<replaceable>X</replaceable>]</literal> section for each
-    monitor:
-   </para>
-<screen>[mon.MON1]
-public network = 192.168.123.0/24
-
-[mon.MON2]
-public network = 1.2.3.0/24
-
-[mon.MON3]
-public network = 242.12.33.12/0</screen>
   </sect2>
  </sect1>
  <sect1 xml:id="sysreq-naming">
@@ -634,21 +693,5 @@ public network = 242.12.33.12/0</screen>
     </itemizedlist>
    </listitem>
   </itemizedlist>
- </sect1>
- <sect1 xml:id="req-ses-other">
-  <title>&productname; &productnumber; and Other &suse; Products</title>
-
-  <para>
-   This section contains important information about integrating &productname;
-   &productnumber; with other &suse; products.
-  </para>
-
-  <sect2 xml:id="req-ses-suma">
-   <title>&susemgr;</title>
-   <para>
-    &susemgr; and &productname; are not integrated, therefore &susemgr; cannot
-    currently manage a &productname; cluster.
-   </para>
-  </sect2>
  </sect1>
 </chapter>
