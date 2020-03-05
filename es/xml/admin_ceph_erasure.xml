@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_erasure.xml" version="5.0" xml:id="cha-ceph-erasure">
+ <title>Repositorios codificados de borrado</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>editar</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>sí</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ceph ofrece una alternativa a la réplica normal de datos en repositorios denominada <emphasis>borrado</emphasis> o <emphasis>repositorio codificado de borrado</emphasis>. Los repositorios de borrado no proporcionan todas las funciones de los repositorios <emphasis>replicados</emphasis> (por ejemplo, no pueden almacenar metadatos para los repositorios RBD), pero requieren menos almacenamiento en bruto. Un repositorio de borrado por defecto capaz de almacenar 1 TB de datos requiere 1,5 TB de almacenamiento en bruto, lo que permite un único fallo del disco. Esto es una ventaja respecto a un repositorio replicado, que necesita 2 TB de almacenamiento en bruto para el mismo propósito.
+ </para>
+ <para>
+  Para obtener información básica sobre la codificación de borrado, consulte <link xlink:href="https://en.wikipedia.org/wiki/Erasure_code"/>.
+ </para>
+ <note>
+  <para>
+   Cuando se utiliza FileStore, no es posible acceder a los repositorios codificados de borrado con la interfaz RBD a menos que se tenga un nivel de caché configurado. Consulte la <xref linkend="ceph-tier-erasure"/> para obtener más detalles o utilice la instancia de BlueStore por defecto (consulte <xref linkend="about-bluestore"/>).
+  </para>
+ </note>
+ <sect1 xml:id="ec-prerequisite">
+  <title>Requisitos previos para repositorios codificados de borrado</title>
+
+  <para>
+   Para hacer uso de la codificación de borrado, debe hacer lo siguiente:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Defina una regla de borrado en el mapa de CRUSH.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Defina un perfil codificado de borrado que especifique el algoritmo de codificación que se debe utilizar.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Cree un repositorio utilizando la regla y el perfil mencionados anteriormente.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Tenga en cuenta que cambiar el perfil y sus detalles no será posible después de que se cree el repositorio y de que tenga datos.
+  </para>
+
+  <para>
+   Asegúrese de que las reglas de CRUSH para los <emphasis>repositorios de borrado</emphasis> utilizan <literal>indep</literal> para <literal>step</literal>. Para obtener información, consulte la <xref linkend="datamgm-rules-step-mode"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-default-profile">
+  <title>Creación de un repositorio codificado de borrado de ejemplo</title>
+
+  <para>
+   El repositorio codificado de borrado más sencillo es equivalente a RAID5 y requiere al menos tres hosts. Este procedimiento describe cómo crear un repositorio con fines de prueba.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     El comando <command>ceph osd pool create</command> se utiliza para crear un repositorio de tipo <emphasis>erasure</emphasis>. El <literal>12</literal> significa el número de grupos de colocación. Con los parámetros por defecto, el repositorio es capaz de gestionar situaciones en las que falle un OSD.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure
+pool 'ecpool' created</screen>
+   </step>
+   <step>
+    <para>
+     La cadena <literal>ABCDEFGHI</literal> se escribe en un objeto denominado <literal>NYAN</literal>.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -</screen>
+   </step>
+   <step>
+    <para>
+     Con fines de prueba, los OSD se pueden inhabilitar ahora, por ejemplo, desconectándolos de la red.
+    </para>
+   </step>
+   <step>
+    <para>
+     Para probar si el repositorio puede gestionar el fallo de dispositivos, se puede acceder al contenido del archivo con el comando <command>rados</command>.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-erasure-profiles">
+  <title>Perfiles de código de borrado</title>
+
+  <para>
+   Cuando se invoca el comando <command>ceph osd pool create</command> para crear un <emphasis>repositorio de borrado</emphasis>, se utiliza el perfil por defecto, a menos que se especifique otro perfil distinto. Los perfiles definen la redundancia de los datos. Para ello se definen dos parámetros, que reciben el nombre arbitrario de <literal>k</literal> y <literal>m</literal>. Los parámetros k y m definen en cuántas <literal>porciones</literal> se divide un dato y cuántas porciones de codificación se crean. Las porciones redundantes se almacenan en diferentes OSD.
+  </para>
+
+  <para>
+   Definiciones necesarias para los perfiles de repositorio de borrado:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>porción</term>
+    <listitem>
+     <para>
+      Cuando se llama a la función de codificación, se devuelven porciones del mismo tamaño: porciones de datos que pueden concatenarse para reconstruir el objeto original y porciones de codificación que se pueden usar para reconstruir una porción perdida.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term> k</term>
+    <listitem>
+     <para>
+      El número de porciones de datos, que es el número de porciones en las que se divide el objeto original. Por ejemplo, si <literal>k = 2</literal>, un objeto de 10 kB se divide en <literal>k</literal> objetos de 5 kB. El valor de <literal>min_size</literal> por defecto en los repositorios codificados de borrado es <literal>k + 1</literal>. Sin embargo, se recomienda que <literal>min_size</literal> sea <literal>k + 2</literal> o más para evitar la pérdida de escrituras y datos.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>m</term>
+    <listitem>
+     <para>
+      El número de porciones de codificación, que es el número de porciones adicionales calculadas por las funciones de codificación. Si hay 2 porciones de codificación, significa que pueden fallar dos OSD sin que se pierda ningún dato.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>crush-failure-domain</term>
+    <listitem>
+     <para>
+      Define a qué dispositivos se distribuyen las porciones. Como valor se debe definir un tipo de depósito. Para ver todos los tipos de depósitos, consulte la <xref linkend="datamgm-buckets"/>. Si el dominio de fallo es <literal>rack</literal>, las porciones se almacenarán en bastidores diferentes para aumentar la capacidad de recuperación en caso de fallos del bastidor. Tenga en cuenta que esto requiere bastidores k + m.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   Con el perfil codificado de borrado por defecto utilizado en la <xref linkend="cha-ceph-erasure-default-profile"/>, no perderá datos del clúster si se produce un error en un único OSD o host. Por lo tanto, para almacenar 1 TB de datos, necesita otros 0,5 TB de almacenamiento en bruto. Eso significa que se necesitan 1,5 TB de almacenamiento en bruto para 1 TB de datos (dado que k = 2, m = 1). Esto equivale a una configuración RAID5 común. En comparación, un repositorio replicado necesita 2 TB de almacenamiento en bruto para almacenar 1 TB de datos.
+  </para>
+
+  <para>
+   Para mostrar los valores del perfil por defecto:
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd erasure-code-profile get default
+directory=.libs
+k=2
+m=1
+plugin=jerasure
+crush-failure-domain=host
+technique=reed_sol_van</screen>
+
+  <para>
+   Es importante elegir el perfil correcto, ya que no se puede modificar después de que se cree el repositorio. Se debe crear un repositorio nuevo con un perfil distinto y todos los objetos del repositorio anterior se deben pasar al nuevo (consulte la <xref linkend="pools-migration"/>).
+  </para>
+
+  <para>
+   Los parámetros más importantes del perfil son <literal>k</literal>, <literal>m</literal> y <literal>crush-failure-domain</literal>, ya que definen la sobrecarga de almacenamiento y la duración de los datos. Por ejemplo, si la arquitectura debe aguantar la pérdida de dos bastidores con una sobrecarga de almacenamiento del 66 %, puede definir el perfil siguiente. Tenga en cuenta que esto solo es válido con un mapa de CRUSH que tenga depósitos de tipo "bastidor":
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
+   k=3 \
+   m=2 \
+   crush-failure-domain=rack</screen>
+
+  <para>
+   El ejemplo de la <xref linkend="cha-ceph-erasure-default-profile"/> se puede repetir con este nuevo perfil:
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
+<prompt>cephadm@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
+<prompt>cephadm@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+
+  <para>
+   El objeto NYAN se dividirá en tres (<literal>k=3</literal>) y se crearán dos porciones adicionales (<literal>m=2</literal>). El valor de <literal>m</literal> define cuántos OSD pueden fallar al mismo tiempo sin que se pierda ningún dato. El valor <literal>crush-failure-domain=rack</literal> crea un conjunto de reglas de CRUSH que garantiza que no se almacenarán dos porciones en el mismo bastidor.
+  </para>
+
+  <informalfigure>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="ceph_erasure_obj.png" width="80%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="ceph_erasure_obj.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </informalfigure>
+
+  <sect2 xml:id="ec-create">
+   <title>Creación de un nuevo perfil codificado de borrado</title>
+   <para>
+    El siguiente comando crea un nuevo perfil codificado de borrado:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile set <replaceable>NAME</replaceable> \
+ directory=<replaceable>DIRECTORY</replaceable> \
+ plugin=<replaceable>PLUGIN</replaceable> \
+ stripe_unit=<replaceable>STRIPE_UNIT</replaceable> \
+ <replaceable>KEY</replaceable>=<replaceable>VALUE</replaceable> ... \
+ --force
+</screen>
+   <variablelist>
+    <varlistentry>
+     <term>DIRECTORY</term>
+     <listitem>
+      <para>
+       Opcional. Defina el nombre del directorio desde el que se carga el complemento codificado de borrado. El valor por defecto es <filename>/usr/lib/ceph/erasure-code</filename>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>PLUGIN</term>
+     <listitem>
+      <para>
+       Opcional. Utilice el complemento codificado de borrado para calcular fragmentos de codificación y recuperar fragmentos que falten. Los complementos disponibles son "jerasure", "isa", "lrc" y "shes". El valor por defecto es "jerasure".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>STRIPE_UNIT</term>
+     <listitem>
+      <para>
+       Opcional. Indica la cantidad de datos de un fragmento de datos, por repartición. Por ejemplo, un perfil con 2 fragmentos de datos y el valor stripe_unit=4K colocaría el rango 0-4K en el fragmento 0, el rango 4K-8K en el fragmento 1 y el rango 8K-12K en el fragmento 0 de nuevo. Debe ser un múltiplo de 4K para obtener el mejor rendimiento. El valor por defecto se toma de la opción de configuración del monitor <option>osd_pool_erasure_code_stripe_unit</option> cuando se crea un repositorio. El valor de "stripe_width" de un repositorio que utilice este perfil será el número de fragmentos de datos multiplicado por este valor de "stripe_unit".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>KEY=VALUE</term>
+     <listitem>
+      <para>
+       Los pares clave/valor de las opciones específicas del complemento codificado de borrado seleccionado.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>‑‑force</term>
+     <listitem>
+      <para>
+       Opcional. Sustituye un perfil existente con el mismo nombre y permite definir un valor de stripe_unit no alineado con 4K.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ec-rm">
+   <title>Eliminación de un perfil codificado de borrado</title>
+   <para>
+    El comando siguiente elimina un perfil codificado de borrado identificado por el valor de <replaceable>NAME</replaceable> (Nombre):
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile rm <replaceable>NAME</replaceable>
+</screen>
+   <important>
+    <para>
+     Si un repositorio hace referencia al perfil, la supresión fallará.
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="ec-get">
+   <title>Visualización de los detalles de un perfil codificado de borrado</title>
+   <para>
+    El comando siguiente muestra los detalles de un perfil codificado de borrado identificado por el valor de <replaceable>NAME</replaceable> (Nombre):
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile get <replaceable>NAME</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="ec-ls">
+   <title>Listado de perfiles codificado de borrado</title>
+   <para>
+    El comando siguiente muestra los nombres de todos los perfiles codificado de borrado:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile ls
+</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ec-rbd">
+  <title>Repositorio codificado de borrado con dispositivo de bloques RADOS</title>
+
+  <para>
+   Para marcar un repositorio codificado de borrado como un repositorio RBD, etiquételo en consecuencia:
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool application enable rbd <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   RBD puede almacenar <emphasis>datos</emphasis> de imagen en repositorios codificados de borrado. Sin embargo, el encabezado de la imagen y los metadatos deberán almacenarse aún en un repositorio replicado. Suponiendo que el nombre del repositorio sea "rbd":
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd create rbd/<replaceable>image_name</replaceable> --size 1T --data-pool <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   Puede utilizar la imagen con normalidad como cualquier otra, excepto por el hecho de que todos los datos se almacenarán en el repositorio <replaceable>ec_pool_name</replaceable>, en lugar de en el repositorio "rbd".
+  </para>
+ </sect1>
+</chapter>

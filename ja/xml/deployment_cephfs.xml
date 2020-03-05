@@ -1,0 +1,969 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_cephfs.xml" version="5.0" xml:id="cha-ceph-as-cephfs">
+
+ <title>CephFSのインストール</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>編集</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ceph File System (CephFS)は、Ceph Storage Clusterを使用してデータを保存するPOSIX互換ファイルシステムです。CephFSは、Ceph Block Deviceと同じクラスタシステム、CephオブジェクトストレージとS3およびSwift API、またはネイティブのバインディング(<systemitem>librados</systemitem>)を使用します。
+ </para>
+ <para>
+  CephFSを使用するには、動作しているCeph Storage Clusterと、動作している「Ceph Metadata Server」<emphasis/>が少なくとも1つ必要です。
+ </para>
+ <sect1 xml:id="ceph-cephfs-limitations">
+  <title>CephFSでサポートされるシナリオとガイド</title>
+
+  <para>
+   SUSE Enterprise Storage 6は、CephFSのスケールアウトと分散コンポーネントを使用するさまざまなシナリオを正式にサポートしました。このエントリでは、ハード制限について説明し、推奨される使用事例のガイドを提供します。
+  </para>
+
+  <para>
+   サポートされるCephFSの展開は、次の要件を満足する必要があります。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     1つ以上のMetadata Server。SUSEでは、MDSの役割を持つノードを複数展開することをお勧めします。そのうち1つだけが<literal>active</literal>になり、残りは<literal>passive</literal>になります。クライアントからCephFSをマウントする際は、必ず<command>mount</command>コマンドですべてのMONノードを指定するようにしてください。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     クライアントは、<literal>cephfs</literal>カーネルモジュールドライバを使用する、SUSE Linux Enterprise Server 12 SP3以降、またはSUSE Linux Enterprise Server 15以降です。FUSEモジュールはサポートされません。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     SUSE Enterprise Storage 6ではCephFSクォータがサポートされており、Cephファイルシステムのサブディレクトリにクォータを設定できます。クォータは、ディレクトリ階層の指定したポイントの下層に保存される<literal>bytes</literal>または<literal>files</literal>の数を制限します。詳細については、<xref linkend="cephfs-quotas"/>を参照してください。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="cephfs-layouts"/>で説明されているように、CephFSはファイルレイアウトの変更をサポートします。ただし、ファイルシステムがいずれかのクライアントによってマウントされている場合は、既存のCephFSファイルシステムに新しいデータプールを追加することはできません(<literal>ceph mds add_data_pool</literal>)。新しいデータプールはファイルシステムがアンマウントされているときにのみ追加できます。
+    </para>
+   </listitem>
+   <listitem>
+     <para>
+       1つ以上のMetadata Server。SUSEでは、MDSの役割を持つノードを複数展開することをお勧めします。デフォルトでは、追加のMDSデーモンが<literal>standby</literal>デーモンとして起動し、アクティブなMDSのバックアップとして動作します。アクティブなMDSデーモンを複数使用することもできます(<xref linkend="ceph-cephfs-multimds"/>を参照)。
+     </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph-cephfs-mds">
+  <title>Ceph Metadata Server</title>
+
+  <para>
+   Ceph MDS (メタデータサーバ)は、CephFSのメタデータを保存します。Ceph Block Device とCephオブジェクトストレージはMDSを「使用しません」<emphasis/>。MDSにより、POSIXファイルシステムのユーザは、Ceph Storage Clusterに多大な負荷を掛けることなく基本的なコマンド(<command>ls</command>や<command>find</command>など)を実行できます。
+  </para>
+
+  <sect2 xml:id="ceph-cephfs-mdf-add">
+   <title>Metadata Serverの追加</title>
+   <para>
+    MDSは、最初のクラスタの展開プロセス中に展開することも(<xref linkend="ceph-install-stack"/>を参照)、すでに展開済みのクラスタに追加することもできます(<xref linkend="salt-adding-nodes"/>を参照)。
+   </para>
+   <para>
+    MDSの展開後、MDSを展開したサーバのファイアウォール設定で<literal>Ceph OSD/MDS</literal>サービスを許可します。<literal>yast</literal>を起動し、<menuchoice> <guimenu>Security and Users (セキュリティとユーザ)</guimenu> <guimenu>Firewall (ファイアウォール)</guimenu> <guimenu>Allowed Services (許可されたサービス)</guimenu> </menuchoice>へ移動して、<guimenu>Service to Allow (許可するサービス)</guimenu>ドロップダウンメニューで<guimenu>Ceph OSD/MDS</guimenu>を選択します。Ceph MDSノードに完全なトラフィックが許可されていない場合、ほかの操作が正常に機能してもファイルシステムのマウントは失敗します。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-mds-config">
+   <title>Metadata Serverの設定</title>
+   <para>
+    <filename>ceph.conf</filename>設定ファイルに関連オプションを挿入することによって、MDSの動作を微調整できます。
+   </para>
+   <variablelist>
+    <title>Metadata Serverの設定</title>
+    <varlistentry>
+     <term>mon force standby active</term>
+     <listitem>
+      <para>
+       「true」(デフォルト)に設定した場合、モニターはスタンバイ再生を強制的にアクティブにします。<literal>[mon]</literal>セクションまたは<literal>[global]</literal>セクションで設定します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>mds cache memory limit</option></term>
+     <listitem>
+      <para>
+       MDSがキャッシュに強制するソフトメモリ制限(バイト単位)。管理者は、古い<option>mds cache size</option>設定ではなく、このオプションを使用する必要があります。デフォルトは1GBです。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>mds cache reservation</option></term>
+     <listitem>
+      <para>
+       MDSキャッシュが維持するキャッシュ予約(メモリまたはiノード単位)。MDSは、予約の修正を始める場合、キャッシュサイズが縮小して予約が復元されるまで、クライアントの状態を取り消します。デフォルトは0.05です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds cache size</term>
+     <listitem>
+      <para>
+       キャッシュするiノードの数。値0 (デフォルト)は無制限の数を示します。<option>mds cache memory limit</option>を使用して、MDキャッシュが使用するメモリの量を制限することをお勧めします。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds cache mid</term>
+     <listitem>
+      <para>
+       キャッシュLRU内の新しい項目の挿入ポイント(先頭から)。デフォルトは0.7です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dir commit ratio</term>
+     <listitem>
+      <para>
+       Cephが部分更新ではなくフル更新を使用してコミットを行う前にダーティであるディレクトリの割合。デフォルトは0.5です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dir max commit size</term>
+     <listitem>
+      <para>
+       Cephが複数の小さいトランザクションに分割する前のディレクトリ更新の最大サイズ。デフォルトは90MBです。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds decay halflife</term>
+     <listitem>
+      <para>
+       MDSキャッシュ温度の半減期。デフォルトは5です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds beacon interval</term>
+     <listitem>
+      <para>
+       モニターに送信されるビーコンメッセージの頻度(秒単位)。デフォルトは4です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds beacon grace</term>
+     <listitem>
+      <para>
+       CephがMDSの速度低下を宣言し、場合によってはそのMDSを置き換えるまでの、ビーコンなしの間隔。デフォルトは15です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds blacklist interval</term>
+     <listitem>
+      <para>
+       OSDマップ内にある、障害が発生したMDSのブラックリストの期間。この設定は、障害が発生したMDSデーモンがOSDマップのブラックリストに留まる時間を制御します。管理者がMDSデーモンを手動でブラックリストに登録した場合のブラックリスト登録期間には影響しません。たとえば、<command>ceph osd blacklist add</command>コマンドでは、引き続きデフォルトのブラックリスト時間が使用されます。デフォルトは24 * 60です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds reconnect timeout</term>
+     <listitem>
+      <para>
+       MDSの再起動中にクライアントが再接続するのを待機する間隔(秒単位)。デフォルトは45です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds tick interval</term>
+     <listitem>
+      <para>
+       MDSが内部の定期的なタスクを実行する頻度。デフォルトは5です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dirstat min interval</term>
+     <listitem>
+      <para>
+       統計情報がツリーの上部へ再帰的に伝播されないようにするための最小間隔(秒単位)。デフォルトは1です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds scatter nudge interval</term>
+     <listitem>
+      <para>
+       dirstatの変更を上へ伝播する速さ。デフォルトは5です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds client prealloc inos</term>
+     <listitem>
+      <para>
+       各クライアントセッションに事前に割り当てるiノードの数。デフォルトは1000です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds early reply</term>
+     <listitem>
+      <para>
+       ジャーナルへのコミット前にクライアントが要求結果を表示することをMDSがクライアントに許可するかどうかを指定します。デフォルトは「true」です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds use tmap</term>
+     <listitem>
+      <para>
+       ディレクトリの更新に簡易マップを使用します。デフォルトは「true」です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds default dir hash</term>
+     <listitem>
+      <para>
+       ディレクトリフラグメント間でファイルをハッシュするために使用する関数。デフォルトは2です(すなわち、「rjenkins」)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log skip corrupt events</term>
+     <listitem>
+      <para>
+       ジャーナルの再生中にMDSが、破損したジャーナルイベントをスキップしようと試みるかどうかを指定します。デフォルトは「false」です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max events</term>
+     <listitem>
+      <para>
+       トリミングを開始するまでのジャーナルの最大イベント数。制限を無効にするには、-1 (デフォルト)に設定します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max segments</term>
+     <listitem>
+      <para>
+       トリミングを開始するまでのジャーナルのセグメント(オブジェクト)の最大数。制限を無効にするには、-1に設定します。デフォルトは30です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max expiring</term>
+     <listitem>
+      <para>
+       並行して失効させるセグメントの最大数。デフォルトは20です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log eopen size</term>
+     <listitem>
+      <para>
+       EOpenイベントのiノードの最大数。デフォルトは100です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal sample interval</term>
+     <listitem>
+      <para>
+       フラグメンテーションを判断するためにディレクトリの温度をサンプリングする頻度を指定します。デフォルトは3です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal replicate threshold</term>
+     <listitem>
+      <para>
+       Cephがメタデータを他のモードに複製しようとするまでの最大温度。デフォルトは8000です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal unreplicate threshold</term>
+     <listitem>
+      <para>
+       Cephがメタデータを他のノードに複製するのを停止するまでの最小温度。デフォルトは0です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split size</term>
+     <listitem>
+      <para>
+       MDSがディレクトリフラグメントをより小さなビットに分割するまでの最大ディレクトリサイズ。デフォルトは10000です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split rd</term>
+     <listitem>
+      <para>
+       Cephがディレクトリフラグメントを分割するまでのディレクトリ読み込みの最大温度。デフォルトは25000です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split wr</term>
+     <listitem>
+      <para>
+       Cephがディレクトリフラグメントを分割するまでのディレクトリ書き込みの最大温度。デフォルトは10000です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split bits</term>
+     <listitem>
+      <para>
+       ディレクトリフラグメントを分割する単位となるビット数。デフォルトは3です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal merge size</term>
+     <listitem>
+      <para>
+       Cephが隣接するディレクトリフラグメントをマージしようとするまでの最大ディレクトリサイズ。デフォルトは50です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal interval</term>
+     <listitem>
+      <para>
+       MDS間のワークロード交換の頻度(秒単位)。デフォルトは10です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment interval</term>
+     <listitem>
+      <para>
+       分割またはマージが可能なフラグメントから、フラグメンテーションの変更を実行するまでの間の遅延(秒単位)。デフォルトは5です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment fast factor</term>
+     <listitem>
+      <para>
+       分割をただちに実行してフラグメント間隔をスキップする前に、フラグメントが分割サイズを超過できる比率。デフォルトは1.5です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment size max</term>
+     <listitem>
+      <para>
+       新しいエントリがENOSPCで拒否されるまでのフラグメントの最大サイズ。デフォルトは100000です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal idle threshold</term>
+     <listitem>
+      <para>
+       Cephがサブツリーを移行してその親に戻すまでの最小温度。デフォルトは0です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal mode</term>
+     <listitem>
+      <para>
+       MDSの負荷を計算する方法。
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         0 = ハイブリッド
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         1 = 要求率と遅延
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         2 = CPUの負荷
+        </para>
+       </listitem>
+      </itemizedlist>
+      <para>
+       デフォルトは0です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal min rebalance</term>
+     <listitem>
+      <para>
+       Cephが移行するまでのサブツリーの最小温度。デフォルトは0.1です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal min start</term>
+     <listitem>
+      <para>
+       Cephがサブツリーを検索するまでのサブツリーの最大温度。デフォルトは0.2です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal need min</term>
+     <listitem>
+      <para>
+       許容するターゲットサブツリーサイズの最小の割合。デフォルトは0.8です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal need max</term>
+     <listitem>
+      <para>
+       許容するターゲットサブツリーサイズの最大の割合。デフォルトは1.2です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal midchunk</term>
+     <listitem>
+      <para>
+       Cephは、この割合のターゲットサブツリーサイズよりも大きいサブツリーを移行します。デフォルトは0.3です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal minchunk</term>
+     <listitem>
+      <para>
+       Cephは、この割合のターゲットサブツリーサイズのよりも小さいサブツリーを無視します。デフォルトは0.001です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal target removal min</term>
+     <listitem>
+      <para>
+       CephがMDSマップから古いMDSターゲットを削除するまでのバランサの反復処理の最小回数。Default is 5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal target removal max</term>
+     <listitem>
+      <para>
+       CephがMDSマップから古いMDSターゲットを削除するまでのバランサの反復処理の最大回数。デフォルトは10です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds replay interval</term>
+     <listitem>
+      <para>
+       スタンバイ再生モード(「ホットスタンバイ」)時のジャーナルのポーリング間隔。デフォルトは1です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds shutdown check</term>
+     <listitem>
+      <para>
+       MDSのシャットダウン中にキャッシュをポーリングする間隔。デフォルトは0です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds thrash fragments</term>
+     <listitem>
+      <para>
+       Cephはディレクトリをランダムにフラグメント化またはマージします。デフォルトは0です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dump cache on map</term>
+     <listitem>
+      <para>
+       CephはMDSキャッシュの内容を各MDSマップ上のファイルにダンプします。デフォルトは「false」です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dump cache after rejoin</term>
+     <listitem>
+      <para>
+       Cephは、回復中にキャッシュに再参加した後、MDSキャッシュの内容をファイルにダンプします。デフォルトは「false」です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby for name</term>
+     <listitem>
+      <para>
+       MDSデーモンは、この設定で指定した名前の別のMDSデーモンを対象にしてスタンバイします。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby for rank</term>
+     <listitem>
+      <para>
+       MDSデーモンは、このランクのMDSデーモンを対象にしてスタンバイします。デフォルトは-1です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby replay</term>
+     <listitem>
+      <para>
+       Ceph MDSデーモンがアクティブMDS（「ホットスタンバイ」)のログをポーリングおよび再生するかどうかを指定します。デフォルトは「false」です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds min caps per client</term>
+     <listitem>
+      <para>
+       クライアントが保持できる機能の最小数を設定します。デフォルトは100です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds max ratio caps per client</term>
+     <listitem>
+      <para>
+       MDSキャッシュの要求が高いときに呼び出すことができる現在の上限の最大比率を設定します。デフォルトは0.8です。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Metadata Server Journaler設定</title>
+    <varlistentry>
+     <term>journaler write head interval</term>
+     <listitem>
+      <para>
+       ジャーナルヘッドオブジェクトを更新する頻度。デフォルトは15です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler prefetch periods</term>
+     <listitem>
+      <para>
+       ジャーナル再生時に先読みするストライプ期間。デフォルトは10です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journal prezero periods</term>
+     <listitem>
+      <para>
+       書き込み位置の前にゼロにするストライプ期間。デフォルトは10です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler batch interval</term>
+     <listitem>
+      <para>
+       人工的に発生させる追加の最大遅延(秒単位)。デフォルトは0.001です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler batch max</term>
+     <listitem>
+      <para>
+       フラッシュを遅延させる単位となるバイトの最大数。デフォルトは0です。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-cephfs-cephfs">
+  <title>CephFS</title>
+
+  <para>
+   正常なCeph Storage Clusterと1つ以上のCeph Metadata Serverが用意できたら、Ceph File Systemを作成してマウントできます。クライアントがネットワークに接続されていて、適切な認証キーリングを持っていることを確認します。
+  </para>
+
+  <sect2 xml:id="ceph-cephfs-cephfs-create">
+   <title>CephFSの作成</title>
+   <para>
+    CephFSには、「データ」<emphasis/>と「メタデータ」<emphasis/>にそれぞれ1つずつ、少なくとも2つのRADOSプールが必要です。これらのプールを設定する際には、次の点を考慮する必要があります。
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      メタデータプールに他より高いレプリケーションレベルを使用する。このプールのデータが失われると、ファイルシステム全体がアクセス不可能になるおそれがあるためです。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      メタデータプールのSSDに他よりレイテンシの低いストレージを使用する。これによって、クライアント上でのファイルシステム操作の体感レイテンシが向上するためです。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    <filename>policy.cfg</filename>で<literal>role-mds</literal>を割り当てると、必要なプールは自動的に作成されます。パフォーマンスを手動で調整する場合、Metadata Serverを設定する前に、プール<literal>cephfs_data</literal>および<literal>cephfs_metadata</literal>を手動で作成できます。これらのプールがすでに存在する場合、DeepSeaはプールを作成しません。
+   </para>
+   <para>
+    プールの管理の詳細については、<xref linkend="ceph-pools"/>を参照してください。
+   </para>
+   <para>
+    2つの必須のプール(たとえば「cephfs_data」と「cephfs_metadata」)をCephFSで使用するためにデフォルト設定で作成するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create cephfs_data <replaceable>pg_num</replaceable>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool create cephfs_metadata <replaceable>pg_num</replaceable></screen>
+   <para>
+    複製プールの代わりにECプールを使用できます。ECプールは、パフォーマンス要件が低く、ランダムアクセスが少ない用途でのみ使用することをお勧めします。たとえば、クラウドストレージやバックアップ、アーカイブなどです。ECプール上のCephFSでBlueStoreを有効にする必要があります。また、プールに<literal>allow_ec_overwrite</literal>オプションが設定されている必要があります。このオプションは、<command>ceph osd pool set ec_pool allow_ec_overwrites true</command>を実行して設定できます。
+   </para>
+   <para>
+    イレージャコーディングでは、ファイルシステムの操作に、特に細かい更新によって多大なオーバーヘッドが追加されます。このオーバーヘッドは、イレージャコーディングを耐障害性メカニズムとして使用する場合につきものです。このペナルティは、ストレージ領域へのオーバーヘッドが大幅に削減されることのトレードオフです。
+   </para>
+   <para>
+    プールが作成されたら、<command>ceph fs new</command>コマンドを使用してファイルシステムを有効にできます。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs new <replaceable>fs_name</replaceable> <replaceable>metadata_pool_name</replaceable> <replaceable>data_pool_name</replaceable></screen>
+   <para>
+    次に例を示します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs new cephfs cephfs_metadata cephfs_data</screen>
+   <para>
+    ファイルシステムが作成されたかどうかを確認するには、利用可能なすべてのCephFSを一覧にします。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> <option>fs ls</option>
+ name: cephfs, metadata pool: cephfs_metadata, data pools: [cephfs_data ]</screen>
+   <para>
+    ファイルシステムが作成されている場合、MDSを「アクティブ」<emphasis/>状態にすることができます。たとえば、1つのMDSシステムの場合、次のようになります。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> <option>mds stat</option>
+e5: 1/1/1 up</screen>
+   <tip>
+    <title>その他のトピック</title>
+    <para>
+     マウント、アンマウント、CephFSの高度な設定など、特定のタスクの詳細情報は、<xref linkend="cha-ceph-cephfs"/>に記載されています。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-multimds">
+   <title>MDSのクラスタサイズ</title>
+   <para>
+    1つのCephFSインスタンスに複数のアクティブなMDSデーモンでサービスを提供できます。CephFSインスタンスに割り当てられているすべてのアクティブなMDSデーモンは、デーモン間でシステムのディレクトリツリーを分散して同時クライアントの負荷を分散します。アクティブなMDSデーモンをCephFSインスタンスに追加するには、スペアのスタンバイが必要です。追加のデーモンを起動するか、既存のスタンバイインスタンスを使用します。
+   </para>
+   <para>
+    次のコマンドは、アクティブなMDSデーモンとパッシブなデーモンの現在の数を表示します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph mds stat</screen>
+   <para>
+    次のコマンドは、1つのファイルシステムインスタンスでアクティブなMDSの数を2に設定します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs set <replaceable>fs_name</replaceable> max_mds 2</screen>
+   <para>
+    更新前にMDSクラスタを縮小するには、2つの手順が必要です。最初に、<option>max_mds</option>を設定し、1つのインスタンスだけが残るようにします。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs set <replaceable>fs_name</replaceable> max_mds 1</screen>
+   <para>
+    その後、他のアクティブなMDSデーモンを明示的に無効にします。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph mds deactivate <replaceable>fs_name</replaceable>:<replaceable>rank</replaceable></screen>
+   <para>
+    ここで、<replaceable>rank</replaceable>は、ファイルシステムインスタンスのアクティブなMDSデーモンの数で、0～<option>max_mds</option>-1の範囲になります。
+   </para>
+   <para>
+    少なくとも1つのMDSをスタンバイデーモンとして残すことをお勧めします。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-multimds-updates">
+   <title>MDSクラスタと更新</title>
+   <para>
+    Cephの更新中に、ファイルシステムインスタンスの機能フラグが変更されることがあります(通常、新機能の追加によって発生します)。互換性のないデーモン(古いバージョンなど)は、互換性のない機能セットでは機能できず、起動を拒否します。つまり、1つのデーモンを更新して再起動すると、まだ更新されていない他のデーモンがすべて停止して起動を拒否する可能性があります。このような理由から、Cephを更新する前に、アクティブなMDSクラスタのサイズを1に縮小して、スタンバイデーモンをすべて停止することをお勧めします。この更新手順を手動で実行するための手順は次のとおりです。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      <command>zypper</command>を使用してCeph関連パッケージを更新します。
+     </para>
+    </step>
+    <step>
+     <para>
+      上の説明のように、アクティブなMDSクラスタを1つのインスタンスに減らし、他のすべてのノードで<systemitem class="daemon">systemd</systemitem>ユニットを使用してスタンバイMDSデーモンをすべて停止します。
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl stop ceph-mds\*.service ceph-mds.target</screen>
+    </step>
+    <step>
+     <para>
+      その後、残っている1つのMDSデーモンを再起動し、更新されたバイナリで再起動させます。
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl restart ceph-mds\*.service ceph-mds.target</screen>
+    </step>
+    <step>
+     <para>
+      他のすべてのMDSデーモンを再起動して、必要な<option>max_mds</option>設定を再設定します。
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl start ceph-mds.target</screen>
+    </step>
+   </procedure>
+   <para>
+    DeepSeaを使用している場合、
+    <package>ceph</package> パッケージがステージ0～4の間に更新されていれば、DeepSeaはこの手順に従います。この手順は、クライアントがCephFSインスタンスをマウントしていてI/Oが実行中であっても行うことができます。ただし、アクティブなMDSの再起動中はI/Oが短時間一時停止するので注意してください。クライアントは自動的に回復します。
+   </para>
+   <para>
+    MDSクラスタを更新する前に、できる限りI/O負荷を削減することをお勧めします。アイドル状態のMDSクラスタでは、この更新手順はより短時間で完了します。逆に、複数のMDSデーモンが存在する非常に負荷の高いクラスタでは、実行中のI/Oによって1つのMDSデーモンが圧迫されるのを避けるため、前もって負荷を軽減しておくことが不可欠です。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-layouts">
+   <title>ファイルのレイアウト</title>
+   <para>
+    ファイルのレイアウトは、その内容をCeph RADOSオブジェクトにマップする方法を制御します。<emphasis/>「仮想拡張属性」(短縮形は<emphasis/>「xattrs」)を使用してファイルのレイアウトを読み書きできます。
+   </para>
+   <para>
+    レイアウトxattrsの名前は、ファイルが通常のファイルでるか、それともディレクトリであるかによって異なります。通常のファイルのレイアウトxattrsは<literal>ceph.file.layout</literal>と呼ばれ、ディレクトリのレイアウトxattrsは<literal>ceph.dir.layout</literal>と呼ばれます。例が<literal>ceph.file.layout</literal>を参照している場合にディレクトリを処理するときは、<literal>.dir.</literal>の部分を適切に置き換えてください。
+   </para>
+   <sect3>
+    <title>レイアウトフィールド</title>
+    <para>
+     次の属性フィールドが認識されます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>pool</term>
+      <listitem>
+       <para>
+        ファイルのデータオブジェクトが保存されるRADOSプールのIDまたは名前。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>pool_namespace</term>
+      <listitem>
+       <para>
+        オブジェクトの書き込み先のデータプール内のRADOSネームスペース。これはデフォルトでは空で、デフォルトのネームスペースを意味します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>stripe_unit</term>
+      <listitem>
+       <para>
+        ファイルのRAID 0分散で使用するデータブロックのサイズ(バイト単位)。ファイルのストライプ単位はすべて同じサイズです。通常、最後のストライプ単位は不完全です。これは、ファイルの終わりにあるデータと、ファイルの終わりを超えて固定ストライプ単位サイズの終わりまでの未使用の「領域」を表しています。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>stripe_count</term>
+      <listitem>
+       <para>
+        ファイルデータのRAID 0「ストライプ」を構成する、連続するストライプ単位の数。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>object_size</term>
+      <listitem>
+       <para>
+        ファイルデータがチャンクされるRADOSオブジェクトのサイズ(バイト単位)。
+       </para>
+       <tip>
+        <title>オブジェクトサイズ</title>
+        <para>
+         RADOSでは、設定可能な制限がオブジェクトサイズに適用されます。CephFSのオブジェクトサイズをその制限を超えて増やすと、書き込みが正常に実行されない場合があります。OSD設定は、<option>osd_max_object_size</option>で、デフォルトでは128MBです。RADOSオブジェクトが非常に大きいと、クラスタのスムーズな操作を妨げる場合があるため、デフォルト値を超えてオブジェクトサイズの制限を増やすことは推奨しません。
+        </para>
+       </tip>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title><command>getfattr</command>を使用したレイアウトの読み込み</title>
+    <para>
+     <command>getfattr</command>コマンドを使用して、1つの文字列としてサンプルファイル<filename>file</filename>のレイアウト情報を読み込みます。
+    </para>
+<screen>
+<prompt>root # </prompt>touch file
+<prompt>root # </prompt>getfattr -n ceph.file.layout file
+# file: file
+ceph.file.layout="stripe_unit=4194304 stripe_count=1 object_size=419430
+</screen>
+    <para>
+     個々のレイアウトフィールドを読み込みます。
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.file.layout.pool file
+# file: file
+ceph.file.layout.pool="cephfs_data"
+<prompt>root # </prompt>getfattr -n ceph.file.layout.stripe_unit file
+# file: file
+ceph.file.layout.stripe_unit="4194304"
+</screen>
+    <tip>
+     <title>プールIDまたは名前</title>
+     <para>
+      レイアウトを読み込む場合、プールは通常、名前で示されます。ただし、プールが作成されたばかりのまれなケースでは、代わりにIDが出力される場合があります。
+     </para>
+    </tip>
+    <para>
+     カスタマイズしない限り、ディレクトリに明示的なレイアウトはありません。レイアウトを変更していない場合、レイアウトを読み込もうとすると失敗します。これは、明示的なレイアウトを持つ次の先祖ディレクトリが使用されることを示します。
+    </para>
+<screen>
+<prompt>root # </prompt>mkdir dir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+dir: ceph.dir.layout: No such attribute
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.stripe_count -v 2 dir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 pool=cephfs_data"
+</screen>
+   </sect3>
+   <sect3>
+    <title><command>setfattr</command>を使用したレイアウトの書き込み</title>
+    <para>
+     <command>setfattr</command>コマンドを使用して、サンプルファイル<command>file</command>のレイアウトフィールドを変更します。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd lspools
+0 rbd
+1 cephfs_data
+2 cephfs_metadata
+<prompt>root # </prompt>setfattr -n ceph.file.layout.stripe_unit -v 1048576 file
+<prompt>root # </prompt>setfattr -n ceph.file.layout.stripe_count -v 8 file
+# Setting pool by ID:
+<prompt>root # </prompt>setfattr -n ceph.file.layout.pool -v 1 file
+# Setting pool by name:
+<prompt>root # </prompt>setfattr -n ceph.file.layout.pool -v cephfs_data file
+</screen>
+    <note>
+     <title>空のファイル</title>
+     <para>
+      <command>setfattr</command>を使用してファイルのレイアウトフィールドを変更する場合、このファイルは空である必要があります。空でない場合、エラーが発生します。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>レイアウトのクリア</title>
+    <para>
+     サンプルディレクトリ<filename>mydir</filename>から明示的なレイアウトを削除して元に戻し、その先祖のレイアウトを継承させるには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>root # </prompt>setfattr -x ceph.dir.layout mydir
+</screen>
+    <para>
+     同様に、「pool_namespace」属性が設定されている状況で、代わりにデフォルトのネームスペースを使用するようにレイアウトを変更する場合は、次のコマンドを実行します。
+    </para>
+<screen>
+# Create a directory and set a namespace on it
+<prompt>root # </prompt>mkdir mydir
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.pool_namespace -v foons mydir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout mydir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=1 object_size=4194304 \
+ pool=cephfs_data_a pool_namespace=foons"
+
+# Clear the namespace from the directory's layout
+<prompt>root # </prompt>setfattr -x ceph.dir.layout.pool_namespace mydir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout mydir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=1 object_size=4194304 \
+ pool=cephfs_data_a"
+</screen>
+   </sect3>
+   <sect3>
+    <title>レイアウトの継承</title>
+    <para>
+     ファイルは、作成時にその親ディレクトリのレイアウトを継承します。ただし、それ以降に親ディレクトリのレイアウトを変更しても、子には影響しません。
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# file1 inherits its parent's layout
+<prompt>root # </prompt>touch dir/file1
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file1
+# file: dir/file1
+ceph.file.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# update the layout of the directory before creating a second file
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.stripe_count -v 4 dir
+<prompt>root # </prompt>touch dir/file2
+
+# file1's layout is unchanged
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file1
+# file: dir/file1
+ceph.file.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# ...while file2 has the parent directory's new layout
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file2
+# file: dir/file2
+ceph.file.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+</screen>
+    <para>
+     ディレクトリの子孫として作成されたファイルも、中間ディレクトリにレイアウトが設定されていなければ、そのレイアウトを継承します。
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+<prompt>root # </prompt>mkdir dir/childdir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir/childdir
+dir/childdir: ceph.dir.layout: No such attribute
+<prompt>root # </prompt>touch dir/childdir/grandchild
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/childdir/grandchild
+# file: dir/childdir/grandchild
+ceph.file.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+</screen>
+   </sect3>
+   <sect3>
+    <title>Metadata Serverへのデータプールの追加</title>
+    <para>
+     CephFSでプールを使用する前に、そのプールをMetadata Serverに追加する必要があります。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph fs add_data_pool cephfs cephfs_data_ssd
+<prompt>cephadm@adm &gt; </prompt>ceph fs ls  # Pool should now show up
+.... data pools: [cephfs_data cephfs_data_ssd ]
+</screen>
+    <tip>
+     <title>cephxキー</title>
+     <para>
+      使用しているcephxキーでクライアントがこの新しいプールにアクセスできることを確認します。
+     </para>
+    </tip>
+    <para>
+     次に、追加したプールを使用するようにCephFSのディレクトリのレイアウトを更新できます。
+    </para>
+<screen>
+<prompt>root # </prompt>mkdir /mnt/cephfs/myssddir
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.pool -v cephfs_data_ssd /mnt/cephfs/myssddir
+</screen>
+    <para>
+     そのディレクトリ内で作成された新しいファイルはすべてそのレイアウトを継承し、新しく追加したプールにそのデータを配置できるようになります。新しく追加したプール内でファイルを作成した場合でも、プライマリデータプールのオブジェクトの数が増え続けることに気付くことがあります。これは正常です。ファイルデータはレイアウトで指定されたプールに保存されますが、すべてのファイルについて、少量のメタデータがプライマリデータプールに保持されます。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

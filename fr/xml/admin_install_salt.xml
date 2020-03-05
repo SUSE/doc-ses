@@ -1,0 +1,1843 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_install_salt.xml" version="5.0" xml:id="ceph-install-saltstack">
+ <title>Déploiement avec DeepSea/Salt</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>oui</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Salt avec DeepSea est une <emphasis>pile</emphasis> de composants qui vous permet de déployer et gérer une infrastructure de serveur. Cet ensemble est très évolutif, rapide et relativement facile à mettre en route. Lisez les considérations suivantes avant de démarrer le déploiement de la grappe avec Salt :
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    Les <emphasis>minions Salt</emphasis> sont les noeuds contrôlés par un noeud dédié appelé Salt Master. Les minions Salt possèdent des rôles, par exemple Ceph OSD, Ceph Monitor, Ceph Manager, Object Gateway, Passerelle iSCSI ou NFS Ganesha.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Une instance Salt Master exécute son propre minion Salt. Cela est requis pour l'exécution de tâches privilégiées, par exemple la création, l'autorisation et la copie de clés vers des minions, afin que les minions distants n'aient jamais besoin d'exécuter des tâches privilégiées.
+   </para>
+   <tip>
+    <title>partage de plusieurs rôles par serveur</title>
+    <para>
+     Vous obtiendrez les meilleures performances de votre grappe Ceph lorsque chaque rôle est déployé sur un noeud distinct. Toutefois, les déploiements réels nécessitent parfois le partage d'un noeud entre plusieurs rôles. Pour éviter les problèmes liés aux performances et à la procédure de mise à niveau, ne déployez pas le rôle Ceph OSD, Serveur de métadonnées ou Ceph Monitor sur le noeud Admin.
+    </para>
+   </tip>
+  </listitem>
+  <listitem>
+   <para>
+    Les minions Salt doivent résoudre correctement le nom d'hôte de Salt Master sur le réseau. Par défaut, ils recherchent le nom d'hôte <systemitem>salt</systemitem>, mais vous pouvez spécifier tout autre nom d'hôte accessible par le réseau dans le fichier <filename>/etc/salt/minion</filename>. Reportez-vous à la <xref linkend="ceph-install-stack"/>.
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="cha-ceph-install-relnotes">
+  <title>Lecture des notes de version</title>
+
+  <para>
+   Les notes de version contiennent des informations supplémentaires sur les modifications apportées depuis la version précédente de SUSE Enterprise Storage. Consultez les notes de version pour vérifier les aspects suivants :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Votre matériel doit tenir compte de certaines considérations spéciales.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Les paquetages logiciels utilisés ont été considérablement modifiés.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Des précautions spéciales sont nécessaires pour votre installation.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Les notes de version incluent également des informations de dernière minute qui, faute de temps, n'ont pas pu être intégrées au manuel. Elles contiennent également des notes concernant les problèmes connus.
+  </para>
+
+  <para>
+   Après avoir installé le paquetage <package>release-notes-ses</package>, les notes de version sont disponibles en local dans le répertoire <filename>/usr/share/doc/release-notes</filename> ou en ligne à l'adresse <link xlink:href="https://www.suse.com/releasenotes/"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="deepsea-description">
+  <title>Présentation de DeepSea</title>
+
+  <para>
+   L'objectif de DeepSea est de faire gagner du temps à l'administrateur et d'effectuer en toute confiance des opérations complexes sur une grappe Ceph.
+  </para>
+
+  <para>
+   Ceph est une solution logicielle très configurable. Elle accroît la liberté et la responsabilité des administrateurs système.
+  </para>
+
+  <para>
+   La configuration minimale de Ceph est adaptée à des fins de démonstration, mais ne présente pas les fonctions particulièrement intéressantes de Ceph que vous pouvez voir avec un grand nombre de noeuds.
+  </para>
+
+  <para>
+   DeepSea collecte et stocke des données sur des serveurs individuels, tels que les adresses et noms de périphérique. Pour un système de stockage distribué tel que Ceph, il peut y avoir des centaines d'éléments de ce type à collecter et stocker. Collecter des informations et saisir des données manuellement dans un outil de gestion de la configuration est fastidieux et sujet à erreurs.
+  </para>
+
+  <para>
+   Les étapes nécessaires pour préparer les serveurs, collecter la configuration ainsi que configurer et déployer Ceph sont pour la plupart les mêmes. Cependant, cela ne concerne pas la gestion des fonctions distinctes. Pour les opérations quotidiennes, la possibilité d'ajouter simplement du matériel à une fonction donnée et de l'enlever correctement est une condition requise.
+  </para>
+
+  <para>
+   DeepSea répond à ces observations par la stratégie suivante : DeepSea consolide les décisions de l'administrateur dans un seul fichier. Les décisions incluent l'assignation des grappes, des rôles et des profils. DeepSea rassemble chaque ensemble de tâches dans un objectif simple. Chaque objectif est une <emphasis>phase</emphasis> :
+  </para>
+
+  <itemizedlist xml:id="deepsea-stage-description">
+   <title>Description des phases de DeepSea</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">Phase 0</emphasis> : la <emphasis role="bold">préparation</emphasis>. Lors de cette phase, toutes les mises à jour requises sont appliquées et votre système peut être redémarré.
+    </para>
+    <important>
+     <title>réexécution de la phase 0 après le redémarrage du noeud Admin</title>
+     <para>
+      Si, au cours de la phase 0, le noeud Admin redémarre pour charger la nouvelle version du kernel, vous devez à nouveau exécuter la phase 0, sinon les minions ne sont pas ciblés.
+     </para>
+    </important>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Phase 1</emphasis> : la <emphasis role="bold">découverte</emphasis>. Au cours de cette phase, tout le matériel de votre grappe est détecté et les informations nécessaires pour la configuration Ceph sont collectées. Pour plus d'informations concernant la configuration, reportez-vous à la <xref linkend="deepsea-pillar-salt-configuration"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Phase 2</emphasis> : la <emphasis role="bold">configuration</emphasis>. Vous devez préparer les données de configuration dans un format particulier.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Phase 3</emphasis> : le <emphasis role="bold">déploiement</emphasis>. Vous créez une grappe Ceph de base avec les services Ceph obligatoires. Reportez-vous à la <xref linkend="storage-intro-core-nodes"/> pour leur liste.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Phase 4</emphasis> : les <emphasis role="bold">services</emphasis>. Des fonctions supplémentaires de Ceph, comme iSCSI, Object Gateway et CephFS, peuvent être installées lors de cette phase. Chacune est facultative.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Phase 5</emphasis> : phase de suppression. Cette phase n'est pas obligatoire et, lors de la configuration initiale, elle n'est généralement pas nécessaire. Dans cette phase, les rôles des minions et de la configuration en grappe sont supprimés. Vous devez exécuter cette phase lorsque vous devez supprimer un noeud de stockage de votre grappe. Pour plus d'informations, reportez-vous au <xref linkend="salt-node-removing"/>.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+
+
+  <sect2 xml:id="deepsea-organisation-locations">
+   <title>Organisation et emplacements importants</title>
+   <para>
+    Salt dispose de plusieurs emplacements standard et de plusieurs conventions de dénomination utilisés sur le noeud maître :
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><filename>/srv/pillar</filename></term>
+     <listitem>
+      <para>
+       Le répertoire stocke les données de configuration des minions de votre grappe. <emphasis>Pillar</emphasis> est une interface permettant de fournir des valeurs de configuration globales à tous les minions de votre grappe.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/</filename></term>
+     <listitem>
+      <para>
+       Le répertoire stocke les fichiers d'état Salt (également appelés fichiers <emphasis>sls</emphasis>). Les fichiers d'état sont des descriptions formatées des états dans lesquels la grappe doit se trouver.
+
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/module/runners</filename></term>
+     <listitem>
+      <para>
+       Le répertoire stocke des scripts Python appelés runners (exécuteurs). Les exécuteurs sont exécutés sur le noeud maître.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/_modules</filename></term>
+     <listitem>
+      <para>
+       Le répertoire stocke des scripts Python appelés modules. Les modules sont appliqués à tous les minions de la grappe.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/pillar/ceph</filename></term>
+     <listitem>
+      <para>
+       Le répertoire est utilisé par DeepSea. Les données de configuration collectées sont stockées ici.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/ceph</filename></term>
+     <listitem>
+      <para>
+       Un répertoire utilisé par DeepSea. Il stocke des fichiers SLS pouvant présenter différents formats, mais chaque sous-répertoire contient des fichiers SLS. Chaque sous-répertoire ne contient qu'un seul type de fichier SLS. Par exemple, <filename>/srv/salt/ceph/stage</filename> contient les fichiers d'orchestration exécutés par <command>salt-run state.orchestrate</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ds-minion-targeting">
+   <title>Ciblage des minions</title>
+   <para>
+    Les commandes DeepSea sont exécutées via l'infrastructure Salt. Lorsque vous utilisez la commande <command>salt</command>, vous devez spécifier un ensemble de minions Salt que la commande affecte. Nous décrivons l'ensemble des minions comme une <emphasis>cible</emphasis> pour la commande <command>salt</command>. Les sections suivantes décrivent les méthodes possibles pour cibler les minions.
+   </para>
+   <sect3 xml:id="ds-minion-targeting-name">
+    <title>Mise en correspondance du nom du minion</title>
+    <para>
+     Vous pouvez cibler un minion ou un groupe de minions en faisant correspondre leurs noms. Le nom d'un minion est généralement le nom d'hôte court du noeud sur lequel est exécuté le minion. Il s'agit d'une méthode générale de ciblage de Salt, non liée à DeepSea. Vous pouvez utiliser la syntaxe générique, les expressions régulières ou des listes pour limiter l'étendue des noms de minion. La syntaxe générale est la suivante :
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> example.module</screen>
+    <tip>
+     <title>grappe Ceph uniquement</title>
+     <para>
+      Si tous les minions Salt de votre environnement appartiennent à votre grappe Ceph, vous pouvez remplacer en toute sécurité <replaceable>target</replaceable> par <literal>'*'</literal> afin d'inclure <emphasis>tous</emphasis> les minions enregistrés.
+     </para>
+    </tip>
+    <para>
+     Faire correspondre tous les minions du domaine example.net (en supposant que les noms des minions soient identiques à leurs noms d'hôte « complet ») :
+    </para>
+<screen><prompt>root@master # </prompt>salt '*.example.net' test.ping</screen>
+    <para>
+     Faire correspondre les minions « web1 » à « web5 » :
+    </para>
+<screen><prompt>root@master # </prompt>salt 'web[1-5]' test.ping</screen>
+    <para>
+     Faire correspondre les minions « web1-prod » et « web1-devel » à l'aide d'une expression régulière :
+    </para>
+<screen><prompt>root@master # </prompt>salt -E 'web1-(prod|devel)' test.ping</screen>
+    <para>
+     Faire correspondre une simple liste de minions :
+    </para>
+<screen><prompt>root@master # </prompt>salt -L 'web1,web2,web3' test.ping</screen>
+    <para>
+     Faire correspondre tous les minions de la grappe :
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds-minion-targeting-grain">
+    <title>Ciblage avec un grain DeepSea</title>
+    <para>
+     Dans un environnement hétérogène géré par Salt dans lequel SUSE Enterprise Storage 6 est déployé sur un sous-ensemble de noeuds en plus d'autres solutions de grappe, vous devez marquer les minions pertinents en leur appliquant un grain « deepsea » avant d'exécuter la phase 0 de DeepSea. De cette manière, vous pouvez facilement cibler les minions DeepSea dans les environnements où la correspondance par le nom du minion est problématique.
+    </para>
+    <para>
+     Pour appliquer le grain « deepsea » à un groupe de minions, exécutez :
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> grains.append deepsea default</screen>
+    <para>
+     Pour supprimer le grain « deepsea » d'un groupe de minions, exécutez :
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> grains.delval deepsea destructive=True</screen>
+    <para>
+     Après avoir appliqué le grain « deepsea » aux minions pertinents, vous pouvez les cibler comme suit :
+    </para>
+<screen><prompt>root@master # </prompt>salt -G 'deepsea:*' test.ping</screen>
+    <para>
+     La commande suivante est un équivalent :
+    </para>
+<screen><prompt>root@master # </prompt>salt -C 'G@deepsea:*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds-minion-targeting-dsminions">
+    <title>Définition de l'option <option>deepsea_minions</option></title>
+    <para>
+     La configuration de la cible de l'option <option>deepsea_minions</option> est une condition requise des déploiements DeepSea. DeepSea l'utilise pour instruire les minions lors de l'exécution des phases (pour plus d'informations, reportez-vous à la section <xref linkend="deepsea-stage-description"/>).
+    </para>
+    <para>
+     Pour définir ou modifier l'option <option>deepsea_minions</option>, modifiez le fichier <filename>/srv/pillar/ceph/deepsea_minions.sls</filename> de Salt Master et ajoutez ou remplacez la ligne suivante :
+    </para>
+<screen>deepsea_minions: <replaceable>target</replaceable></screen>
+    <tip>
+     <title>cible <option>deepsea_minions</option></title>
+     <para>
+      Comme valeur <replaceable>target</replaceable> (cible) de l'option <option>deepsea_minions</option>, vous pouvez utiliser n'importe quelle méthode de ciblage : <xref linkend="ds-minion-targeting-name" xrefstyle="select: title"/> et <xref linkend="ds-minion-targeting-grain" xrefstyle="select: title"/>.
+     </para>
+     <para>
+      Faire correspondre tous les minions Salt de la grappe :
+     </para>
+<screen>deepsea_minions: '*'</screen>
+     <para>
+      Faire correspondre tous les minions avec le grain « deepsea » :
+     </para>
+<screen>deepsea_minions: 'G@deepsea:*'</screen>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>Complément d'informations</title>
+    <para>
+     Vous pouvez utiliser des méthodes plus avancées pour cibler les minions en utilisant l'infrastructure Salt. La page du manuel « deepsea-minions » vous donne plus de détails sur le ciblage DeepSea (<command>man 7 deepsea_minions</command>).
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-install-stack">
+  <title>Déploiement de la grappe</title>
+
+  <para>
+   Le processus de déploiement de la grappe comporte plusieurs phases. Tout d'abord, vous devez préparer tous les noeuds de la grappe en configurant Salt, puis déployer et configurer Ceph.
+  </para>
+
+  <tip xml:id="dev-env">
+   <title>déploiement des noeuds de moniteur sans définition des profils OSD</title>
+   <para>
+    Si vous devez ignorer la définition des rôles de stockage pour OSD comme décrit à la <xref linkend="policy-role-assignment"/> et commencer par déployer les noeuds Ceph Monitor, vous pouvez le faire en définissant la variable <option>DEV_ENV</option>.
+   </para>
+   <para>
+    Cela permet de déployer des moniteurs sans la présence du répertoire <filename>role-storage/</filename>, ainsi que de déployer une grappe Ceph avec au moins <emphasis>un</emphasis> rôle de stockage, de moniteur et de gestionnaire.
+   </para>
+   <para>
+    Pour définir la variable d'environnement, activez-la globalement en la définissant dans le fichier <filename>/srv/pillar/ceph/stack/global.yml</filename>, ou définissez-la pour la session Shell actuelle uniquement :
+   </para>
+<screen><prompt>root@master # </prompt>export DEV_ENV=true</screen>
+   <para>
+    À titre d'exemple, <filename>/srv/pillar/ceph/stack/global.yml</filename> peut être créé avec le contenu suivant :
+   </para>
+<screen>DEV_ENV: <replaceable>True</replaceable></screen>
+  </tip>
+
+  <para>
+   La procédure suivante décrit en détail la préparation de la grappe.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Installez et enregistrez SUSE Linux Enterprise Server 15 SP1 avec l'extension SUSE Enterprise Storage 6 sur chaque noeud de la grappe.
+    </para>
+   </step>
+   <step>
+    <para>
+     Vérifiez que les produits appropriés sont installés et enregistrés en répertoriant les dépôts logiciels existants. Exécutez <command>zypper lr-E</command> et comparez la sortie avec la liste suivante :
+    </para>
+<screen>
+ SLE-Product-SLES15-SP1-Pool
+ SLE-Product-SLES15-SP1-Updates
+ SLE-Module-Server-Applications15-SP1-Pool
+ SLE-Module-Server-Applications15-SP1-Updates
+ SLE-Module-Basesystem15-SP1-Pool
+ SLE-Module-Basesystem15-SP1-Updates
+ SUSE-Enterprise-Storage-6-Pool
+ SUSE-Enterprise-Storage-6-Updates
+</screen>
+   </step>
+   <step>
+    <para>
+     Configurez les paramètres réseau, y compris la résolution de nom DNS appropriée sur chaque noeud. Salt Master et tous les minions Salt doivent se résoudre mutuellement par leur nom d'hôte. Pour plus d'informations sur la configuration d'un réseau, reportez-vous à l'adresse <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/sec_network_yast.html"/> Pour plus d'informations sur la configuration d'un serveur DNS, reportez-vous à l'adresse <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/cha_dns.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Sélectionnez un(e) ou plusieurs serveurs horaires/réserves et synchronisez l'heure locale par rapport à ces derniers/dernières. Vérifiez que le service de synchronisation horaire est activé à chaque démarrage du système. Vous pouvez utiliser la commande <command>yast ntp-client</command> trouvée dans un paquetage <package>yast2-ntp-client</package> pour configurer la synchronisation horaire.
+    </para>
+    <tip>
+     <para>
+      Les machines virtuelles ne sont pas des sources NTP fiables.
+     </para>
+    </tip>
+    <para>
+     Pour plus d'informations sur la configuration de NTP, reportez-vous à l'adresse <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/sec_ntp_yast.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Installez les paquetages <literal>salt-master</literal> et <literal>salt-minion</literal> sur le noeud Salt Master :
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master salt-minion</screen>
+    <para>
+     Vérifiez si le service <systemitem>salt-master</systemitem> est activé et démarré, puis activez-le et démarrez-le, le cas échéant :
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     Si vous envisagez d'utiliser un pare-feu, vérifiez si les ports 4505 et 4506 du noeud Salt Master sont ouverts pour tous les noeuds minions Salt. Si les ports sont fermés, vous pouvez les ouvrir à l'aide de la commande <command>yast2 firewall</command> en autorisant le service <guimenu>SaltStack</guimenu>.
+    </para>
+    <warning>
+     <title>les phases de DeepSea échouent avec un pare-feu</title>
+     <para>
+      Les phases de déploiement de DeepSea échouent si le pare-feu est actif (ou tout simplement configuré). Pour effectuer correctement les phases, vous devez désactiver le pare-feu en exécutant
+     </para>
+<screen>
+    <prompt>root # </prompt>systemctl stop firewalld.service
+</screen>
+     <para>
+      ou définir l'option <option>FAIL_ON_WARNING</option> sur « False » dans <filename>/srv/pillar/ceph/stack/global.yml</filename> :
+     </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+    </warning>
+   </step>
+   <step>
+    <para>
+     Installez le paquetage <literal>salt-minion</literal> sur tous les noeuds des minions.
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+    <para>
+     Assurez-vous que le <emphasis>nom de domaine complet</emphasis> de chaque noeud peut être résolu sur l'adresse IP du réseau public par tous les autres noeuds.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configurez tous les minions (y compris le minion maître) pour vous connecter au maître. Si votre instance Salt Master n'est pas accessible par le nom d'hôte <literal>salt</literal>, modifiez le fichier <filename>/etc/salt/minion</filename> ou créez un fichier <filename>/etc/salt/minion.d/master.conf</filename> avec le contenu suivant :
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     Si vous avez apporté des modifications aux fichiers de configuration ci-dessus, redémarrez le service Salt sur tous les minions Salt :
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez que le service <systemitem>salt-minion</systemitem> est activé et démarré sur tous les noeuds. Activez et démarrez-le, le cas échéant :
+    </para>
+<screen><prompt>root # </prompt>systemctl enable salt-minion.service
+<prompt>root # </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez l'empreinte digitale de chaque minion Salt et acceptez toutes les clés Salt sur Salt Master si les empreintes digitales correspondent.
+    </para>
+    <note>
+     <para>
+      Si l'empreinte de minion Salt revient vide, vérifiez que le minion Salt a une configuration Salt Master et qu'il peut communiquer avec Salt Master.
+     </para>
+    </note>
+    <para>
+     Affichez l'empreinte digitale de chaque minion :
+    </para>
+<screen><prompt>root@master # </prompt>salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Après avoir collecté les empreintes digitales de tous les minions Salt, répertoriez les empreintes de toutes les clés de minions non acceptées sur Salt Master :
+    </para>
+<screen><prompt>root@master # </prompt>salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Si les empreintes des minions correspondent, acceptez-les :
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez que les clés ont été acceptées :
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step xml:id="deploy-wiping-disk">
+    <para>
+     Avant de déployer SUSE Enterprise Storage 6, effacez manuellement tous les disques. Pensez à remplacer « X » par la lettre du disque correct :
+    </para>
+    <substeps>
+     <step>
+      <para>
+       Arrêtez tous les processus qui utilisent le disque spécifique.
+      </para>
+     </step>
+     <step>
+      <para>
+       Vérifiez si des partitions sur le disque sont montées et démontez-les le cas échéant.
+      </para>
+     </step>
+     <step>
+      <para>
+       Si le disque est géré par LVM, désactivez et supprimez la totalité de l'infrastructure LVM. Pour plus d'informations, reportez-vous à l'adresse <link xlink:href="https://www.suse.com/documentation/sles-15/book_storage/data/cha_lvm.html"/>.
+      </para>
+     </step>
+     <step>
+      <para>
+       Si le disque fait partie de MD RAID, désactivez le RAID. Pour plus d'informations, reportez-vous à l'adresse <link xlink:href="https://www.suse.com/documentation/sles-15/book_storage/data/part_software_raid.html"/>.
+      </para>
+     </step>
+     <step>
+      <tip>
+       <title>redémarrage du serveur</title>
+       <para>
+        Si vous recevez des messages d'erreur tels que « partition in use » (partition en cours d'utilisation) ou « kernel cannot be updated with the new partition table » (le kernel ne peut pas être mis à jour avec la nouvelle table de partitions) durant les étapes suivantes, redémarrez le serveur.
+       </para>
+      </tip>
+      <para>
+       Effacez le début de chaque partition (en tant que <systemitem class="username">root</systemitem>) :
+      </para>
+<screen>for partition in /dev/sdX[0-9]*
+do
+  dd if=/dev/zero of=$partition bs=4096 count=1 oflag=direct
+done</screen>
+     </step>
+     <step>
+      <para>
+       Effacez le début de l'unité :
+      </para>
+<screen>
+<prompt>root # </prompt>dd if=/dev/zero of=/dev/sdX bs=512 count=34 oflag=direct
+</screen>
+     </step>
+     <step>
+      <para>
+       Effacez la fin de l'unité :
+      </para>
+<screen>
+<prompt>root # </prompt>dd if=/dev/zero of=/dev/sdX bs=512 count=33 \
+  seek=$((`blockdev --getsz /dev/sdX` - 33)) oflag=direct
+</screen>
+     </step>
+     <step>
+      <para>
+       Vérifiez que l'unité est vide (sans structure GPT) à l'aide de l'une des commandes ci-dessous :
+      </para>
+<screen>
+<prompt>root # </prompt>parted -s /dev/sdX print free
+</screen>
+      <para>
+       ou
+      </para>
+<screen>
+<prompt>root # </prompt>dd if=/dev/sdX bs=512 count=34 | hexdump -C
+<prompt>root # </prompt>dd if=/dev/sdX bs=512 count=33 \
+  skip=$((`blockdev --getsz /dev/sdX` - 33)) | hexdump -C
+</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     Éventuellement, si vous devez préconfigurer les paramètres réseau de la grappe avant que le paquetage <package>deepsea</package> soit installé, créez manuellement le fichier <filename>/srv/pilier/ceph/stack/ceph/cluster.yml</filename> et définissez les options <option>cluster_network:</option> et <option>public_network:</option>. Notez que le fichier ne sera pas écrasé après avoir installé <package>deepsea</package>.
+    </para>
+    <tip>
+     <title>activation du protocole IPv6</title>
+     <para>
+      Si vous devez activer l'adressage réseau IPv6, reportez-vous à la <xref linkend="ds-modify-ipv6"/>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Installez DeepSea sur le noeud Salt Master :
+    </para>
+<screen><prompt>root@master # </prompt>zypper in deepsea</screen>
+   </step>
+   <step>
+    <para>
+     La valeur du paramètre <option>master_minion</option> est dérivée dynamiquement du fichier <filename>/etc/salt/minion_id</filename> sur Salt Master. Si vous devez remplacer la valeur découverte, modifiez le fichier <filename>/srv/pillar/ceph/stack/global.yml</filename> et définissez une valeur pertinente :
+    </para>
+<screen>
+master_minion: <replaceable>MASTER_MINION_NAME</replaceable>
+</screen>
+    <para>
+     Si votre instance Salt Master est accessible via différents noms d'hôte, utilisez le nom du minion Salt pour la grappe de stockage tel que renvoyé par la commande <command>salt-key -L</command>. Si vous avez utilisé le nom d'hôte par défaut pour votre Salt Master, <emphasis>salt</emphasis>, dans le domaine <emphasis>ses</emphasis>, alors le fichier se présente comme suit :
+    </para>
+<screen>master_minion: salt.ses</screen>
+   </step>
+  </procedure>
+
+  <para>
+   À présent, vous pouvez déployer et configurer Ceph. Sauf indication contraire, toutes les étapes sont obligatoires.
+  </para>
+
+  <note>
+   <title>conventions relatives à la commande salt</title>
+   <para>
+    Il existe deux façons d'exécuter <command>salt-run state.orch</command> : une avec « stage.<replaceable>NUMÉRO_PHASE</replaceable> », l'autre avec le nom de la phase. Les deux notations ont la même incidence et c'est à vous de choisir la commande que vous préférez.
+   </para>
+  </note>
+
+  <procedure xml:id="ds-depl-stages">
+   <title>exécution des phases de déploiement</title>
+   <step>
+    <para>
+     Assurez-vous que les minions Salt appartenant à la grappe Ceph sont correctement ciblés par l'option <option>deepsea_minions</option> dans le fichier <filename>/srv/pillar/ceph/deepsea_minions.sls</filename>. Reportez-vous à la <xref linkend="ds-minion-targeting-dsminions"/> pour plus d'informations.
+    </para>
+   </step>
+   <step>
+    <para>
+     Par défaut, DeepSea déploie des grappes Ceph avec des profils réglés actifs sur les noeuds Ceph Monitor, Ceph Manager et Ceph OSD. Dans certains cas, vous devrez peut-être effectuer le déploiement sans profils réglés. Pour ce faire, placez les lignes suivantes dans le fichier <filename>/srv/pillar/ceph/stack/global.yml</filename> avant d'exécuter les phases DeepSea :
+    </para>
+<screen>
+alternative_defaults:
+ tuned_mgr_init: default-off
+ tuned_mon_init: default-off
+ tuned_osd_init: default-off
+</screen>
+   </step>
+   <step>
+    <para>
+     <emphasis>Facultatif</emphasis> : créez des volumes secondaires Btrfs pour <filename>/var/lib/ceph/</filename>. Cette étape doit être exécutée avant la phase 0 de DeepSea. Pour migrer les répertoires existants ou pour plus de détails, reportez-vous au <xref linkend="storage-tips-ceph-btrfs-subvol"/>.
+    </para>
+    <para>
+     Appliquez les commandes suivantes à chacun des minions Salt :
+    </para>
+<screen><prompt>root@master # </prompt>salt 'MONITOR_NODES' saltutil.sync_all
+<prompt>root@master # </prompt>salt 'MONITOR_NODES' state.apply ceph.subvolume
+</screen>
+    <note>
+     <para>
+      La commande Ceph.subvolume crée <filename>/var/lib/ceph</filename> en tant que sous-volume Btrfs <filename>@/var/lib/ceph</filename>.
+     </para>
+    </note>
+    <para>
+     Le nouveau sous-volume est maintenant monté et <literal>/etc/fstab</literal> est mis à jour.
+    </para>
+   </step>
+   <step>
+    <para>
+     Préparez la grappe. Pour plus d'informations, reportez-vous à la section <xref linkend="deepsea-stage-description"/>.
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    <para>
+     ou
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.prep</screen>
+    <note>
+     <title>exécution ou surveillance des phases à l'aide de l'interface de ligne de commande (CLI) de DeepSea</title>
+     <para>
+      À l'aide de l'interface de ligne de commande de DeepSea, vous pouvez suivre la progression de l'exécution des phases en temps réel. Pour ce faire, exécutez l'interface de ligne de commande de DeepSea en mode de surveillance ou exécutez la phase directement par le biais de l'interface de ligne de commande de DeepSea. Pour plus d'informations, reportez-vous à la <xref linkend="deepsea-cli"/>.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     La phase de découverte collecte les données à partir de tous les minions et crée des fragments de configuration qui sont stockés dans le répertoire <filename>/srv/pillar/ceph/proposals</filename>. Les données sont stockées au format YAML dans des fichiers *.sls ou *.yml.
+    </para>
+    <para>
+     Exécutez la commande suivante pour déclencher la phase de découverte :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.1</screen>
+    <para>
+     ou
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.discovery</screen>
+   </step>
+   <step>
+    <para>
+     Une fois la commande précédente terminée, créez un fichier <filename>policy.cfg</filename> dans <filename>/srv/pillar/ceph/proposals</filename>. Pour plus d'informations, reportez-vous à la <xref linkend="policy-configuration"/>.
+    </para>
+    <tip>
+     <para>
+      Si vous devez modifier le paramètre réseau de la grappe, modifiez <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename> et ajustez les lignes commençant par <literal>cluster_network:</literal> et <literal>public_network:</literal>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     La phase de configuration analyse le fichier <filename>policy.cfg</filename> et fusionne les fichiers inclus dans leur forme finale. La grappe et le contenu lié au rôle sont placés dans <filename>/srv/pillar/ceph/cluster</filename>, tandis que le contenu spécifique à Ceph est placé dans <filename>/srv/pillar/ceph/stack/default</filename>.
+    </para>
+    <para>
+     Exécutez la commande suivante pour déclencher la phase de configuration :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+    <para>
+     ou
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.configure</screen>
+    <para>
+     L'étape de configuration peut prendre plusieurs secondes. Une fois la commande terminée, vous pouvez afficher les données Pillar pour les minions spécifiés (par exemple, nommés <literal>ceph_minion1</literal>, <literal>ceph_minion2</literal>, etc.) en exécutant :
+    </para>
+<screen><prompt>root@master # </prompt>salt 'ceph_minion*' pillar.items</screen>
+    <tip>
+     <title>modification de la disposition de l'OSD</title>
+     <para>
+      Si vous souhaitez modifier la disposition par défaut de l'OSD et la configuration des groupes d'unités, suivez la procédure décrite dans la <xref linkend="ds-drive-groups"/>.
+     </para>
+    </tip>
+    <note>
+     <title>écrasement des valeurs par défaut</title>
+     <para>
+      Dès la fin de la commande, vous pouvez afficher la configuration par défaut et la modifier pour l'adapter à vos besoins. Pour plus d'informations, reportez-vous au <xref linkend="ceph-deploy-ds-custom"/>.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     À présent, vous exécutez la phase de déploiement. À ce stade, Pillar est validé et les daemons Ceph Monitor et Ceph OSD sont lancés :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3</screen>
+    <para>
+     ou
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.deploy</screen>
+    <para>
+     La commande peut prendre plusieurs minutes. Si elle échoue, vous devez résoudre le problème et exécuter de nouveau les phases précédentes. Une fois que la commande a réussi, exécutez la commande suivante pour vérifier l'état :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph -s</screen>
+   </step>
+   <step>
+    <para>
+     La dernière étape du déploiement de la grappe Ceph est la phase <emphasis>services</emphasis>. Au cours de cette phase, vous instanciez des services actuellement pris en charge : Passerelle iSCSI, CephFS, Object Gateway et NFS Ganesha. C'est également lors de cette phase que les porte-clés d'autorisation, les services de démarrage et les réserves nécessaires sont créés. Pour démarrer la phase, exécutez la commande suivante :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+    <para>
+     ou
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.services</screen>
+    <para>
+     Selon la configuration, la commande peut s'exécuter pendant plusieurs minutes.
+    </para>
+   </step>
+   <step>
+    <para>
+     Avant de continuer, nous vous recommandons fortement d'activer le module de télémétrie Ceph. Pour plus d'informations et des instructions, reportez-vous au <xref linkend="mgr-modules-telemetry"/>.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deepsea-cli">
+  <title>Interface de ligne de commande de DeepSea</title>
+
+  <para>
+   DeepSea fournit également un outil d'interface de ligne de commande (CLI) qui permet à l'utilisateur de surveiller ou d'exécuter des phases tout en visualisant la progression de l'exécution en temps réel. Vérifiez que le paquetage <package>deepsea-cli</package> est installé avant que vous exécutiez l'exécutable <command>deepsea</command>.
+  </para>
+
+  <para>
+   Deux modes sont pris en charge pour visualiser la progression de l'exécution d'une phase :
+  </para>
+
+  <itemizedlist xml:id="deepsea-cli-modes">
+   <title>Modes de l'interface de ligne de commande de DeepSea</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">Monitoring mode</emphasis> (Mode de surveillance) : visualise la progression de l'exécution d'une phase DeepSea déclenchée par la commande <command>salt-run</command> émise dans une autre session de terminal.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">Stand-alone mode</emphasis> (Mode autonome) : exécute une phase de DeepSea tout en fournissant une visualisation en temps réel des étapes de ses composants lors de leur exécution.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <important>
+   <title>commandes de l'interface de ligne de commande de DeepSea</title>
+   <para>
+    Les commandes de l'interface de ligne de commande de DeepSea peuvent uniquement être exécutées sur le noeud Salt Master avec des privilèges <systemitem class="username">root</systemitem>.
+   </para>
+  </important>
+
+  <sect2 xml:id="deepsea-cli-monitor">
+   <title>Interface de ligne de commande de DeepSea : mode de surveillance</title>
+   <para>
+    La surveillance de la progression fournit une visualisation en temps réel détaillée de ce qui se produit lors de l'exécution des phases à l'aide des commandes <command>salt-run state.orch</command> dans d'autres sessions de terminal.
+   </para>
+   <tip>
+    <title>démarrage de la surveillance dans une nouvelle session de terminal</title>
+    <para>
+     Vous devez lancer la surveillance <emphasis>avant</emphasis> l'exécution de <command>salt-run state.orch</command> afin que la surveillance puisse détecter le début de l'exécution de la phase.
+    </para>
+   </tip>
+   <para>
+    Si vous démarrez la surveillance après l'émission de la commande <command>salt-run state.orch</command>, aucune progression de l'exécution ne s'affiche.
+   </para>
+   <para>
+    Vous pouvez démarrer le mode de surveillance en exécutant la commande suivante :
+   </para>
+<screen><prompt>root@master # </prompt>deepsea monitor</screen>
+   <para>
+    Pour plus d'informations sur les options de ligne de commande disponibles de la commande <command>deepsea monitor</command>, consultez sa page du manuel :
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-monitor</screen>
+  </sect2>
+
+  <sect2 xml:id="deepsea-cli-standalone">
+   <title>Interface de ligne de commande de DeepSea : mode autonome</title>
+   <para>
+    En mode autonome, l'interface de ligne de commande de DeepSea peut être utilisée pour exécuter une phase DeepSea, affichant son exécution en temps réel.
+   </para>
+   <para>
+    La commande permettant d'exécuter une phase DeepSea à partir de l'interface de ligne de commande de DeepSea a la forme suivante :
+   </para>
+<screen><prompt>root@master # </prompt>deepsea stage run <replaceable>stage-name</replaceable></screen>
+   <para>
+    où <replaceable>stage-name</replaceable> (nom-phase) correspond à la manière dont les fichiers d'état d'orchestration Salt sont référencés. Par exemple, la phase <emphasis role="bold">deploy</emphasis>, qui correspond au répertoire situé dans <filename>/srv/salt/ceph/stage/deploy</filename>, est référencée en tant que <emphasis role="bold">ceph.stage.deploy</emphasis>.
+   </para>
+   <para>
+    Cette commande est une alternative aux commandes basées sur Salt pour exécuter les phases de DeepSea (ou tout fichier d'état d'orchestration DeepSea).
+   </para>
+   <para>
+    La commande <command>deepsea stage run ceph.stage.0</command> équivaut à <command>salt-run state.orch ceph.stage.0</command>.
+   </para>
+   <para>
+    Pour plus d'informations sur les options de ligne de commande disponibles acceptées par la commande <command>deepsea stage run</command>, consultez sa page du manuel :
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-stage run</screen>
+   <para>
+    La figure suivante illustre un exemple de sortie de l'interface de ligne de commande de DeepSea lors de l'exécution de la <emphasis role="underline">Phase 2</emphasis> :
+   </para>
+   <figure>
+    <title>Sortie de la progression de l'exécution de la phase de l'interface de ligne de commande de DeepSea</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="deepsea-cli-run-alias">
+    <title>Alias <command>stage run</command> de l'interface de ligne de commande de DeepSea</title>
+    <para>
+     Pour les utilisateurs avancés de Salt, nous prenons également en charge un alias pour l'exécution d'une phase de DeepSea qui se sert de la commande Salt utilisée pour exécuter une phase, par exemple, <command>salt-run state.orch <replaceable>stage-name</replaceable></command> (nom-phase), en tant que commande de l'interface de ligne de commande de DeepSea.
+    </para>
+    <para>
+     Exemple :
+    </para>
+<screen><prompt>root@master # </prompt>deepsea salt-run state.orch <replaceable>stage-name</replaceable></screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deepsea-pillar-salt-configuration">
+  <title>Configuration et personnalisation</title>
+
+  <sect2 xml:id="policy-configuration">
+   <title>Fichier <filename>policy.cfg</filename></title>
+   <para>
+    Le fichier de configuration <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> est utilisé pour déterminer les rôles des noeuds de grappe spécifiques. Par exemple, quels noeuds font office de Ceph OSD ou Ceph Monitor. Modifiez le fichier <filename>policy.cfg</filename> afin de refléter la configuration en grappe de votre choix. L'ordre des sections est arbitraire, mais le contenu des lignes incluses écrase les clés correspondantes du contenu des lignes précédentes.
+   </para>
+   <tip>
+    <title>exemples de fichiers <filename>policy.cfg</filename></title>
+    <para>
+     Vous pouvez trouver plusieurs exemples de fichiers de stratégie complets dans le répertoire <filename>/usr/share/doc/packages/deepsea/examples/</filename>.
+    </para>
+   </tip>
+   <sect3 xml:id="policy-cluster-assignment">
+    <title>Assignation de grappes</title>
+    <para>
+     Dans la section <emphasis role="bold">cluster</emphasis>, vous sélectionnez des minions pour votre grappe. Vous pouvez sélectionner tous les minions, ou vous pouvez mettre en liste noire ou en liste blanche certains d'entre eux. Vous trouverez ci-dessous des exemples pour une grappe appelée <emphasis role="bold">ceph</emphasis>.
+    </para>
+    <para>
+     Pour inclure <emphasis role="bold">tous</emphasis> les minions, ajoutez les lignes suivantes :
+    </para>
+<screen>cluster-ceph/cluster/*.sls</screen>
+    <para>
+     Pour placer en <emphasis role="bold">liste blanche</emphasis> un minion spécifique :
+    </para>
+<screen>cluster-ceph/cluster/abc.domain.sls</screen>
+    <para>
+     ou un groupe de minions, vous pouvez utiliser la correspondance de syntaxe générique Shell :
+    </para>
+<screen>cluster-ceph/cluster/mon*.sls</screen>
+    <para>
+     Pour placer des minions en <emphasis role="bold">liste noire</emphasis>, définissez-les sur <literal>unassigned</literal> :
+    </para>
+<screen>cluster-unassigned/cluster/client*.sls</screen>
+   </sect3>
+   <sect3 xml:id="policy-role-assignment">
+    <title>Assignation de rôle</title>
+    <para>
+     Cette section vous offre plus de détails sur l'assignation de « rôles » aux noeuds de votre grappe. Un « rôle », dans ce contexte, signifie le service que vous devez exécuter sur le noeud, tel que Ceph Monitor, Object Gateway ou Passerelle iSCSI. Aucun rôle n'est assigné automatiquement, seuls les rôles ajoutés au fichier <command>policy.cfg</command> sont déployés.
+    </para>
+    <para>
+     L'assignation suit le modèle suivant :
+    </para>
+<screen>role-<replaceable>ROLE_NAME</replaceable>/<replaceable>PATH</replaceable>/<replaceable>FILES_TO_INCLUDE</replaceable></screen>
+    <para>
+     Où les éléments ont la signification et les valeurs suivantes :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>ROLE_NAME</replaceable> (NOM_RÔLE) est l'un des éléments suivants : master, admin, mon, mgr, storage, mds, igw, rgw, ganesha, grafana ou prometheus.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>PATH</replaceable> (CHEMIN) est un chemin de répertoire relatif permettant d'accéder aux fichiers .sls ou .yml. Dans le cas des fichiers .sls, il s'agit généralement de <filename>cluster</filename>, tandis que les fichiers .yml sont situés dans <filename>stack/default/ceph/minions</filename>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>FILES_TO_INCLUDE</replaceable> (FICHIERS_À_INCLURE) sont les fichiers d'état Salt ou les fichiers de configuration YAML. Ils sont normalement composés des noms d'hôte des minions Salt, par exemple <filename>ses5min2.yml</filename>. La syntaxe générique de Shell peut servir pour une correspondance plus spécifique.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     Vous trouverez ci-dessous un exemple de chaque rôle :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <emphasis>master</emphasis> : le noeud dispose de porte-clés admin pour toutes les grappes Ceph. Actuellement, une grappe Ceph unique est prise en charge. Comme le rôle <emphasis>master</emphasis> est obligatoire, ajoutez toujours une ligne similaire à la suivante :
+      </para>
+<screen>role-master/cluster/master*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>admin</emphasis> : le minion disposera d'un porte-clés admin. Vous définissez le rôle comme suit :
+      </para>
+<screen>role-admin/cluster/abc*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mon</emphasis> : le minion fournit le service de surveillance de la grappe Ceph. Ce rôle requiert les adresses des minions assignés. À partir de SUSE Enterprise Storage 5, les adresses publiques sont calculées dynamiquement et ne sont plus nécessaires dans l'interface Pillar de Salt.
+      </para>
+<screen>role-mon/cluster/mon*.sls</screen>
+      <para>
+       L'exemple assigne le rôle de surveillance à un groupe de minions.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mgr</emphasis> : daemon Ceph Manager qui collecte toutes les informations d'état de l'ensemble de la grappe. Déployez-le sur tous les minions sur lesquels vous envisagez de déployer le rôle Ceph Monitor.
+      </para>
+<screen>role-mgr/cluster/mgr*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>storage</emphasis> : utilisez ce rôle pour spécifier les noeuds de stockage.
+      </para>
+<screen>role-storage/cluster/data*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mds</emphasis> : le minion fournit le service de métadonnées prenant en charge CephFS.
+      </para>
+<screen>role-mds/cluster/mds*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>igw</emphasis> : le minion va faire office de passerelle iSCSI. Ce rôle requiert les adresses des minions assignés. Par conséquent, vous devez également inclure les fichiers du répertoire <filename>stack</filename> :
+      </para>
+<screen>role-igw/cluster/*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>rgw</emphasis> : le minion va agir en tant qu'Object Gateway :
+      </para>
+<screen>role-rgw/cluster/rgw*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>ganesha</emphasis> : le minion va agir comme un serveur NFS Ganesha. Le rôle « ganesha » nécessite un rôle « rgw » ou « mds » dans la grappe, sinon la validation échoue à la phase 3.
+      </para>
+<screen>role-ganesha/cluster/ganesha*.sls</screen>
+      <para>
+       Pour installer correctement NFS Ganesha, une configuration supplémentaire est nécessaire. Si vous souhaitez utiliser NFS Ganesha, lisez le <xref linkend="cha-as-ganesha"/> avant d'exécuter les phases 2 et 4. Toutefois, il est possible d'installer NFS Ganesha ultérieurement.
+      </para>
+      <para>
+       Dans certains cas, il peut être utile de définir des rôles personnalisés pour les noeuds NFS Ganesha. Pour plus d'informations, reportez-vous au <xref linkend="ceph-nfsganesha-customrole"/>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>grafana</emphasis>, <emphasis>prometheus</emphasis> : ce noeud ajoute des graphiques Grafana basés sur les alertes Prometheus adressées à Ceph Dashboard. Pour une description détaillée, reportez-vous au <xref linkend="ceph-dashboard"/>.
+      </para>
+<screen>role-grafana/cluster/grafana*.sls</screen>
+<screen>role-prometheus/cluster/prometheus*.sls</screen>
+     </listitem>
+    </itemizedlist>
+    <note>
+     <title>plusieurs rôles pour un noeud de grappe</title>
+     <para>
+      Vous pouvez assigner plusieurs rôles à un même noeud. Par exemple, vous pouvez assigner les rôles « mds » aux noeuds de moniteur :
+     </para>
+<screen>role-mds/cluster/mon[1,2]*.sls</screen>
+    </note>
+   </sect3>
+   <sect3 xml:id="policy-common-configuration">
+    <title>Configuration commune</title>
+    <para>
+     La section de configuration commune inclut des fichiers de configuration générés au cours de la <emphasis>découverte (phase 1)</emphasis>. Ces fichiers de configuration stockent des paramètres comme <literal>fsid</literal> ou <literal>public_network</literal>. Pour inclure la configuration commune Ceph requise, ajoutez les lignes suivantes :
+    </para>
+<screen>config/stack/default/global.yml
+config/stack/default/ceph/cluster.yml</screen>
+   </sect3>
+   <sect3 xml:id="deepsea-policy-filtering">
+    <title>Filtrage d'éléments</title>
+    <para>
+     Parfois, il n'est pas pratique d'inclure tous les fichiers d'un répertoire donné avec la syntaxe générique *.sls. L'analyseur de fichiers <filename>policy.cfg</filename> comprend les filtres suivants :
+    </para>
+    <warning>
+     <title>techniques avancées</title>
+     <para>
+      Cette section décrit les techniques de filtrage pour les utilisateurs avancés. Lorsqu'il n'est pas utilisé correctement, le filtrage peut entraîner des problèmes, par exemple dans le cas où votre numérotation des noeuds change.
+     </para>
+    </warning>
+    <variablelist>
+     <varlistentry>
+      <term>slice=[start:end]</term>
+      <listitem>
+       <para>
+        Utilisez le filtre slice pour inclure uniquement les éléments <emphasis>start</emphasis> à <emphasis>end-1</emphasis>. Notez que les éléments du répertoire donné sont triés dans l'ordre alphanumérique. La ligne suivante inclut les troisième au cinquième fichiers du sous-répertoire <filename>role-mon/cluster/</filename> :
+       </para>
+<screen>role-mon/cluster/*.sls slice[3:6]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>re=regexp</term>
+      <listitem>
+       <para>
+        Utilisez le filtre d'expression régulière pour inclure uniquement les éléments correspondant aux expressions données. Par exemple :
+       </para>
+<screen>role-mon/cluster/mon*.sls re=.*1[135]\.subdomainX\.sls$</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="deepsea-example-policy-cfg">
+    <title>Exemple de fichier <filename>policy.cfg</filename></title>
+    <para>
+     Voici un exemple de fichier <filename>policy.cfg</filename> de base :
+    </para>
+<screen>## Cluster Assignment
+cluster-ceph/cluster/*.sls <co xml:id="co-policy-1"/>
+
+## Roles
+# ADMIN
+role-master/cluster/examplesesadmin.sls <co xml:id="co-policy-2"/>
+role-admin/cluster/sesclient*.sls <co xml:id="co-policy-3"/>
+
+# MON
+role-mon/cluster/ses-example-[123].sls <co xml:id="co-policy-5"/>
+
+# MGR
+role-mgr/cluster/ses-example-[123].sls <co xml:id="co-policy-mgr"/>
+
+# STORAGE
+role-storage/cluster/ses-example-[5,6,7,8].sls <co xml:id="co-policy-storage"/>
+
+# MDS
+role-mds/cluster/ses-example-4.sls <co xml:id="co-policy-6"/>
+
+# IGW
+role-igw/cluster/ses-example-4.sls <co xml:id="co-policy-10"/>
+
+# RGW
+role-rgw/cluster/ses-example-4.sls <co xml:id="co-policy-11"/>
+
+# COMMON
+config/stack/default/global.yml <co xml:id="co-policy-8"/>
+config/stack/default/ceph/cluster.yml <co xml:id="co-policy-13"/>
+</screen>
+    <calloutlist>
+     <callout arearefs="co-policy-1">
+      <para>
+       Indique que tous les minions sont inclus dans la grappe Ceph. Si vous ne souhaitez pas inclure certains minions dans la grappe Ceph, utilisez :
+      </para>
+<screen>cluster-unassigned/cluster/*.sls
+cluster-ceph/cluster/ses-example-*.sls</screen>
+      <para>
+       La première ligne marque tous les minions comme non assignés. La deuxième ligne remplace les minions correspondant à « ses-example-*.sls » et les assigne à la grappe Ceph.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-2">
+      <para>
+       Le minion appelé « examplesesadmin » a le rôle maître (master). Cela signifie, par ailleurs, qu'il obtiendra les clés admin de la grappe.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-3">
+      <para>
+       Tous les minions correspondant à « sesclient* » obtiennent également les clés admin.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-5">
+      <para>
+       Tous les minions correspondant à « ses-example-[123] » (vraisemblablement trois minions : ses-example-1, ses-example-2 et ses-example-3) sont configurés en tant que noeuds MON.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-mgr">
+      <para>
+       Tous les minions correspondant à « ses-example-[123] » (tous les noeuds MON dans l'exemple) seront configurés en tant que noeuds MGR.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-storage">
+      <para>
+       Tous les minions correspondant à « ses-example-[5,6,7,8] » seront configurés comme noeuds de stockage.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-6">
+      <para>
+       Le minion « ses-example-4 » aura le rôle MDS.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-10">
+      <para>
+       Le minion « ses-example-4 » aura le rôle IGW.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-11">
+      <para>
+       Le minion « ses-example-4 » aura le rôle RGW.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-8">
+      <para>
+       Signifie que nous acceptons les valeurs par défaut pour des paramètres de configuration commune tels que <option>fsid</option> et <option>public_network</option>.
+      </para>
+     </callout>
+     <callout arearefs="co-policy-13">
+      <para>
+       Signifie que nous acceptons les valeurs par défaut pour des paramètres de configuration commune tels que <option>fsid</option> et <option>public_network</option>.
+      </para>
+     </callout>
+    </calloutlist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ds-drive-groups">
+   <title>Groupes d'unités</title>
+   <para>
+    Les <emphasis>groupes d'unités</emphasis> (« DriveGroups ») spécifient les dispositions des OSD dans la grappe Ceph. Ils sont définis dans un seul fichier <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename>.
+   </para>
+   <para>
+    Un administrateur doit spécifier manuellement un groupe d'OSD interdépendants (OSD hybrides déployés sur des disques SSD et sur des disques rotatifs) ou qui partagent les mêmes options de déploiement (par exemple, même magasin d'objets, même option de chiffrement, OSD autonomes). Pour éviter de lister explicitement les périphériques, les groupes d'unités utilisent une liste d'éléments de filtre qui correspondent à quelques champs sélectionnés de rapports d'inventaire de <command>ceph-volume</command>. Dans le cas le plus simple, il pourrait s'agir du drapeau « rotational » (rotatif - tous les disques SSD doivent être des périphériques de base de données « db_devices » ; tous les disques rotatifs doivent être des périphériques de données « data_devices ») ou quelque chose de plus impliqué comme des chaînes « model » ou des tailles. DeepSea fournit le code qui traduit ces groupes d'unités en listes de périphériques réelles pour inspection par l'utilisateur.
+   </para>
+   <para>
+    Voici une procédure simple qui illustre le workflow de base lors de la configuration des groupes d'unités :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Inspectez les propriétés de vos disques telles qu'elles sont renvoyées par la commande <command>ceph-volume</command>. Seules ces propriétés sont acceptées par les groupes d'unités :
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt-run disks.details
+</screen>
+    </step>
+    <step>
+     <para>
+      Ouvrez le fichier YAML <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename> et adaptez-le à vos besoins. Reportez-vous à la <xref linkend="ds-drive-groups-specs"/>. Pensez à utiliser des espaces au lieu des tabulations. Pour des exemples plus avancés, reportez-vous à la <xref linkend="ds-drive-groups-examples"/>. L'exemple suivant inclut toutes les unités disponibles pour Ceph en tant qu'OSD :
+     </para>
+<screen>
+default_drive_group_name:
+  target: '*'
+  data_devices:
+    all: true
+</screen>
+    </step>
+    <step>
+     <para>
+      Vérifiez les nouvelles dispositions :
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt-run disks.list
+</screen>
+     <para>
+      Cet exécuteur vous renvoie une structure de disques correspondants en fonction de vos groupes d'unités. Si vous n'êtes pas satisfait du résultat, répétez l'étape précédente.
+     </para>
+     <tip>
+      <title>rapport détaillé</title>
+      <para>
+       En plus de l'exécuteur <command>disks.list</command>, un autre exécuteur <command>disks.report</command> fournit un rapport détaillé de ce qui se passera lors du prochain appel de la phase 3 de DeepSea.
+      </para>
+<screen>
+<prompt>root@master # </prompt>salt-run disks.report
+</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Déployez les OSD. Lors du prochain appel de la phase 3 de DeepSea, les disques OSD seront déployés en fonction de vos spécifications de groupe d'unités.
+     </para>
+    </step>
+   </procedure>
+   <sect3 xml:id="ds-drive-groups-specs">
+    <title>Spécification</title>
+    <para>
+     <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename> accepte les options suivantes :
+    </para>
+<screen>
+drive_group_default_name:
+  target: *
+  data_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  db_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  wal_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  block_wal_size: '5G'  # (optional, unit suffixes permitted)
+  block_db_size: '5G'   # (optional, unit suffixes permitted)
+  osds_per_device: 1   # number of osd daemons per device
+  format:              # 'bluestore' or 'filestore' (defaults to 'bluestore')
+  encryption:           # 'True' or 'False' (defaults to 'False')
+</screen>
+    <para>
+     Pour les configurations FileStore, <filename>drive_groups.yml</filename> peut se présenter comme suit :
+    </para>
+<screen>
+drive_group_default_name:
+  target: *
+  data_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  journal_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  format: filestore
+  encryption: True
+</screen>
+   </sect3>
+   <sect3>
+    <title>Périphériques de disques correspondants</title>
+    <para>
+     Vous pouvez décrire les spécifications à l'aide des filtres suivants :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Par modèle de disque :
+      </para>
+<screen>
+model: <replaceable>DISK_MODEL_STRING</replaceable>
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Par fournisseur de disque :
+      </para>
+<screen>
+vendor: <replaceable>DISK_VENDOR_STRING</replaceable>
+</screen>
+      <tip>
+       <title>chaîne de fournisseur en minuscules</title>
+       <para>
+        Inscrivez toujours la valeur <replaceable>DISK_VENDOR_STRING</replaceable> (CHAÎNE_FOURNISSEUR_DISQUE) en minuscules.
+       </para>
+      </tip>
+     </listitem>
+     <listitem>
+      <para>
+       Selon qu'un disque est rotatif ou non. Les disques SSD et NVME ne sont pas rotatifs.
+      </para>
+<screen>
+rotational: 0
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Déployez un noeud à l'aide de <emphasis>tous</emphasis> les disques disponibles pour les OSD :
+      </para>
+<screen>
+data_devices:
+  all: true
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       En outre, vous pouvez limiter le nombre de disques correspondants :
+      </para>
+<screen>
+limit: 10
+</screen>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>Filtrage des périphériques par taille</title>
+    <para>
+     Vous pouvez filtrer les périphériques de disque par leur taille, soit en fonction d'une taille précise, soit selon une plage de tailles. Le paramètre <option>size:</option> (taille :) accepte les arguments sous la forme suivante :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       « 10G » : inclut les disques d'une taille exacte.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       « 10G:40G » : inclut les disques dont la taille est dans la plage.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       « :10G » : inclut les disques dont la taille est inférieure ou égale à 10 Go.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       « 40G: » : inclut les disques dont la taille est égale ou supérieure à 40 Go.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <example>
+     <title>Correspondance par taille de disque</title>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    size: '40TB:'
+  db_devices:
+    size: ':2TB'
+</screen>
+    </example>
+    <note>
+     <title>guillemets requis</title>
+     <para>
+      Lorsque vous utilisez le délimiteur « : », vous devez entourer la taille par des guillemets simples, faute de quoi le signe deux-points est interprété comme un nouveau hachage de configuration.
+     </para>
+    </note>
+    <tip>
+     <title>abréviations des unités</title>
+     <para>
+      Au lieu de (G)igaoctets, vous pouvez spécifier les tailles en (M)égaoctets ou en (T)éraoctets.
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="ds-drive-groups-examples">
+    <title>Exemples</title>
+    <para>
+     Cette section comprend des exemples de différentes configurations OSD.
+    </para>
+    <example>
+     <title>Configuration simple</title>
+     <para>
+      Cet exemple décrit deux noeuds avec la même configuration :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 4 To
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 512 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Le fichier <filename>drive_groups.yml</filename> correspondant se présentera comme suit :
+     </para>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    model: SSD-123-foo
+  db_devices:
+    model: MC-55-44-XZ
+   </screen>
+     <para>
+      Une telle configuration est simple et valide. Le problème est qu'un administrateur peut ajouter des disques de fournisseurs différents par la suite et ceux-ci ne seront pas inclus. Vous pouvez améliorer cela en limitant les filtres aux propriétés de base des unités :
+     </para>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    rotational: 1
+  db_devices:
+    rotational: 0
+   </screen>
+     <para>
+      Dans l'exemple précédent, nous imposons de déclarer tous les périphériques rotatifs comme « périphériques de données » et tous les périphériques non rotatifs seront utilisés comme « périphériques partagés » (wal, db).
+     </para>
+     <para>
+      Si vous savez que les unités de plus de 2 To seront toujours les périphériques de données plus lents, vous pouvez filtrer par taille :
+     </para>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    size: '2TB:'
+  db_devices:
+    size: ':2TB'
+</screen>
+    </example>
+    <example>
+     <title>Configuration avancée</title>
+     <para>
+      Cet exemple décrit deux configurations distinctes : 20 HDD devraient partager 2 SSD, tandis que 10 SSD devraient partager 2 NVMe.
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 4 To
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        12 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 512 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : NVME-QQQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 256 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Une telle configuration peut être définie avec deux dispositions comme suit :
+     </para>
+<screen>
+drive_group:
+  target: '*'
+  data_devices:
+    rotational: 0
+  db_devices:
+    model: MC-55-44-XZ
+</screen>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    model: MC-55-44-XZ
+  db_devices:
+    vendor: samsung
+    size: 256GB
+</screen>
+    </example>
+    <example>
+     <title>Configuration avancée avec des noeuds non uniformes</title>
+     <para>
+      Les exemples précédents supposaient que tous les noeuds avaient les mêmes unités. Cependant, ce n'est pas toujours le cas :
+     </para>
+     <para>
+      Noeuds 1 à 5 :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 4 To
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 512 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Noeuds 6 à 10 :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        5 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 4 To
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        20 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 512 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Vous pouvez utiliser la clé « target » dans la disposition pour cibler des noeuds spécifiques. La notation de cible Salt aide à garder les choses simples :
+     </para>
+<screen>
+drive_group_node_one_to_five:
+  target: 'node[1-5]'
+  data_devices:
+    rotational: 1
+  db_devices:
+    rotational: 0
+</screen>
+     <para>
+      suivi de
+     </para>
+<screen>
+drive_group_the_rest:
+  target: 'node[6-10]'
+  data_devices:
+    model: MC-55-44-XZ
+  db_devices:
+    model: SSD-123-foo
+</screen>
+    </example>
+    <example>
+     <title>Configuration experte</title>
+     <para>
+      Tous les cas précédents supposaient que les WAL et les DB utilisaient le même périphérique. Il est cependant possible également de déployer le WAL sur un périphérique dédié :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 4 To
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 512 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : NVME-QQQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 256 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    model: MC-55-44-XZ
+  db_devices:
+    model: SSD-123-foo
+  wal_devices:
+    model: NVME-QQQQ-987
+</screen>
+    </example>
+    <example>
+     <title>Configuration complexe (et peu probable)</title>
+     <para>
+      Dans la configuration suivante, nous essayons de définir :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDD soutenus par 1 NVMe
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        2 HDD soutenus par 1 SSD (db) et 1 NVMe (wal)
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        8 SSD soutenus par 1 NVMe
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSD autonomes (chiffrés)
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        1 HDD est de rechange et ne doit pas être déployé
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Le résumé des unités utilisées est le suivant :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        23 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 4 To
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        10 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 512 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        1 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fournisseur : Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Modèle : NVME-QQQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Taille : 256 Go
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      La définition des groupes d'unités sera la suivante :
+     </para>
+<screen>
+drive_group_hdd_nvme:
+  target: '*'
+  data_devices:
+    rotational: 0
+  db_devices:
+    model: NVME-QQQQ-987
+ </screen>
+<screen>
+drive_group_hdd_ssd_nvme:
+  target: '*'
+  data_devices:
+    rotational: 0
+  db_devices:
+    model: MC-55-44-XZ
+  wal_devices:
+    model: NVME-QQQQ-987
+ </screen>
+<screen>
+drive_group_ssd_nvme:
+  target: '*'
+  data_devices:
+    model: SSD-123-foo
+  db_devices:
+    model: NVME-QQQQ-987
+ </screen>
+<screen>
+drive_group_ssd_standalone_encrypted:
+  target: '*'
+  data_devices:
+    model: SSD-123-foo
+  encryption: True
+ </screen>
+     <para>
+      Il reste un HDD dans la mesure où le fichier est en cours d'analyse du haut vers le bas.
+     </para>
+    </example>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>Ajustement de <filename>ceph.conf</filename> avec des paramètres personnalisés</title>
+   <para>
+    Si vous avez besoin de placer des paramètres personnalisés dans le fichier de configuration <filename>ceph.conf</filename>, reportez-vous au <xref linkend="ds-custom-cephconf"/> pour plus d'informations.
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

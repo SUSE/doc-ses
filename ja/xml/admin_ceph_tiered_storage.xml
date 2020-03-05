@@ -1,0 +1,434 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tiered_storage.xml" version="5.0" xml:id="cha-ceph-tiered">
+
+ <title>キャッシュ階層化</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>編集</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  「キャッシュ層」<emphasis/>とは、クライアントと標準ストレージとの間に実装される追加のストレージ層です。これは、低速なハードディスクやイレージャコーディングプールに保存されているプールへのアクセスを高速化するために設計されています。
+ </para>
+ <para>
+  一般的に、キャッシュ階層化では、キャッシュ層として機能するように設定された比較的高速なストレージデバイス(たとえば、SSDドライブ)と、ストレージ層として機能するように設定された低速で安価なデバイスのバッキングプールを作成する必要があります。キャッシュプールのサイズは通常、ストレージプールの10～20%です。
+ </para>
+ <sect1>
+  <title>階層化ストレージの用語</title>
+
+  <para>
+   キャッシュ階層化では、「キャッシュプール」<emphasis/>および「ストレージプール」<emphasis/>という2種類のプールを区別します。
+  </para>
+
+  <tip>
+   <para>
+    プールの全般的な情報については、<xref linkend="ceph-pools"/>を参照してください。
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>ストレージプール</term>
+    <listitem>
+     <para>
+      Ceph Storage Cluster内にあるオブジェクトの複数のコピーを保存する標準の複製プール、またはイレージャコーディングプール(<xref linkend="cha-ceph-erasure"/>を参照してください)。
+     </para>
+     <para>
+      ストレージプールは、「バッキング」ストレージまたは「コールド」ストレージと呼ばれることもあります。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>キャッシュプール</term>
+    <listitem>
+     <para>
+      容量は比較的小さいものの高速なストレージデバイス上に保存され、CRUSHマップに専用のルールセットを持つ標準の複製プール。
+     </para>
+     <para>
+      キャッシュプールは、「ホット」ストレージとも呼ばれます。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="sec-ceph-tiered-caution">
+  <title>考慮すべきポイント</title>
+
+  <para>
+   キャッシュ階層化により、特定のワークロードのクラスタのパフォーマンスが「低下」<emphasis/>することがあります。次のポイントは、考慮が必要な側面をいくつか示しています。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     「ワークロード依存」<emphasis/>: キャッシュによってパフォーマンスが向上するかどうかはワークロードによります。キャッシュへのオブジェクトの出し入れはコストを伴うため、大多数の要求が少数のオブジェクトを操作する場合に、効果が高くなる可能性があります。キャッシュプールは、ワークロードのワーキングセットをキャプチャし、スラッシングを避けるのに十分な大きさである必要があります。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     「ベンチマークが困難」<emphasis/>: キャッシュ階層化を使用すると、ほとんどのパフォーマンスベンチマークで低いパフォーマンスが示されることがあります。その理由は、ベンチマークでは大容量のオブジェクトセットが要求されることと、キャッシュが「ウォームアップ」するまでにしばらく時間がかかるためです。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     「パフォーマンスが低い可能性」<emphasis/>: キャッシュ階層化に適さないワークロードでは、キャッシュ階層化が有効になっていない通常の複製プールよりパフォーマンスが低くなります。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     「<emphasis><systemitem>librados</systemitem></emphasis>オブジェクト列挙」: アプリケーションが<systemitem>librados</systemitem>を直接使用していて、オブジェクト列挙に依存している場合、キャッシュ階層化が期待どおりには動作しないことがあります(これは、Object Gateway、RBD、またはCephFSでは問題になりません)。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1>
+  <title>キャッシュ階層化を使用する状況</title>
+
+  <para>
+   次の場合、キャッシュ階層化の使用を検討します。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     イレージャコーディングプールがFileStoreに保存されていて、それらにRADOS Block Deviceを介してアクセスする必要がある場合。RBDの詳細については、<xref linkend="ceph-rbd"/>を参照してください。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     イレージャコーディングプールがFileStoreに保存されていて、それらにiSCSIを介してアクセスする必要がある場合。iSCSIの詳細については、<xref linkend="cha-ceph-iscsi"/>を参照してください。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     パフォーマンスが高いストレージの数が限られていて、パフォーマンスが低いストレージが大量にある状況で、保存データへのアクセスを高速化する必要がある場合。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sec-ceph-tiered-cachemodes">
+  <title>キャッシュモード</title>
+
+  <para>
+   キャッシュ階層化エージェントは、キャッシュ層とバッキングストレージ層との間でのデータのマイグレーションを扱います。管理者は、このマイグレーションの実行方法を設定できます。主なシナリオは2つあります。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>ライトバックモード</term>
+    <listitem>
+     <para>
+      ライトバックモードでは、Cephクライアントはデータをキャッシュ層に書き込み、キャッシュ層からACKを受信します。時間が経つと、キャッシュ層に書き込まれたデータはストレージ層に移行され、キャッシュ層からフラッシュされます。概念的には、キャッシュ層はバッキングストレージ層の「前」にオーバーレイされています。Cephクライアントでストレージ層に存在するデータが必要になった場合、キャッシュ階層化エージェントが読み込み時にデータをキャッシュ層に移行し、その後Cephクライアントにデータが送信されます。それ以降、Cephクライアントは、データが非アクティブになるまで、キャッシュ層を使用してI/Oを実行できます。これは、写真やビデオの編集などの可変データや、トランザクションデータにとって理想的です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>読み込み専用モード</term>
+    <listitem>
+     <para>
+      読み込み専用モードでは、Cephクライアントはデータをバッキング層に直接書き込みます。読み込み時に、Cephは要求されたオブジェクトをバッキング層からキャッシュ層にコピーします。古いオブジェクトは、定義されたポリシーに基づいてキャッシュ層から削除されます。このアプローチは、ソーシャルネットワークでの写真やビデオの表示、DNAデータ、X線撮像など、不変データに最適です。その理由は、キャッシュプールからのデータの読み込みでは古いデータが含まれる可能性があり、整合性が弱いためです。読み込み専用モードは、可変データには使用しないでください。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="ceph-tier-erasure">
+  <title>イレージャコーディングプールとキャッシュ階層化</title>
+
+  <para>
+   イレージャコーディングプールには、複製プールよりも多くのリソースが必要です。これらの制限を解決するには、イレージャコーディングプールの前にキャッシュ層を設定することをお勧めします。これはFileStore使用時の要件です。
+  </para>
+
+  <para>
+   たとえば、<quote>hot-storage</quote>プールが高速なストレージで構成されている場合、<xref linkend="cha-ceph-erasure-erasure-profiles"/>で作成した<quote>ecpool</quote>を次のコマンドによって高速化できます。
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier add ecpool hot-storage
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier cache-mode hot-storage writeback
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier set-overlay ecpool hot-storage</screen>
+
+  <para>
+   これは、<quote>hot-storage</quote>プールをecpoolの層としてライトバックモードで配置します。これによって、ecpoolに対するすべての読み書きは実際にはホットストレージを使用し、その柔軟性と速度を利用できるようになります。
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool ecpool create --size 10 myvolume</screen>
+
+  <para>
+   キャッシュ階層化の詳細については、<xref linkend="cha-ceph-tiered"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="ses-tiered-storage">
+  <title>サンプル階層化ストレージの設定</title>
+
+  <para>
+   このセクションでは、高速なSSDキャッシュ層(ホットストレージ)を標準のハードディスク(コールドストレージ)の前に設定する方法を説明します。
+  </para>
+
+  <tip>
+   <para>
+    次の例は説明のみを目的としており、1つのCephノード上に存在するSSD部分用の1つのルートと1つのルールで構成されるセットアップが含まれます。
+   </para>
+   <para>
+    通常、運用環境のクラスタ設定には、ホットストレージ用のより多くのルートエントリとルールエントリ、およびSSDディスクとSATAディスクの両方が存在する混在ノードも含まれます。
+   </para>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     高速なSSDキャッシングデバイスクラス用の「replaceed_ssd」と、低速なHDDデバイスクラス用の「replaceed_hdd」という2つCRUSHルールを追加で作成します。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rule create-replicated replicated_ssd default host ssd
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rule create-replicated replicated_hdd default host hdd
+</screen>
+   </step>
+   <step>
+    <para>
+     既存のすべてのプールを「replicated_hdd」ルールに切り替えます。これにより、新たに追加されたSSDデバイスにCephがデータを保存しないようにします。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> crush_rule replicated_hdd
+</screen>
+   </step>
+   <step>
+    <para>
+     DeepSeaを使用して、このマシンをCephノードに変換します。<xref linkend="salt-adding-nodes"/>の説明に従って、ソフトウェアをインストールしてホストマシンを設定します。ホストマシンの名前は<replaceable>node-4</replaceable>であると想定します。このノードにOSDディスクが4台必要です。
+    </para>
+<screen>[...]
+host node-4 {
+   id -5  # do not change unnecessarily
+   # weight 0.012
+   alg straw
+   hash 0  # rjenkins1
+   item osd.6 weight 0.003
+   item osd.7 weight 0.003
+   item osd.8 weight 0.003
+   item osd.9 weight 0.003
+}
+[...]</screen>
+   </step>
+   <step>
+    <para>
+     高速なSSDドライブを利用するOSDにマップされたホットストレージプールのCRUSHマップを編集します。SSD用のルートノードが含まれる2つ目の階層を(「root ssd」として)定義します。さらに、重みを変更し、SSD用のCRUSHルールを追加します。CRUSHマップの詳細については、<xref linkend="op-crush"/>を参照してください。
+    </para>
+    <para>
+     <command>getcrushmap</command>や<command>crushtool</command>などのコマンドラインツールを使用して、CRUSHマップを直接編集します。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rm-device-class osd.6 osd.7 osd.8 osd.9
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush set-device-class ssd osd.6 osd.7 osd.8 osd.9
+</screen>
+   </step>
+   <step>
+    <para>
+     キャッシュ階層化に使用するホットストレージプールを作成します。このプールには新しい「ssd」ルールを使用します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create hot-storage 100 100 replicated ssd</screen>
+   </step>
+   <step>
+    <para>
+     デフォルトの「replicated_ruleset」ルールを使用するコールドストレージプールを作成します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+   </step>
+   <step>
+    <para>
+     続いて、キャッシュ層を設定するために、バッキングストレージプールをキャッシュプールに関連付ける必要があります。この場合は、コールドストレージ(=ストレージプール)をホットストレージ(=キャッシュプール)に関連付けます。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier add cold-storage hot-storage</screen>
+   </step>
+   <step>
+    <para>
+     キャッシュモードを「writeback」に設定するため、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier cache-mode hot-storage writeback</screen>
+    <para>
+     キャッシュモードの詳細については、<xref linkend="sec-ceph-tiered-cachemodes"/>を参照してください。
+    </para>
+    <para>
+     ライトバックキャッシュ層はバッキングストレージ層をオーバーレイするので、追加手順が1つ必要です。つまり、すべてのクライアントトラフィックをストレージプールからキャッシュプールに送信する必要があります。クライアントトラフィックをキャッシュプールに直接送信するには、たとえば、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier set-overlay cold-storage hot-storage</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cache-tier-configure">
+  <title>キャッシュ層の設定</title>
+
+  <para>
+   キャッシュ層の設定に使用できるオプションは複数あります。使用する構文は次のとおりです。
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+
+  <sect2 xml:id="ses-tiered-hitset">
+   <title>ヒットセット</title>
+   <para>
+    「ヒットセット」<emphasis/>パラメータを使用して「キャッシュプール」<emphasis/>を調整できます。Cephにおけるヒットセットとは通常、ブルームフィルタで、キャッシュプールにすでに存在するオブジェクトを追跡する、メモリ効率の良い方法を提供します。
+   </para>
+   <para>
+    ヒットセットは、オブジェクト名に適用される一連のハッシュ関数の結果を保存するために使用されるビット配列です。初期状態では、すべてのビットが<literal>0</literal>に設定されています。オブジェクトがヒットセットに追加されると、オブジェクトの名前がハッシュされて、結果がヒットセット内の異なる位置にマップされ、そこでビットの値が<literal>1</literal>に設定されます。
+   </para>
+   <para>
+    オブジェクトがキャッシュに存在するかどうかを判断するため、オブジェクト名がもう一度ハッシュされます。いずれかのビットが<literal>0</literal>である場合、そのオブジェクトは間違いなくキャッシュに存在せず、コールドストレージから取得する必要があります。
+   </para>
+   <para>
+    ヒットセットの同じ場所に複数の異なるオブジェクトの結果が保存される可能性があります。また、オブジェクトがキャッシュ内に存在しないのに、すべてのビットが偶然<literal>1</literal>に設定される可能性もあります。したがって、ブルームフィルタで動作するヒットセットで判断できるのは、オブジェクトが間違いなくキャッシュに存在せず、コールドストレージから取得する必要があるかどうかだけです。
+   </para>
+   <para>
+    時間の経過と共に、1つのキャッシュプールが複数のヒットセット追跡ファイルを持つ可能性があります。<literal>hit_set_count</literal>設定は、使用するヒットセットの数を定義し、<literal>hit_set_period</literal>は、各ヒットセットの使用期間を定義します。この期間を過ぎると、次のヒットセットが使用されます。ヒットセットの数を使い尽くすと、最も古いヒットセットのメモリが解放されて、新しいヒットセットが作成されます。<literal>hit_set_count</literal>と<literal>hit_set_period</literal>を相互に掛けた値によって、オブジェクトへのアクセスが追跡されている全体的なタイムフレームが定義されます。
+   </para>
+   <figure xml:id="ses-tiered-hitset-overview-bloom">
+    <title>3つの保存オブジェクトによるブルームフィルタ</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    ブルームフィルタに基づくヒットセットは、ハッシュオブジェクトの数と比較して非常にメモリ効率が高くなっています。誤検知確率を1%未満に下げるのに必要なビット数は10ビット未満です。誤検知確率は、<literal>hit_set_fpp</literal>で定義できます。Cephは、配置グループ内のオブジェクトの数と誤検知確率に基づいて、ヒットセットのサイズを自動的に計算します。
+   </para>
+   <para>
+    <literal>min_write_recency_for_promote</literal>および<literal>min_read_recency_for_promote</literal>を使用して、キャッシュプールで必要なストレージを制限できます。値を<literal>0</literal>に設定すると、すべてのオブジェクトが読み書きと同時にキャッシュプールに昇格され、オブジェクトが削除されるまで保持されます。<literal>0</literal>より大きい値は、オブジェクトが検索された存続期間ごとに順序付けされたヒットセットの数を定義します。オブジェクトがヒットセットで見つかった場合、そのオブジェクトはキャッシュプールに昇格されます。オブジェクトをバックアップした場合も、オブジェクトがキャッシュに昇格される可能性があることに注意してください。値「0」でフルバックアップを実行すると、すべてのデータがキャッシュ層に昇格される一方で、アクティブなデータがキャッシュ層から削除される可能性があります。したがって、この設定を変更する場合は、バックアップ戦略に基づいて行うのが有益です。
+   </para>
+   <note>
+    <para>
+     期間が長くなるほど、<option>min_read_recency_for_promote</option>および<option>min_write_recency_for_promote</option>の値が大きくなり、<systemitem class="process">ceph-osd</systemitem>デーモンのRAM消費量が増えます。特に、キャッシュオブジェクトをフラッシュまたは削除するためにエージェントがアクティブである場合、すべての<option>hit_set_count</option>ヒットセットがRAMにロードされます。
+    </para>
+   </note>
+   <sect3 xml:id="ceph-tier-gmt-hitset">
+    <title>ヒットセットでのGMTの使用</title>
+    <para>
+     キャッシュ層のセットアップには、「ヒットセット」<emphasis/>と呼ばれるブルームフィルタがあります。このフィルタは、オブジェクトがホットまたはコールドのどちらのオブジェクトセットに属するかをテストします。オブジェクトは、その名前に追加されたタイムスタンプを使用してヒットセットに追加されます。
+    </para>
+    <para>
+     複数のクラスタマシンがそれぞれ異なるゾーンに配置されていて、タイムスタンプがローカル時刻から派生している場合、ヒットセット内のオブジェクトに、未来や過去のタイムスタンプで構成される、誤解を招きやすい名前が付く可能性があります。最悪の場合、ヒットセットにオブジェクトがまったく存在しなくなるおそれもあります。
+    </para>
+    <para>
+     これを防ぐため、新しく作成されたキャッシュ層セットアップの<option>use_gmt_hitset</option>は、デフォルトで「1」に設定されます。これにより、ヒットセットのオブジェクト名を作成する際に、OSDで強制的にGMT (グリニッジ標準時)タイムスタンプを使用します。
+    </para>
+    <warning>
+     <title>デフォルト値を変更しない</title>
+     <para>
+      <option>use_gmt_hitset</option>のデフォルト値「1」を変更しないでください。ご使用のクラスタセットアップでこのオプションに関連するエラーが発生していない場合は、デフォルト値を手動で変更しないでください。変更すると、クラスタの動作が予測不能になることがあります。
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>キャッシュサイズ</title>
+   <para>
+    キャッシュ階層化エージェントは、主に次の2つの機能を実行します。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>フラッシュ</term>
+     <listitem>
+      <para>
+       エージェントは、変更済み(ダーティ)オブジェクトを識別し、長期間保存するためにストレージプールに転送します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>削除</term>
+     <listitem>
+      <para>
+       エージェントは、未変更(クリーン)オブジェクトを識別し、最近の使用頻度が最も低いものをキャッシュから削除します。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <sect3 xml:id="cache-tier-config-absizing">
+    <title>絶対サイズ</title>
+    <para>
+     キャッシュ階層化エージェントは、バイトの合計数またはオブジェクトの合計数に基づいてオブジェクトをフラッシュまたは削除できます。バイトの最大数を指定するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+    <para>
+     オブジェクトの最大数を指定するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+    <note>
+     <para>
+      Cephはキャッシュプールのサイズを自動的に決定することはできないため、ここで絶対サイズの設定が必要です。そうしないと、フラッシュと削除が機能しません。両方の制限を指定した場合、キャッシュ階層化エージェントは、どちらかのしきい値がトリガされるとフラッシュまたは削除を開始します。
+     </para>
+    </note>
+    <note>
+     <para>
+      すべてのクライアント要求がブロックされるのは、<option>target_max_bytes</option>または<option>target_max_objects</option>に達した場合だけです。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="cache-tier-config-relsizing">
+    <title>相対サイズ</title>
+    <para>
+     キャッシュ階層化エージェントは、キャッシュプールのサイズを基準にした相対サイズでオブジェクトをフラッシュまたは削除できます(<xref linkend="cache-tier-config-absizing"/>の<option>target_max_bytes</option>または<option>target_max_objects</option>で指定します)。キャッシュプールが一定の割合の変更済み(ダーティ)オブジェクトで構成される場合、キャッシュ階層化エージェントはそれらのオブジェクトをストレージプールにフラッシュします。<option>cache_target_dirty_ratio</option>を設定するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+    <para>
+     たとえば、この値を0.4に設定した場合、変更済み(ダーティ)オブジェクトがキャッシュプールの容量の40%に達すると、フラッシュが開始されます。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+    <para>
+     ダーティオブジェクトが容量の一定の割合に達した場合、より高速にフラッシュします。<option>cache_target_dirty_high_ratio</option>を使用します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+    <para>
+     キャッシュプールが容量の一定の割合に達した場合、キャッシュ階層化エージェントはオブジェクトを削除して空き容量を維持します。<option>cache_target_full_ratio</option>を設定するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>キャッシュ存続期間</title>
+   <para>
+    キャッシュ階層化エージェントが最近変更された(ダーティ)オブジェクトをバッキングストレージプールにフラッシュするまでの、オブジェクトの最小存続期間を指定できます。これは、キャッシュがオブジェクトを実際にフラッシュ/削除する必要がある場合にのみ適用されることに注意してください。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+   <para>
+    オブジェクトがキャッシュ層から削除されるまでの、オブジェクトの最小存続期間を指定できます。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ses-tiered-hitset-examples">
+   <title>例</title>
+   <sect3 xml:id="ses-tiered-hitset-examples-memory">
+    <title>大容量のキャッシュプールと小容量のメモリ</title>
+    <para>
+     大量のストレージがあり、利用可能なRAMの量がきわめて少ない場合、すべてのオブジェクトをアクセスと同時にキャッシュプールに昇格できます。ヒットセットが小さく抑えられます。次に、一連の設定値の例を示します。
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses-tiered-hitset-examples-storage">
+    <title>小容量のキャッシュプールと大容量のメモリ</title>
+    <para>
+     ストレージの容量が少ないものの比較的大容量のメモリが利用可能な場合、限られた数のオブジェクトをキャッシュプールに昇格するようキャッシュ層を設定できます。12個のヒットセットがあり、そのそれぞれを14,400秒の期間使用すると、合計48時間の追跡が提供されます。過去8時間以内にオブジェクトがアクセスされた場合、そのオブジェクトはキャッシュプールに昇格されます。次に、一連の設定値の例を示します。
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,313 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_rgw.xml" version="5.0" xml:id="cha-ceph-additional-software-installation">
+
+ <title>Ceph Object Gateway</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>editando</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes (sim)</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ceph Object Gateway é uma interface de armazenamento de objetos desenvolvida com base em <literal>librgw</literal> para fornecer aplicativos com um gateway RESTful aos clusters do Ceph. Ele suporta duas interfaces:
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    <emphasis>Compatível com S3</emphasis>: Oferece a funcionalidade de armazenamento de objetos com uma interface compatível com um amplo subconjunto da API RESTful do Amazon S3.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>Compatível com Swift</emphasis>: Oferece a funcionalidade de armazenamento de objetos com uma interface compatível com um amplo subconjunto da API do OpenStack Swift.
+   </para>
+  </listitem>
+ </itemizedlist>
+ <para>
+  Por padrão, o daemon do Object Gateway usa o front end HTTP “Beast”. Ele usa a biblioteca Boost.Beast para análise de HTTP e a biblioteca Boost.Asio para operações de E/S de rede assíncronas.
+ </para>
+ <para>
+  Como o Object Gateway oferece interfaces compatíveis com o OpenStack Swift e o Amazon S3, ele tem o próprio gerenciamento de usuários. O Object Gateway pode armazenar dados no mesmo cluster usado para armazenar dados dos clientes CephFS ou dos clientes de Dispositivo de Blocos RADOS. As APIs do S3 e do Swift compartilham um espaço de nome comum, portanto, você pode gravar dados com uma API e recuperá-los com outra.
+ </para>
+ <important>
+  <title>Object Gateway implantado pelo DeepSea</title>
+  <para>
+   O Object Gateway é instalado como uma função do DeepSea, portanto, você não precisa instalá-lo manualmente.
+  </para>
+  <para>
+   Para instalar o Object Gateway durante a implantação do cluster, consulte a <xref linkend="ceph-install-stack"/>.
+  </para>
+  <para>
+   Para adicionar um novo nó com o Object Gateway ao cluster, consulte o <xref linkend="salt-adding-services"/>.
+  </para>
+ </important>
+ <sect1 xml:id="rgw-installation">
+  <title>Instalação manual do Object Gateway</title>
+
+  <procedure>
+   <step>
+    <para>
+     Instale o Object Gateway em um nó que não use a porta 80. O comando a seguir instala todos os componentes necessários:
+    </para>
+<screen><prompt>cephadm@ogw &gt; </prompt>sudo zypper ref &amp;&amp; zypper in ceph-radosgw</screen>
+   </step>
+   <step>
+    <para>
+     Se o servidor Apache da instância anterior do Object Gateway estiver em execução, pare-o e desabilite o serviço relevante:
+    </para>
+<screen><prompt>cephadm@ogw &gt; </prompt> sudo systemctl stop disable apache2.service</screen>
+   </step>
+   <step>
+    <para>
+     Edite <filename>/etc/ceph/ceph.conf</filename> e adicione as seguintes linhas:
+    </para>
+<screen>[client.rgw.gateway_host]
+ rgw frontends = "beast port=80"</screen>
+    <tip>
+     <para>
+      Para configurar o Object Gateway/Beast para uso com a criptografia SSL, modifique a linha de acordo:
+     </para>
+<screen>rgw frontends = beast ssl_port=7480 ssl_certificate=<replaceable>PATH_TO_CERTIFICATE.PEM</replaceable></screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Reinicie o serviço Object Gateway.
+    </para>
+<screen><prompt>cephadm@ogw &gt; </prompt>sudo systemctl restart ceph-radosgw@rgw.gateway_host</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="ses-rgw-config">
+   <title>Configuração do Object Gateway</title>
+   <para>
+    Várias etapas são necessárias para configurar um Object Gateway.
+   </para>
+   <sect3>
+    <title>Configuração Básica</title>
+    <para>
+     A configuração de um Ceph Object Gateway requer um Cluster de Armazenamento do Ceph em execução. O Ceph Object Gateway é um cliente do Cluster de Armazenamento do Ceph. Como cliente do Cluster de Armazenamento do Ceph, ele requer:
+    </para>
+    <itemizedlist mark="bullet" spacing="normal">
+     <listitem>
+      <para>
+       Um nome de host para a instância do gateway. Por exemplo, <systemitem>gateway</systemitem>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Um nome de usuário do cluster de armazenamento com as permissões apropriadas e um chaveiro.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Pools para armazenar os dados.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Um diretório de dados para a instância do gateway.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Uma entrada de instância no arquivo de configuração do Ceph.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     Cada instância deve ter um nome de usuário e uma chave para se comunicar com um cluster de armazenamento do Ceph. Nas etapas a seguir, usamos um nó do monitor para criar um chaveiro do protocolo de boot e, em seguida, criamos o chaveiro do usuário da instância do Object Gateway com base no do protocolo de boot. Em seguida, criamos um nome de usuário e uma chave do cliente. Na sequência, adicionamos a chave ao Cluster de Armazenamento do Ceph. Por fim, distribuímos o chaveiro para o nó que contém a instância do gateway.
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Crie um chaveiro para o gateway:
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool --create-keyring /etc/ceph/ceph.client.rgw.keyring
+<prompt>cephadm@adm &gt; </prompt>sudo chmod +r /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       Gere um nome de usuário e uma chave do Ceph Object Gateway para cada instância. Como exemplo, usaremos o nome <systemitem>gateway</systemitem> depois de <systemitem>client.radosgw</systemitem>:
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool /etc/ceph/ceph.client.rgw.keyring \
+  -n client.rgw.gateway --gen-key</screen>
+     </step>
+     <step>
+      <para>
+       Adicione recursos à chave:
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool -n client.rgw.gateway --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       Após criar um chaveiro e uma chave para habilitar o acesso do Ceph Object Gateway ao Cluster de Armazenamento do Ceph, adicione a chave ao Cluster de Armazenamento do Ceph. Por exemplo:
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph -k /etc/ceph/ceph.client.admin.keyring auth add client.rgw.gateway \
+  -i /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+     <step>
+      <para>
+       Distribua o chaveiro para o nó com a instância do gateway:
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>scp /etc/ceph/ceph.client.rgw.keyring  ceph@<replaceable>HOST_NAME</replaceable>:/home/ceph
+<prompt>cephadm@adm &gt; </prompt>ssh ceph@<replaceable>HOST_NAME</replaceable>
+<prompt>cephadm@ogw &gt; </prompt>mv ceph.client.rgw.keyring /etc/ceph/ceph.client.rgw.keyring</screen>
+     </step>
+    </procedure>
+    <tip>
+     <title>Usar o chaveiro do protocolo de boot</title>
+     <para>
+      Uma maneira alternativa é criar o chaveiro do protocolo de boot do Object Gateway e, em seguida, criar o chaveiro do Object Gateway com base nele:
+     </para>
+     <procedure>
+      <step>
+       <para>
+        Crie um chaveiro do protocolo de boot do Object Gateway em um dos nós do monitor:
+       </para>
+<screen><prompt>cephadm@mon &gt; </prompt>ceph \
+ auth get-or-create client.bootstrap-rgw mon 'allow profile bootstrap-rgw' \
+ --connect-timeout=25 \
+ --cluster=ceph \
+ --name mon. \
+ --keyring=/var/lib/ceph/mon/ceph-<replaceable>NODE_HOST</replaceable>/keyring \
+ -o /var/lib/ceph/bootstrap-rgw/keyring</screen>
+      </step>
+      <step>
+       <para>
+        Crie o diretório <filename>/var/lib/ceph/radosgw/ceph-<replaceable>RGW_NAME</replaceable></filename> para armazenar o chaveiro do protocolo de boot:
+       </para>
+<screen><prompt>cephadm@mon &gt; </prompt>mkdir \
+/var/lib/ceph/radosgw/ceph-<replaceable>RGW_NAME</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        Crie um chaveiro do Object Gateway com base no chaveiro do protocolo de boot recém-criado:
+       </para>
+<screen><prompt>cephadm@mon &gt; </prompt>ceph \
+ auth get-or-create client.rgw.<replaceable>RGW_NAME</replaceable> osd 'allow rwx' mon 'allow rw' \
+ --connect-timeout=25 \
+ --cluster=ceph \
+ --name client.bootstrap-rgw \
+ --keyring=/var/lib/ceph/bootstrap-rgw/keyring \
+ -o /var/lib/ceph/radosgw/ceph-<replaceable>RGW_NAME</replaceable>/keyring</screen>
+      </step>
+      <step>
+       <para>
+        Copie o chaveiro do Object Gateway para o host do Object Gateway:
+       </para>
+<screen><prompt>cephadm@mon &gt; </prompt>scp \
+/var/lib/ceph/radosgw/ceph-<replaceable>RGW_NAME</replaceable>/keyring \
+<replaceable>RGW_HOST</replaceable>:/var/lib/ceph/radosgw/ceph-<replaceable>RGW_NAME</replaceable>/keyring</screen>
+       <remark role="fixme">Does the scp command fail because it is not executed as remote root but local root?</remark>
+      </step>
+     </procedure>
+    </tip>
+   </sect3>
+   <sect3 xml:id="ogw-pool-create">
+    <title>Criar pools (opcional)</title>
+    <para>
+     Os Ceph Object Gateways requerem pools de Cluster de Armazenamento do Ceph para armazenar dados específicos do gateway. Se o usuário que você criou tem as permissões apropriadas, o gateway criará os pools automaticamente. No entanto, verifique se você definiu um número padrão apropriado de grupos de posicionamento por pool no arquivo de configuração do Ceph.
+    </para>
+    <para>
+     Os nomes dos pools vêm depois da sintaxe <literal><replaceable>ZONE_NAME</replaceable>.<replaceable>POOL_NAME</replaceable></literal>. Ao configurar um gateway com a região e a zona padrão, o nome da zona padrão é “default”, como em nosso exemplo:
+    </para>
+<screen>.rgw.root
+default.rgw.control
+default.rgw.meta
+default.rgw.log
+default.rgw.buckets.index
+default.rgw.buckets.data</screen>
+    <para>
+     Para criar os pools manualmente, consulte o <xref linkend="ceph-pools-operate-add-pool"/>.
+    </para>
+    <important>
+     <title>Object Gateway e pools com codificação de eliminação</title>
+     <para>
+      Apenas o pool <literal>default.rgw.buckets.data</literal> pode ter codificação de eliminação. Todos os outros pools precisam ser replicados; do contrário, o gateway não ficará acessível.
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>Adicionando a configuração do gateway ao Ceph</title>
+    <para>
+     Adicione a configuração do Ceph Object Gateway ao arquivo de Configuração do Ceph. A configuração do Ceph Object Gateway requer que você identifique a instância do Ceph Object Gateway. Em seguida, especifique o nome de host em que você instalou o daemon do Ceph Object Gateway, um chaveiro (para uso com o cephx) e, opcionalmente, um arquivo de registro. Por exemplo:
+    </para>
+<screen>[client.rgw.<replaceable>INSTANCE_NAME</replaceable>]
+host = <replaceable>HOST_NAME</replaceable>
+keyring = /etc/ceph/ceph.client.rgw.keyring</screen>
+    <tip>
+     <title>Arquivo de registro do Object Gateway</title>
+     <para>
+      Para anular o arquivo de registro do Object Gateway padrão, inclua o seguinte:
+     </para>
+<screen>log file = /var/log/radosgw/client.rgw.<replaceable>INSTANCE_NAME</replaceable>.log</screen>
+    </tip>
+    <para>
+     A parte <literal>[client.rgw.*]</literal> da instância do gateway identifica essa parte do arquivo de configuração do Ceph como a que configura um cliente de Cluster de Armazenamento do Ceph no qual o tipo de cliente é um Ceph Object Gateway (radosgw). O nome da instância vem na sequência. Por exemplo:
+    </para>
+<screen>[client.rgw.gateway]
+host = ceph-gateway
+keyring = /etc/ceph/ceph.client.rgw.keyring</screen>
+    <note>
+     <para>
+      O <replaceable>HOST_NAME</replaceable> deve ser o nome de host da sua máquina, excluindo o nome de domínio.
+     </para>
+    </note>
+    <para>
+     Em seguida, desative <literal>print continue</literal>. Se ele estiver definido como true, você poderá ter problemas com as operações PUT:
+    </para>
+<screen>rgw print continue = false</screen>
+
+    <para>
+     Para usar um Ceph Object Gateway com chamadas de subdomínio S3 (por exemplo, <literal>http://bucketname.hostname</literal>), você deve adicionar o nome DNS do Ceph Object Gateway à seção <literal>[client.rgw.gateway]</literal> do arquivo de configuração do Ceph:
+    </para>
+<screen>[client.rgw.gateway]
+...
+rgw dns name = <replaceable>HOST_NAME</replaceable></screen>
+    <para>
+     Você também deve considerar a instalação de um servidor DNS, como Dnsmasq, em sua(s) máquina(s) cliente ao usar a sintaxe <literal>http://<replaceable>BUCKET_NAME</replaceable>.<replaceable>HOST_NAME</replaceable></literal>. O arquivo <filename>dnsmasq.conf</filename> deve incluir as seguintes configurações:
+    </para>
+<screen>address=/<replaceable>HOST_NAME</replaceable>/<replaceable>HOST_IP_ADDRESS</replaceable>
+listen-address=<replaceable>CLIENT_LOOPBACK_IP</replaceable></screen>
+    <para>
+     Em seguida, adicione o endereço IP <replaceable>CLIENT_LOOPBACK_IP</replaceable> como o primeiro servidor DNS à(s) máquina(s) cliente.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Criar diretório de dados</title>
+    <para>
+     Os scripts de implantação não podem criar o diretório de dados do Ceph Object Gateway padrão. Crie diretórios de dados para cada instância de um daemon radosgw, caso isso ainda não tenha sido feito. As variáveis de <literal>host</literal> no arquivo de configuração do Ceph determinam qual host executa cada instância de um daemon radosgw. O formato comum especifica o daemon radosgw, o nome do cluster e o ID do daemon.
+    </para>
+<screen><prompt>root # </prompt>mkdir -p /var/lib/ceph/radosgw/<replaceable>CLUSTER_ID</replaceable></screen>
+    <para>
+     Usando as configurações do <filename>ceph.conf</filename> do exemplo acima, você executa o seguinte:
+    </para>
+<screen><prompt>root # </prompt>mkdir -p /var/lib/ceph/radosgw/ceph-radosgw.gateway</screen>
+   </sect3>
+   <sect3>
+    <title>Reiniciar serviços e iniciar o gateway</title>
+    <para>
+     Para garantir que todos os componentes recarreguem as configurações deles, é recomendável reiniciar o serviço de Cluster de Armazenamento do Ceph. Em seguida, inicialize o serviço <systemitem>radosgw</systemitem>. Para obter mais informações, consulte o <xref linkend="cha-ceph-operating"/> e o <xref linkend="ceph-rgw-operating"/>.
+    </para>
+    <para>
+     Quando o serviço estiver em execução, você poderá fazer uma solicitação GET anônima para ver se o gateway retorna uma resposta. Uma solicitação HTTP simples para o nome de domínio deve retornar o seguinte:
+    </para>
+<screen>&lt;ListAllMyBucketsResult&gt;
+      &lt;Owner&gt;
+              &lt;ID&gt;anonymous&lt;/ID&gt;
+              &lt;DisplayName/&gt;
+      &lt;/Owner&gt;
+      &lt;Buckets/&gt;
+&lt;/ListAllMyBucketsResult&gt;</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

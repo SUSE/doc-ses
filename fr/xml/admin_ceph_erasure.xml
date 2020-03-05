@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_erasure.xml" version="5.0" xml:id="cha-ceph-erasure">
+ <title>Réserves codées à effacement</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>modification</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>oui</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ceph fournit une alternative à la réplication normale des données dans les réserves : elle est appelée <emphasis>réserve à effacement</emphasis> ou <emphasis>réserve codée à effacement</emphasis>. Les réserves à effacement ne fournissent pas toutes les fonctionnalités des réserves <emphasis>répliquées</emphasis> (par exemple, elles ne peuvent pas stocker les métadonnées pour les réserves RBD), mais nécessitent moins de stockage brut. Une réserve à effacement par défaut capable de stocker 1 To de données requiert 1,5 To de stockage brut, ce qui permet une défaillance de disque. C'est un constat favorable par rapport à une réserve répliquée qui nécessite 2 To de stockage brut pour la même finalité.
+ </para>
+ <para>
+  Pour plus d'informations sur le code à effacement, reportez-vous à la page <link xlink:href="https://en.wikipedia.org/wiki/Erasure_code"/>.
+ </para>
+ <note>
+  <para>
+   Lorsque vous utilisez FileStore, vous ne pouvez pas accéder aux réserves codées à effacement avec l'interface RBD, sauf si vous avez configuré un niveau de cache. Reportez-vous à la <xref linkend="ceph-tier-erasure"/> pour plus de détails ou utilisez le BlueStore par défaut (voir <xref linkend="about-bluestore"/>).
+  </para>
+ </note>
+ <sect1 xml:id="ec-prerequisite">
+  <title>Conditions préalables pour les réserves codées à effacement</title>
+
+  <para>
+   Pour utiliser le codage à effacement, vous devez :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     définir une règle d'effacement dans la carte CRUSH ;
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     définir un profil de code à effacement qui spécifie l'algorithme de codage à utiliser ;
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     créer une réserve utilisant la règle et le profil susmentionnés.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Gardez à l'esprit que la modification du profil et de ses détails ne sera pas possible une fois que la réserve aura été créée et contiendra des données.
+  </para>
+
+  <para>
+   Assurez-vous que les règles CRUSH des <emphasis>réserves à effacement</emphasis> utilisent <literal>indep</literal> pour <literal>step</literal>. Pour plus d’informations, reportez-vous à la <xref linkend="datamgm-rules-step-mode"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-default-profile">
+  <title>Création d’un exemple de réserve codée à effacement</title>
+
+  <para>
+   La réserve codée à effacement la plus simple équivaut à une configuration RAID5 et nécessite au moins trois hôtes. Cette procédure décrit la création d’une réserve à des fins de test.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     La commande <command>ceph osd pool create</command> permet de créer une réserve de type effacement (<emphasis>erasure</emphasis>). <literal>12</literal> représente le nombre de groupes de placement. Avec les paramètres par défaut, la réserve est en mesure de gérer l’échec d’un OSD.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure
+pool 'ecpool' created</screen>
+   </step>
+   <step>
+    <para>
+     La chaîne <literal>ABCDEFGHI</literal> est écrite dans un objet appelé <literal>NYAN</literal>.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -</screen>
+   </step>
+   <step>
+    <para>
+     À des fins de test, les OSD peuvent alors être désactivés, par exemple en les déconnectant du réseau.
+    </para>
+   </step>
+   <step>
+    <para>
+     Pour tester si la réserve peut gérer l’échec des périphériques, il est possible d’accéder au contenu du fichier à l’aide de la commande <command>rados</command>.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-erasure-profiles">
+  <title>Profils de code à effacement</title>
+
+  <para>
+   Lorsque la commande <command>ceph osd pool create</command> est appelée pour créer une <emphasis>réserve à effacement</emphasis>, le profil par défaut est utilisé, sauf si un autre profil est indiqué. Les profils définissent la redondance des données, à l’aide de deux paramètres, arbitrairement nommés <literal>k</literal> et <literal>m</literal>. k et m définissent en combien de <literal>tranches</literal> une donnée est divisée et combien de tranches de codage sont créées. Les tranches redondantes sont ensuite stockées sur des OSD différents.
+  </para>
+
+  <para>
+   Définitions requises pour les profils de réserves à effacement :
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>tranche</term>
+    <listitem>
+     <para>
+      Lorsqu’elle est appelée, la fonction de codage renvoie des tranches (« chunks ») de même taille : des tranches de données pouvant être concaténées pour reconstruire l’objet d’origine et des tranches de codage pouvant être utilisées pour la reconstruction d’une tranche perdue.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>k</term>
+    <listitem>
+     <para>
+      Nombre de tranches de données, c’est-à-dire le nombre de tranches divisant l’objet original. Par exemple si <literal>k = 2</literal>, un objet de 10 Ko sera divisé en <literal>k</literal> objets de 5 Ko chacun. La valeur par défaut de <literal>min_size</literal> sur les réserves codées à effacement est <literal>k + 1</literal>. Cependant, nous recommandons une valeur <literal>min_size</literal> <literal>k + 2</literal> ou plus pour éviter la perte d'écritures et de données.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>m</term>
+    <listitem>
+     <para>
+      Nombre de tranches de codage, c’est-à-dire le nombre de tranches supplémentaires calculées par les fonctions de codage. S’il existe 2 tranches de codage, cela autorise l’échec de 2 OSD sans perte de données.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>crush-failure-domain</term>
+    <listitem>
+     <para>
+      Définit les périphériques auxquels les tranches sont distribuées. Un type de compartiment doit être défini en tant que valeur. Pour tous les types de compartiment, reportez-vous à la <xref linkend="datamgm-buckets"/>. Si le domaine en échec est de type <literal>rack</literal>, les tranches seront stockées sur des racks différents afin d’augmenter la résistance en cas de défaillances de racks. Gardez à l'esprit que cela nécessite k+m racks.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   Avec le profil de code à effacement par défaut utilisé à la <xref linkend="cha-ceph-erasure-default-profile"/>, vous ne perdrez pas de données de grappe si un seul OSD ou hôte échoue. Par conséquent, pour stocker 1 To de données, il faut encore 0,5 To de stockage brut. Cela signifie que 1,5 To de stockage brut est nécessaire pour 1 To de données (étant donné que k=2, m=1). Cette configuration équivaut à une configuration RAID 5 courante. À titre de comparaison, une réserve répliquée nécessite 2 To de stockage brut pour stocker 1 To de données.
+  </para>
+
+  <para>
+   Les paramètres du profil par défaut peuvent être affichés avec les commandes suivantes :
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd erasure-code-profile get default
+directory=.libs
+k=2
+m=1
+plugin=jerasure
+crush-failure-domain=host
+technique=reed_sol_van</screen>
+
+  <para>
+   Le choix du bon profil est important, car il ne peut pas être modifié après la création de la réserve. Une réserve doit être créée avec un profil différent, et tous les objets de la réserve précédente doivent être déplacés vers la nouvelle (voir <xref linkend="pools-migration"/>).
+  </para>
+
+  <para>
+   Les paramètres les plus importants du profil sont <literal>k</literal>, <literal>m</literal> et <literal>crush-failure-domain</literal>, car ils définissent l’overhead de stockage et la durabilité des données. Par exemple, si l'architecture souhaitée doit supporter la perte de deux racks avec un overhead de stockage de 66 %, le profil suivant peut être défini. Notez que cela n'est valable qu'avec une carte CRUSH comportant des compartiments de type « rack » :
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
+   k=3 \
+   m=2 \
+   crush-failure-domain=rack</screen>
+
+  <para>
+   L’exemple de la <xref linkend="cha-ceph-erasure-default-profile"/> peut être répété avec ce nouveau profil :
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
+<prompt>cephadm@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
+<prompt>cephadm@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+
+  <para>
+   L’objet NYAN est divisé en trois (<literal>k=3</literal>) et deux tranches supplémentaires sont créées (<literal>m=2</literal>). La valeur de <literal>m</literal> définit le nombre d’OSD pouvant être perdus simultanément sans perte de données. <literal>crush-failure-domain=rack</literal> crée un ensemble de règles CRUSH qui garantit que deux tranches ne sont pas stockées dans le même rack.
+  </para>
+
+  <informalfigure>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="ceph_erasure_obj.png" width="80%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="ceph_erasure_obj.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </informalfigure>
+
+  <sect2 xml:id="ec-create">
+   <title>Création d'un profil de code à effacement</title>
+   <para>
+    La commande suivante crée un profil de code à effacement :
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile set <replaceable>NAME</replaceable> \
+ directory=<replaceable>DIRECTORY</replaceable> \
+ plugin=<replaceable>PLUGIN</replaceable> \
+ stripe_unit=<replaceable>STRIPE_UNIT</replaceable> \
+ <replaceable>KEY</replaceable>=<replaceable>VALUE</replaceable> ... \
+ --force
+</screen>
+   <variablelist>
+    <varlistentry>
+     <term>DIRECTORY</term>
+     <listitem>
+      <para>
+       Facultatif. Définissez le nom du répertoire à partir duquel le plug-in de code à effacement est chargé. Sa valeur par défaut est <filename>/usr/lib/ceph/erasure-code</filename>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>PLUGIN</term>
+     <listitem>
+      <para>
+       Facultatif. Utilisez le plug-in de code à effacement pour calculer les tranches de codage et récupérer les tranches manquantes. Les plug-ins disponibles sont « jerasure », « jisa », « jlrc » et « jshes ». Le plug-in par défaut est « jerasure ».
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>STRIPE_UNIT</term>
+     <listitem>
+      <para>
+       Facultatif. Quantité de données dans une tranche de données, par segment. Par exemple, un profil avec 2 tranches de données et stripe_unit=4K placerait la plage 0-4K dans la tranche 0, 4K-8K dans la tranche 1, puis 8K-12K de nouveau dans la tranche 0. Il doit s'agit d'un multiple de 4K pour de meilleures performances. La valeur par défaut est prise à partir de l'option de configuration du moniteur <option>osd_pool_erasure_code_stripe_unit</option> lors de la création d'une réserve. La valeur « stripe_width » d'une réserve utilisant ce profil sera le nombre de tranches de données multiplié par ce « stripe_unit ».
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>KEY=VALUE</term>
+     <listitem>
+      <para>
+       Paires clé/valeur des options spécifiques au plug-in de code à effacement sélectionné.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>--force</term>
+     <listitem>
+      <para>
+       Facultatif. Permet de remplacer un profil existant portant le même nom et de définir une valeur stripe_unit non alignée sur 4K.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ec-rm">
+   <title>Suppression d'un profil de code à effacement</title>
+   <para>
+    La commande suivante supprime un profil de code à effacement tel qu'identifié par son nom (<replaceable>NAME</replaceable>) :
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile rm <replaceable>NAME</replaceable>
+</screen>
+   <important>
+    <para>
+     Si le profil est référencé par une réserve, la suppression échoue.
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="ec-get">
+   <title>Affichage des détails d'un profil de code à effacement</title>
+   <para>
+    La commande suivante affiche les détails d'un profil de code à effacement tel qu'identifié par son nom (<replaceable>NAME</replaceable>) :
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile get <replaceable>NAME</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="ec-ls">
+   <title>Liste des profils de code à effacement</title>
+   <para>
+    La commande suivante répertorie les noms de tous les profils de code à effacement :
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile ls
+</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ec-rbd">
+  <title>Réserves codées à effacement avec périphérique de bloc RADOS (RBD)</title>
+
+  <para>
+   Pour marquer une réserve EC (« Erasure Coded », codée à effacement) en tant que réserve RBD, étiquetez-la en conséquence :
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool application enable rbd <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   RBD peut stocker des <emphasis>données</emphasis> d’image dans des réserves EC. Cependant, l'en-tête et les métadonnées d'image doivent encore être stockées dans une réserve répliquée. En supposant que vous ayez la réserve nommée « rbd » à cet effet :
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd create rbd/<replaceable>image_name</replaceable> --size 1T --data-pool <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   Vous pouvez utiliser l’image normalement comme toute autre image, hormis que toutes les données seront stockées dans la réserve <replaceable>ec_pool_name</replaceable> et non pas dans la réserve « rbd ».
+  </para>
+ </sect1>
+</chapter>

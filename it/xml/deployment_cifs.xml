@@ -1,0 +1,749 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_cifs.xml" version="5.0" xml:id="cha-ses-cifs">
+
+ <title>Esportazione dei dati Ceph tramite Samba</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>modifica</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>sì</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Questo capitolo descrive come esportare i dati memorizzati in un cluster Ceph tramite una condivisione Samba/CIFS per potervi accedere con facilità dai computer client Windows*. Contiene inoltre informazioni utili per la configurazione di un gateway Samba Ceph in modo che si unisca ad Active Directory nel dominio Windows* per eseguire l'autenticazione e l'autorizzazione degli utenti.
+ </para>
+ <note>
+  <title>prestazioni del gateway Samba</title>
+  <para>
+   A causa dell'aumento dell'overhead del protocollo e della latenza aggiuntiva causati dagli hop di rete extra tra il client e lo storage, l'accesso a CephFS tramite un gateway Samba potrebbe ridurre notevolmente le prestazioni dell'applicazione rispetto ai client Ceph nativi.
+  </para>
+ </note>
+ <sect1 xml:id="cephfs-samba">
+  <title>Esportazione di CephFS tramite la condivisione Samba</title>
+
+  <warning>
+   <title>accesso su più protocolli</title>
+   <para>
+    I client CephFS e NFS nativi non sono limitati dai blocchi di file ottenuti tramite Samba e viceversa. I dati delle applicazioni basate sul blocco di file su più protocolli potrebbero risultare danneggiati se l'accesso ai percorsi della condivisione Samba supportati da CephFS viene effettuato in altri modi.
+   </para>
+  </warning>
+
+  <sect2 xml:id="cephfs-samba-packages">
+   <title>Installazione dei pacchetti correlati a Samba</title>
+   <para>
+    Per configurare ed esportare una condivisione Samba, è necessario che siano installati i pacchetti seguenti: <package>samba-ceph</package> e
+    <package>samba-winbind</package>. Installarli se non lo sono:
+   </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>zypper install samba-ceph samba-winbind
+</screen>
+  </sect2>
+
+  <sect2 xml:id="sec-ses-cifs-example">
+   <title>Esempio di gateway singolo</title>
+   <para>
+    Per prepararsi all'esportazione di una condivisione Samba, scegliere un nodo appropriato da utilizzare come gateway Samba. Il nodo deve disporre dell'accesso alla rete del client Ceph, oltre che di sufficienti risorse di CPU, memoria e networking.
+   </para>
+   <para>
+    La funzionalità di failover può essere fornita con CTDB e SUSE Linux Enterprise High Availability Extension. Per ulteriori informazioni sulla configurazione ad alta disponibilità, fare riferimento alla <xref linkend="sec-ses-cifs-ha"/>.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Accertare che nel cluster sia già esistente un CephFS operativo. Per informazioni, vedere <xref linkend="cha-ceph-as-cephfs"/>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Creare un portachiavi gateway Samba specifico sul nodo admin Ceph e copiarlo nel nodo gateway Samba:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> auth get-or-create client.samba.gw mon 'allow r' \
+ osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
+<prompt>root@master # </prompt><command>scp</command> ceph.client.samba.gw.keyring <replaceable>SAMBA_NODE</replaceable>:/etc/ceph/</screen>
+     <para>
+      Sostituire <replaceable>SAMBA_NODE</replaceable> con il nome del nodo gateway Samba.
+     </para>
+    </step>
+    <step>
+     <para>
+      I passaggi seguenti vengono eseguiti sul nodo gateway Samba. Installare Samba insieme al pacchetto di integrazione Ceph:
+     </para>
+<screen><prompt>cephadm@smb &gt; </prompt>sudo zypper in samba samba-ceph</screen>
+    </step>
+    <step>
+     <para>
+      Sostituire i contenuti di default del file <filename>/etc/samba/smb.conf</filename> con quanto segue:
+     </para>
+<screen>
+[global]
+  netbios name = SAMBA-GW
+  clustering = no
+  idmap config * : backend = tdb2
+  passdb backend = tdbsam
+  # disable print server
+  load printers = no
+  smbd: backgroundqueue = no
+
+[<replaceable>SHARE_NAME</replaceable>]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+  kernel share modes = no
+ </screen>
+     <tip>
+      <title>oplock e modalità di condivisione</title>
+      <para>
+       Gli <option>oplocks</option> (noti anche come lease SMB2+) consentono di ottenere migliori prestazioni tramite un'aggressiva memorizzazione nella cache del client, ma sono poco sicuri se Samba è distribuito con altri client CephFS, come <literal>mount.cephfs</literal>, FUSE o NFS Ganesha del kernel.
+      </para>
+      <para>
+       Se l'accesso al percorso del file system CephFS è gestito esclusivamente da Samba, è possibile abilitare il parametro degli <option>oplocks</option> in sicurezza.
+      </para>
+      <para>
+       Attualmente, è necessario disabilitare <option>kernel share modes</option> nelle condivisioni in esecuzione con il modulo vfs di CephFS per consentire il corretto funzionamento del file serving.
+      </para>
+     </tip>
+     <important>
+      <title>autorizzazione dell'accesso</title>
+      <para>
+       Poiché per <systemitem>vfs_ceph</systemitem> non è richiesto il montaggio del file system, il percorso della condivisione viene interpretato come percorso assoluto all'interno del file system Ceph sul cluster Ceph collegato. Per la riuscita delle operazioni I/O di condivisione, l'elenco di controllo dell'accesso (ACL) del percorso deve consentire all'utente mappato di accedere al client Samba specificato. È possibile modificare l'ACL effettuando un montaggio temporaneo tramite il client del kernel CephFS e utilizzando le utility <command>chmod</command>, <command>chown</command> o <command>setfacl</command> rispetto al percorso della condivisione. Ad esempio, per consentire l'accesso a tutti gli utenti, eseguire:
+      </para>
+<screen>
+<prompt>root # </prompt>chmod 777 <replaceable>MOUNTED_SHARE_PATH</replaceable>
+</screen>
+     </important>
+    </step>
+    <step>
+     <para>
+      Avviare a abilitare il daemon Samba:
+     </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl start smb.service
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl enable smb.service
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl start nmb.service
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl enable nmb.service
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="sec-ses-cifs-ha">
+   <title>Configurazione ad alta disponibilità</title>
+   <important>
+    <title>failover invisibile all'utente non supportato</title>
+    <para>
+     Sebbene la disponibilità della distribuzione multi-nodo Samba + CTDB sia molto più elevata rispetto a quella a nodo singolo (vedere il <xref linkend="cha-ses-cifs"/>), il failover invisibile all'utente lato client non è supportato. In caso di errore del nodo gateway Samba, è probabile che si verifichi una breve interruzione delle attività delle applicazioni.
+    </para>
+   </important>
+   <para>
+    Questa sezione fornisce un esempio di come configurare una configurazione ad alta disponibilità a due nodi dei server Samba. La configurazione richiede SUSE Linux Enterprise High Availability Extension. I due nodi sono denominati <systemitem class="domainname">earth</systemitem> (<systemitem class="ipaddress">192.168.1.1</systemitem>) e <systemitem class="domainname">mars</systemitem> (<systemitem class="ipaddress">192.168.1.2</systemitem>).
+   </para>
+   <para>
+    Per informazioni su SUSE Linux Enterprise High Availability Extension, vedere <link xlink:href="https://www.suse.com/documentation/sle-ha-15/"/>.
+   </para>
+   <para>
+    Inoltre, due indirizzi IP virtuali mobili consentono ai client di connettersi al servizio indipendentemente dal nodo fisico sul quale è in esecuzione. <systemitem class="ipaddress">192.168.1.10</systemitem> è utilizzato per amministrazione del cluster con Hawk2 e <systemitem class="ipaddress">192.168.2.1</systemitem> esclusivamente per esportazioni CIFS. Ciò semplifica la successiva applicazione delle limitazioni di sicurezza.
+   </para>
+   <para>
+    La procedura seguente descrive l'installazione di esempio. Ulteriori informazioni sono disponibili all'indirizzo <link xlink:href="https://www.suse.com/documentation/sle-ha-15/book_sleha_quickstarts/data/art_sleha_install_quick.html"/>.
+   </para>
+   <procedure xml:id="proc-sec-ses-cifs-ha">
+    <step>
+     <para>
+      Creare un portachiavi gateway Samba specifico sul nodo admin e copiarlo su entrambi i nodi:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> auth get-or-create client.samba.gw mon 'allow r' \
+    osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
+<prompt>root@master # </prompt><command>scp</command> ceph.client.samba.gw.keyring <systemitem class="domainname">earth</systemitem>:/etc/ceph/
+<prompt>root@master # </prompt><command>scp</command> ceph.client.samba.gw.keyring <systemitem class="domainname">mars</systemitem>:/etc/ceph/</screen>
+    </step>
+    <step>
+     <para>
+      Preparare <systemitem class="domainname">earth</systemitem> e <systemitem class="domainname">mars</systemitem> per ospitare il servizio Samba:
+     </para>
+     <substeps>
+      <step>
+       <para>
+        Prima di continuare, verificare che siano installati i seguenti pacchetti:
+        <package>ctdb</package>, <package>tdb-tools</package>, e
+        <package>samba</package> (necessario per le risorse smb e nmb).
+       </para>
+<screen><prompt>cephadm@smb &gt; </prompt><command>zypper</command> in ctdb tdb-tools samba samba-ceph</screen>
+      </step>
+      <step>
+       <para>
+        Verificare che i servizi <literal>ctdb</literal>, <literal>smb</literal> e <literal>nmb</literal> siano arrestati e disabilitati:
+       </para>
+<screen><prompt>cephadm@smb &gt; </prompt>sudo systemctl disable ctdb
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl disable smb
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl disable nmb
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl stop smb
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl stop nmb</screen>
+      </step>
+      <step>
+       <para>
+        Aprire la porta <literal>4379</literal> del firewall su tutti i nodi. Questo passaggio è necessario affinché CTDB comunichi con altri nodi del cluster.
+       </para>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      Su <systemitem class="domainname">earth</systemitem> creare i file di configurazione per Samba. In seguito verranno sincronizzati con <systemitem class="domainname">mars</systemitem>.
+     </para>
+     <substeps>
+      <step>
+       <para>
+        In <filename>/etc/ctdb/nodes</filename> inserire tutti i nodi contenenti tutti gli indirizzi IP privati di ogni nodo nel cluster:
+       </para>
+<screen>192.168.1.1
+192.168.1.2</screen>
+      </step>
+      <step>
+       <para>
+        Configurare Samba. Aggiungere le righe seguenti nella sezione <literal>[global]</literal> di <filename>/etc/samba/smb.conf</filename>. Utilizzare il nome host prescelto al posto di "CTDB-SERVER" (tutti i nodi del cluster compaiono in effetti come un grande nodo con questo nome). Aggiungere inoltre una definizione della condivisione, ad esempio <replaceable>SHARE_NAME</replaceable>:
+       </para>
+<screen>
+[global]
+  netbios name = SAMBA-HA-GW
+  clustering = yes
+  idmap config * : backend = tdb2
+  passdb backend = tdbsam
+  ctdbd socket = /var/lib/ctdb/ctdb.socket
+  # disable print server
+  load printers = no
+  smbd: backgroundqueue = no
+
+[SHARE_NAME]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+  kernel share modes = no
+</screen>
+       <para>
+        Tenere presente che i file <filename>/etc/ctdb/nodes</filename> e <filename>/etc/samba/smb.conf</filename> devono corrispondere in tutti i nodi gateway Samba.
+       </para>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      Installare ed eseguire il bootstrap del cluster SUSE Linux Enterprise High Availability.
+     </para>
+     <substeps>
+      <step>
+       <para>
+        Registrare SUSE Linux Enterprise High Availability Extension su <systemitem class="domainname">earth</systemitem> e <systemitem class="domainname">mars</systemitem>:
+       </para>
+<screen><prompt>root@earth # </prompt><command>SUSEConnect</command> -r <replaceable>ACTIVATION_CODE</replaceable> -e <replaceable>E_MAIL</replaceable></screen>
+<screen><prompt>root@mars # </prompt><command>SUSEConnect</command> -r <replaceable>ACTIVATION_CODE</replaceable> -e <replaceable>E_MAIL</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        Installare <package>ha-cluster-bootstrap</package> su entrambi i nodi:
+       </para>
+<screen><prompt>root@earth # </prompt><command>zypper</command> in ha-cluster-bootstrap</screen>
+<screen><prompt>root@mars # </prompt><command>zypper</command> in ha-cluster-bootstrap</screen>
+      </step>
+      <step>
+       <para>
+        Inizializzare il cluster su <systemitem class="domainname">earth</systemitem>:
+       </para>
+<screen>
+<prompt>root@earth # </prompt><command>ha-cluster-init</command>
+      </screen>
+      </step>
+      <step>
+       <para>
+        Lasciare che <systemitem class="domainname">mars</systemitem> si unisca al cluster:
+       </para>
+<screen>
+<prompt>root@mars # </prompt><command>ha-cluster-join</command> -c earth
+      </screen>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      Verificare lo stato del cluster. Dovrebbero essere visibili due nodi aggiunti al cluster:
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> status
+2 nodes configured
+1 resource configured
+
+Online: [ earth mars ]
+
+Full list of resources:
+
+ admin-ip       (ocf::heartbeat:IPaddr2):       Started earth</screen>
+    </step>
+    <step>
+     <para>
+      Eseguire i comandi seguenti su <systemitem class="domainname">earth</systemitem> per configurare la risorsa CTDB:
+     </para>
+
+<screen><prompt>root@earth # </prompt><command>crm</command> configure
+<prompt>crm(live)configure# </prompt><command>primitive</command> ctdb ocf:heartbeat:CTDB params \
+    ctdb_manages_winbind="false" \
+    ctdb_manages_samba="false" \
+    ctdb_recovery_lock="!/usr/lib64/ctdb/ctdb_mutex_ceph_rados_helper
+        ceph client.samba.gw cephfs_metadata ctdb-mutex"
+    ctdb_socket="/var/lib/ctdb/ctdb.socket" \
+        op monitor interval="10" timeout="20" \
+        op start interval="0" timeout="200" \
+        op stop interval="0" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> nmb systemd:nmb \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> smb systemd:smb \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>group</command> g-ctdb ctdb nmb smb
+<prompt>crm(live)configure# </prompt><command>clone</command> cl-ctdb g-ctdb meta interleave="true"
+<prompt>crm(live)configure# </prompt><command>commit</command></screen>
+     <para>
+      Il binario <command>/usr/lib64/ctdb/ctdb_mutex_ceph_rados_helper</command> nell'opzione di configurazione <literal>ctdb_recovery_lock</literal> ha i parametri <replaceable>CLUSTER_NAME</replaceable>, <replaceable>CEPHX_USER</replaceable>, <replaceable>RADOS_POOL</replaceable>, e <replaceable>RADOS_OBJECT</replaceable> in questo ordine.
+     </para>
+     <para>
+      È possibile aggiungere un ulteriore parametro di timeout del blocco per ignorare il valore di default utilizzato (10 secondi). Un valore più elevato consentirà di aumentare la durata di failover del master di recupero CTDB, mentre se viene impostato un valore più basso, il master di recupero potrebbe venire rilevato erroneamente come disattivato, innescando ripetutamente il failover.
+     </para>
+    </step>
+    <step>
+     <para>
+      Aggiungere un indirizzo IP di cluster:
+     </para>
+<screen><prompt>crm(live)configure# </prompt><command>primitive</command> ip ocf:heartbeat:IPaddr2 params ip=192.168.2.1 \
+    unique_clone_address="true" \
+    op monitor interval="60" \
+    meta resource-stickiness="0"
+<prompt>crm(live)configure# </prompt><command>clone</command> cl-ip ip \
+    meta interleave="true" clone-node-max="2" globally-unique="true"
+<prompt>crm(live)configure# </prompt><command>colocation</command> col-with-ctdb 0: cl-ip cl-ctdb
+<prompt>crm(live)configure# </prompt><command>order</command> o-with-ctdb 0: cl-ip cl-ctdb
+<prompt>crm(live)configure# </prompt><command>commit</command></screen>
+     <para>
+      Se <literal>unique_clone_address</literal> è impostato su <literal>true</literal>, l'agente della risorsa IPaddr2 aggiunge un ID clone all'indirizzo specificato, portando a tre diversi indirizzi IP, che non sono di solito necessari, ma aiutano per il bilanciamento di carico. Per ulteriori informazioni su questo argomento, vedere <link xlink:href="https://www.suse.com/documentation/sle-ha-15/book_sleha_guide/data/cha_ha_lb.html"/>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Controllare il risultato:
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> status
+Clone Set: base-clone [dlm]
+     Started: [ factory-1 ]
+     Stopped: [ factory-0 ]
+ Clone Set: cl-ctdb [g-ctdb]
+     Started: [ factory-1 ]
+     Started: [ factory-0 ]
+ Clone Set: cl-ip [ip] (unique)
+     ip:0       (ocf:heartbeat:IPaddr2):       Started factory-0
+     ip:1       (ocf:heartbeat:IPaddr2):       Started factory-1</screen>
+    </step>
+    <step>
+     <para>
+      Eseguire un test da un computer client. Su un client Linux, eseguire il seguente comando per vedere se è possibile copiare i file dal e nel sistema:
+     </para>
+<screen><prompt>root # </prompt><command>smbclient</command> <option>//192.168.2.1/myshare</option></screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cephfs-ad">
+  <title>Unione del gateway Samba ad Active Directory</title>
+
+  <para>
+   È possibile configurare il gateway Samba Ceph come membro del dominio Samba con supporto Active Directory (AD). In qualità di membro del dominio Samba, è possibile utilizzare nei file e nelle directory del CephFS esportato i gruppi e gli utenti di dominio riportati negli elenchi di controllo dell'accesso (ACL) locali.
+  </para>
+
+  <sect2 xml:id="cephfs-ad-preparation">
+   <title>Preparazione</title>
+   <para>
+    Questa sezione presenta la procedura preliminare da seguire prima della configurazione di Samba. Se si inizia da un ambiente pulito, sarà possibile evitare confusione e assicurarsi che nessun file dell'installazione Samba precedente venga mischiato con la nuova installazione del membro del dominio.
+   </para>
+   <tip>
+    <title>sincronizzazione degli orologi</title>
+    <para>
+     Tutti gli orologi dei nodi gateway Samba devono essere sincronizzati con il controller del dominio Active Directory. Gli sfasamenti di orario possono comportare errori di autenticazione.
+    </para>
+   </tip>
+   <para>
+    Verificare che non siano in esecuzione processi di Samba o di memorizzazione dei nomi nella cache:
+   </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>ps ax | egrep "samba|smbd|nmbd|winbindd|nscd"
+</screen>
+   <para>
+    Se nell'output vengono elencati i processi <literal>samba</literal>, <literal>smbd</literal>, <literal>nmbd</literal>, <literal>winbindd</literal> o <literal>nscd</literal>, interromperli.
+   </para>
+   <para>
+    Se in precedenza è stata eseguita un'installazione Samba su questo host, rimuovere il file <filename>/etc/samba/smb.conf</filename>. Rimuovere inoltre tutti i file di database Samba, ad esempio i file <filename>*.tdb</filename> and <filename>*.ldb</filename>. Per visualizzare un elenco delle directory contenenti i database Samba, eseguire:
+   </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>smbd -b | egrep "LOCKDIR|STATEDIR|CACHEDIR|PRIVATE_DIR"
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-dns">
+   <title>Verifica del DNS</title>
+   <para>
+    Active Directory (AD) utilizza il DNS per individuare altri controller del dominio (DC) e servizi, come Kerberos. Pertanto, i membri del domino e i server Active Directory devono essere in grado di risolvere le zone DNS di Active Directory.
+   </para>
+   <para>
+    Verificare che il DNS sia configurato correttamente e che la ricerca diretta e inversa vengano risolte correttamente, ad esempio:
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>nslookup DC1.domain.example.com
+Server:         10.99.0.1
+Address:        10.99.0.1#53
+
+Name:   DC1.domain.example.com
+Address: 10.99.0.1
+</screen>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>10.99.0.1
+Server:        10.99.0.1
+Address:	10.99.0.1#53
+
+1.0.99.10.in-addr.arpa	name = DC1.domain.example.com.
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-srv">
+   <title>Risoluzione dei record SRV</title>
+   <para>
+    Active Directory utilizza i record SRV per l'individuazione dei servizi, come Kerberos e LDAP. Per verificare che i record SRV vengano risolti correttamente, utilizzare la shell interattiva <command>nslookup</command>, ad esempio:
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>nslookup
+Default Server:  10.99.0.1
+Address:  10.99.0.1
+
+&gt; set type=SRV
+&gt; _ldap._tcp.domain.example.com.
+Server:  UnKnown
+Address:  10.99.0.1
+
+_ldap._tcp.domain.example.com   SRV service location:
+          priority       = 0
+          weight         = 100
+          port           = 389
+          svr hostname   = dc1.domain.example.com
+domain.example.com      nameserver = dc1.domain.example.com
+dc1.domain.example.com  internet address = 10.99.0.1
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-kerberos">
+   <title>Configurazione di Kerberos</title>
+   <para>
+    Samba supporta i back-end Heimdal e MIT Kerberos. Per configurare Kerberos sul membro del dominio, impostare quanto segue nel file <filename>/etc/krb5.conf</filename>:
+   </para>
+<screen>
+[libdefaults]
+	default_realm = DOMAIN.EXAMPLE.COM
+	dns_lookup_realm = false
+	dns_lookup_kdc = true
+</screen>
+   <para>
+    Nell'esempio precedente Kerberos viene configurato per il dominio DOMAIN.EXAMPLE.COM. Non si consiglia di impostare altri parametri nel file <filename>/etc/krb5.conf</filename>. Se il file <filename>/etc/krb5.conf</filename> contiene una riga <literal>include</literal>, non funzionerà: <emphasis role="bold">occorre</emphasis> rimuovere tale riga.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-local-resolution">
+   <title>Risoluzione del nome host locale</title>
+   <para>
+    Quando viene eseguita l'unione a un host sul dominio, Samba tenta di registrare il nome host nella zona DNS di Active Directory. A questo scopo, l'utility <command>net</command> deve essere in grado di risolvere il nome host tramite DNS o utilizzando una voce corretta nel file <filename>/etc/hosts</filename>.
+   </para>
+   <para>
+    Per verificare che il nome host venga risolto correttamente, utilizzare il comando <command>getent hosts</command>:
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>getent hosts example-host
+10.99.0.5      example-host.domain.example.com    example-host
+</screen>
+   <para>
+    Il nome host e il nome di dominio completo (FQDN) non devono identificarsi con l'indirizzo IP 127.0.0.1 o altri indirizzi IP diversi da quello utilizzato nell'interfaccia LAN del membro del domino. Se non viene visualizzato nessun output o se l'host viene risolto sull'indirizzo IP errato e DHCP non è in uso, impostare la voce corretta nel file <filename>/etc/hosts</filename>:
+   </para>
+<screen>
+127.0.0.1      localhost
+10.99.0.5      example-host.samdom.example.com    example-host
+</screen>
+   <tip>
+    <title>DHCP ed <filename>/etc/hosts</filename></title>
+    <para>
+     Se si utilizza DHCP, verificare che la riga "127.0.0.1" sia presente soltanto in <filename>/etc/hosts</filename>. Se continuano a verificarsi problemi, contattare l'amministratore del server DHCP.
+    </para>
+    <para>
+     Se occorre aggiungere alias al nome host del computer, aggiungerli alla fine della riga che inizia con l'indirizzo IP del computer (non alla riga "127.0.01").
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-smb-conf">
+   <title>Configurazione di Samba</title>
+   <para>
+    Questa sezione fornisce informazioni sulle specifiche opzioni di configurazione da includere nel file di configurazione di Samba <filename>/etc/samba/smb.conf</filename>.
+   </para>
+   <sect3>
+    <title>Scelta del back-end per la mappatura ID in <systemitem>winbindd</systemitem></title>
+    <para>
+     Se è necessario assegnare agli utenti diverse shell di login e/o diversi percorsi alla home directory Unix o se si desidera invece che gli utenti abbiano lo stesso ID in generale, utilizzare il back-end "ad" winbind e aggiungere gli attributi RFC2307 ad Active Directory.
+    </para>
+    <important>
+     <title>attributi RFC2307 e numeri di ID</title>
+     <para>
+      Gli attributi RFC2307 non vengono aggiunti automaticamente durante la creazione di utenti o gruppi.
+     </para>
+     <para>
+      I numeri di ID rilevati su un controller del dominio (compresi nell'intervallo di 3000000) <emphasis>non</emphasis> sono attributi RFC2307 e non verranno utilizzati nei membri del dominio Unix. Se si necessita degli stessi numeri di ID in generale, aggiungere gli attributi <literal>uidNumber</literal> e <literal>gidNumber</literal> ad Active Directory e utilizzare il back-end "ad" winbind nei membri del dominio Unix. Se si decide di aggiungere gli attributi <literal>uidNumber</literal> e <literal>gidNumber</literal> ad Active Directory, non utilizzare i numeri nell'intervallo di 3000000.
+     </para>
+    </important>
+    <para>
+     Se gli utenti utilizzeranno il controller del dominio di Active Directory Samba soltanto per scopi di autenticazione e non per la memorizzazione dei dati o per eseguire il login, è possibile utilizzare il back-end "rid" winbind. Ciò consente di calcolare gli ID utente e gruppo dal RID Windows*. Se si utilizza la stessa sezione <literal>[global]</literal> di <filename>smb.conf</filename> in ogni membro del dominio Unix, si otterranno gli stessi ID. Se si utilizza il back-end "rid", non è necessario aggiungere nulla ad Active Directory e gli attributi RFC2307 verranno ignorati. Se si utilizza il back-end "rid", impostare i parametri <option>template shell</option> e <option>template homedir</option> in <filename>smb.conf</filename>. Queste impostazioni sono globali e tutti gli utenti ottengono la stessa shell di login e lo stesso percorso della home directory Unix (a differenza degli attributi RFC2307, in cui è possibile impostare shell e percorsi alla home directory Unix individuali).
+    </para>
+    <para>
+     È disponibile un'altra modalità di configurazione di Samba, relativa allo scenario in cui è necessario che gli utenti e i gruppi abbiano lo stesso ID in generale, ma che soltanto gli utenti dispongano della stessa shell di login e utilizzino lo stesso percorso della home directory Unix. In questo caso vengono utilizzati il back-end "ad" winbind e le righe modello in <filename>smb.conf</filename>. In questo modo, è necessario soltanto aggiungere gli attributi <literal>uidNumber</literal> e <literal>gidNumber</literal> ad Active Directory.
+    </para>
+    <tip>
+     <title>ulteriori informazioni sui back-end per la mappatura degli ID</title>
+     <para>
+      Altri dettagli e sui back-end di mappatura degli ID sono disponibili nella relativa documentazione: <command>man 8 idmap_ad</command>, <command>man 8 idmap_rid</command> e <command>man 8 idmap_autorid</command>.
+     </para>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>Impostazione degli intervalli di ID utente e gruppo</title>
+    <para>
+     Dopo aver individuato il back-end winbind da utilizzare, è necessario specificare gli intervalli da applicare con l'opzione <option>idmap config</option> in <filename>smb.conf</filename>. Per default, su un membro del dominio Unix, sono presenti più blocchi di utenti e gruppi:
+    </para>
+    <table>
+     <title>Blocchi ID utente e gruppo di default</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+     <tgroup cols="2">
+      <thead>
+       <row>
+        <entry>ID</entry>
+        <entry>Intervallo</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>0-999</entry>
+        <entry>Utenti e gruppi di sistema locali.</entry>
+       </row>
+       <row>
+        <entry>A partire da 1000</entry>
+        <entry>Utenti e gruppi Unix locali.</entry>
+       </row>
+       <row>
+        <entry>A partire da 10000</entry>
+        <entry>Utenti e gruppi DOMAIN.</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+    <para>
+     Come è possibile vedere dagli intervalli riportati sopra, è consigliabile non far iniziare gli intervalli "*" o "DOMAIN" da un valore inferiore a 999, poiché potrebbero interferire con gli utenti e i gruppi di sistema locali. Dal momento che è consigliabile inoltre lasciare uno spazio per gli utenti e i gruppi Unix locali, un buon compromesso è far iniziare gli intervalli <option>idmap config</option> da 3000.
+    </para>
+    <para>
+     È necessario stabilire un valore potenziale relativo alla crescita di "DOMAIN" e se si intendono creare domini attendibili. Quindi, è possibile impostare gli intervalli <option>idmap config</option> come segue:
+    </para>
+    <table>
+     <title>Intervalli ID</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+     <tgroup cols="2">
+      <thead>
+       <row>
+        <entry>Dominio</entry>
+        <entry>Intervallo</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>*</entry>
+        <entry>3000-7999</entry>
+       </row>
+       <row>
+        <entry>DOMAIN</entry>
+        <entry>10000-999999</entry>
+       </row>
+       <row>
+        <entry>TRUSTED</entry>
+        <entry>1000000-9999999</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+   </sect3>
+   <sect3>
+    <title>Mappatura dell'account dell'amministratore del dominio all'utente <systemitem class="username">root</systemitem> locale</title>
+    <para>
+     Samba consente di mappare gli account di dominio a un account locale. Utilizzare questa funzione per eseguire operazioni di file sul file system del membro del domino come utente diverso dall'account che ha richiesto l'operazione sul client.
+    </para>
+    <tip>
+     <title>mappatura dell'amministratore del dominio (facoltativo)</title>
+     <para>
+      La mappatura dell'amministratore del dominio all'account <systemitem class="username">root</systemitem> locale è facoltativa. Configurarla solo se l'amministratore del dominio deve poter eseguire operazioni di file sul membro del dominio tramite le autorizzazioni <systemitem class="username">root</systemitem>. Tenere presente che la mappatura dell'amministratore all'account <systemitem class="username">root</systemitem> non consente di eseguire il login come "Amministratore" ai membri del dominio Unix.
+     </para>
+    </tip>
+    <para>
+     Per mappare l'amministratore del dominio all'account <systemitem class="username">root</systemitem> locale, seguire la procedura indicata di seguito:
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Aggiungere il parametro seguente alla sezione <literal>[global]</literal> del file <filename>smb.conf</filename>:
+      </para>
+<screen>
+username map = /etc/samba/user.map
+</screen>
+     </step>
+     <step>
+      <para>
+       Creare il file <filename>/etc/samba/user.map</filename> con il contenuto seguente:
+      </para>
+<screen>
+!root = <replaceable>DOMAIN</replaceable>\Administrator
+</screen>
+     </step>
+    </procedure>
+    <important>
+     <para>
+      Se si utilizza il back-end di mappatura ID "ad", non impostare l'attributo <option>uidNumber</option> per l'account dell'amministratore del dominio. Se tale attributo è impostato per l'account, il valore sostituisce l'UID "0" locale dell'utente <systemitem class="username">root</systemitem> e la mappatura non riesce.
+     </para>
+    </important>
+    <para>
+     Per ulteriori dettagli, vedere il parametro <option>username map</option> nella documentazione <filename>smb.conf</filename> (<command>man 5 smb.conf</command>).
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-joining">
+   <title>Unione al dominio Active Directory</title>
+   <para>
+    Per unire l'host a un'Active Directory, eseguire:
+   </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>net ads join -U administrator
+Enter administrator's password: <replaceable>PASSWORD</replaceable>
+Using short domain name -- <replaceable>DOMAIN</replaceable>
+Joined <replaceable>EXAMPLE-HOST</replaceable> to dns domain <replaceable>'DOMAIN</replaceable>.example.com'
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-nss">
+   <title>Configurazione del Name Service Switch</title>
+   <para>
+    Per rendere gli utenti e i gruppi del domino disponibili sul sistema locale, è necessario abilitare la libreria Name Service Switch (NSS). Aggiungere la voce <option>winbind</option> ai database seguenti nel file <filename>/etc/nsswitch.conf</filename>:
+   </para>
+<screen>
+passwd: files winbind
+group:  files winbind
+</screen>
+   <important>
+    <title>aspetti da considerare</title>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Mantenere la voce <option>files</option> come prima origine di entrambi i database. In questo modo, NSS cercherà gli utenti e i gruppi del dominio nei file <filename>/etc/passwd</filename> e <filename>/etc/group</filename> prima di interrogare il servizio <systemitem class="daemon">winbind</systemitem>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Non aggiungere la voce <option>winbind</option> al database <literal>shadow</literal> di NSS, poiché potrebbe causare un errore dell'utility <command>wbinfo</command>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Non utilizzare gli stessi nomi utente nel file <filename>/etc/passwd</filename> locale e nel dominio.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-services">
+   <title>Avvio dei servizi</title>
+   <para>
+    Per ottenere un membro del dominio Unix completamente funzionante, è necessario abilitare e avviare tre servizi: <systemitem class="daemon">smbd</systemitem>, <systemitem class="daemon">nmbd</systemitem> e <systemitem class="daemon">winbindd</systemitem>. Procedere con i comandi seguenti:
+   </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl enable smbd.service &amp;&amp; systemctl start smbd.service
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl enable nmbd.service &amp;&amp; systemctl start nmbd.service
+<prompt>cephadm@smb &gt; </prompt>sudo systemctl enable winbindd.service &amp;&amp; systemctl start winbindd.service
+</screen>
+   <tip>
+    <title><systemitem class="daemon">nmbd</systemitem> facoltativo</title>
+    <para>
+     Se la funzione di esplorazione di rete non è necessaria, non occorre abilitare e avviare il servizio <systemitem class="daemon">nmbd</systemitem> in un membro del dominio Unix.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-testing">
+   <title>Test della connettività <systemitem class="daemon">winbindd</systemitem></title>
+   <sect3>
+    <title>Invio di un ping <systemitem class="daemon">winbindd</systemitem></title>
+    <para>
+     Per verificare se il servizio <systemitem class="daemon">winbindd</systemitem> è in grado di eseguire la connessione ai controller del dominio (DC) Active Directory o a un controller di dominio primario (PDC), immettere:
+    </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>wbinfo --ping-dc
+checking the NETLOGON for domain[<replaceable>DOMAIN</replaceable>] dc connection to "DC.DOMAIN.EXAMPLE.COM" succeeded
+</screen>
+    <para>
+     Se il comando precedente non riesce, verificare che il servizio <systemitem class="daemon">winbindd</systemitem> sia in esecuzione e che il file <filename>smb.conf</filename> sia configurato correttamente.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Ricerca di utenti e gruppi del dominio</title>
+    <para>
+     Tramite la libreria <systemitem>libnss_winbind</systemitem> è possibile effettuare una ricerca degli utenti e dei gruppi del dominio. Ad esempio, per cercare l'utente del domino "DOMAIN\demo01":
+    </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>getent passwd DOMAIN\\demo01
+DOMAIN\demo01:*:10000:10000:demo01:/home/demo01:/bin/bash
+</screen>
+    <para>
+     Per cercare il gruppo del domino "Domain Users":
+    </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>getent group "DOMAIN\\Domain Users"
+DOMAIN\domain users:x:10000:
+</screen>
+   </sect3>
+   <sect3>
+    <title>Assegnazione di autorizzazioni di file a utenti e gruppi del dominio</title>
+    <para>
+     Tramite la libreria NSS, è possibile utilizzare i gruppi e gli account utente del dominio nei comandi. Ad esempio, per impostare il proprietario di un file sull'utente del dominio "demo01" e il gruppo sul gruppo del dominio "Domain Users", immettere:
+    </para>
+<screen>
+<prompt>cephadm@smb &gt; </prompt>chown "DOMAIN\\demo01:DOMAIN\\domain users" file.txt
+</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

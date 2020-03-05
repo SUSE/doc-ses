@@ -1,0 +1,884 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tips.xml" version="5.0" xml:id="storage-tips">
+ <title>Conseils et astuces</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>oui</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ce chapitre fournit des informations pour vous aider à améliorer les performances de votre grappe Ceph et il fournit des conseils sur la configuration de la grappe.
+ </para>
+ <sect1 xml:id="tips-orphaned-partitions">
+  <title>Identification des partitions orphelines</title>
+
+  <para>
+   Pour identifier les périphériques de journal/WAL/DB potentiellement orphelins, procédez comme suit :
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Choisissez le périphérique qui peut contenir des partitions orphelines et enregistrez la liste de ses partitions dans un fichier :
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ls /dev/sdd?* &gt; /tmp/partitions
+</screen>
+   </step>
+   <step>
+    <para>
+     Exécutez <command>readlink</command> sur tous les périphériques block.wal, block.db et de journal, et comparez la sortie à la liste de partitions précédemment enregistrée :
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>readlink -f /var/lib/ceph/osd/ceph-*/{block.wal,block.db,journal} \
+ | sort | comm -23 /tmp/partitions -
+</screen>
+    <para>
+     La sortie est la liste des partitions qui ne sont <emphasis>pas</emphasis> utilisées par Ceph.
+    </para>
+   </step>
+   <step>
+    <para>
+     Supprimez les partitions orphelines qui n'appartiennent pas à Ceph à l'aide de votre commande préférée (par exemple <command>fdisk</command>, <command>parted</command> ou <command>sgdisk</command>).
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="tips-scrubbing">
+  <title>Réglage du nettoyage</title>
+
+  <para>
+   Par défaut, Ceph effectue un nettoyage léger quotidien (pour plus de détails, voir <xref linkend="scrubbing"/>) et un nettoyage hebdomadaire approfondi. Le nettoyage léger (<emphasis>Light</emphasis>) examine la taille des objets et les sommes de contrôle pour s'assurer que les groupes de placement stockent les mêmes données d'objet. Le nettoyage approfondi (<emphasis>Deep</emphasis>) compare le contenu d'un objet à celui de ses répliques pour s'assurer que les contenus réels sont identiques. Le coût de la vérification de l'intégrité des données est une charge d'E/S accrue sur la grappe pendant la procédure de nettoyage.
+  </para>
+
+  <para>
+   Les paramètres par défaut permettent aux OSD de Ceph de lancer le nettoyage à des moments inappropriés, par exemple pendant les périodes de charges importantes. Les clients peuvent rencontrer une latence et des performances médiocres lorsque les opérations de nettoyage sont en conflit avec leurs opérations. Ceph fournit plusieurs paramètres de nettoyage qui peuvent limiter le nettoyage aux périodes pendant lesquelles les charges sont plus faibles ou pendant les heures creuses.
+  </para>
+
+  <para>
+   Si la grappe subit de fortes charges pendant la journée et de faibles charges tard dans la nuit, envisagez de programmer le nettoyage uniquement pendant la nuit, par exemple de 23 h à 6 h :
+  </para>
+
+<screen>
+[osd]
+osd_scrub_begin_hour = 23
+osd_scrub_end_hour = 6
+</screen>
+
+  <para>
+   Si la restriction horaire n'est pas une méthode efficace pour déterminer une planification de nettoyage, vous pouvez utiliser l'option <option>osd_scrub_load_threshold</option>. La valeur par défaut est 0,5, mais elle peut être modifiée pour les conditions de faible charge :
+  </para>
+
+<screen>
+[osd]
+osd_scrub_load_threshold = 0.25
+</screen>
+ </sect1>
+ <sect1 xml:id="tips-stopping-osd-without-rebalancing">
+  <title>Arrêt des OSD sans rééquilibrage</title>
+
+  <para>
+   Vous devrez peut-être arrêter périodiquement les OSD pour des travaux de maintenance. Si vous ne souhaitez pas que CRUSH rééquilibre automatiquement la grappe afin d'éviter d'énormes transferts de données, définissez-la sur <literal>noout</literal> préalablement :
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd set noout
+</screen>
+
+  <para>
+   Lorsque la grappe est définie sur <literal>noout</literal>, vous pouvez commencer à arrêter les OSD dans le domaine en échec nécessitant un travail de maintenance :
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl stop ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Pour plus d'informations, reportez-vous à la <xref linkend="ceph-operating-services-individual"/>.
+  </para>
+
+  <para>
+   Une fois la maintenance terminée, redémarrez les OSD :
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl start ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Une fois les services OSD démarrés, désinstallez la grappe de <literal>noout</literal> :
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd unset noout
+</screen>
+ </sect1>
+ <sect1 xml:id="Cluster-Time-Setting">
+  <title>Synchronisation horaire des noeuds</title>
+
+  <para>
+   Ceph nécessite une synchronisation horaire précise entre tous les noeuds.
+  </para>
+
+  <para>
+   Nous recommandons de synchroniser tous les noeuds de grappe Ceph avec au moins trois sources horaires fiables situées sur le réseau interne. Les sources horaires internes peuvent pointer vers un serveur horaire public ou avoir leur propre source horaire.
+  </para>
+
+  <important>
+   <title>serveurs horaires publics</title>
+   <para>
+    Ne synchronisez pas tous les noeuds de grappe Ceph directement avec des serveurs horaires publics distants. Avec une telle configuration, chaque noeud de la grappe a son propre daemon NTP qui communique continuellement sur Internet avec un ensemble de trois ou quatre serveurs horaires susceptibles de fournir des heures légèrement différentes. Cette solution introduit une grande variabilité de latence qui rend difficile, voire impossible, le maintien de l'écart des horloges à moins de 0,05 seconde (ce qui est requis par les moniteurs Ceph).
+   </para>
+  </important>
+
+  <para>
+   Pour plus de détails sur la configuration du serveur NTP, reportez-vous au <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/cha_ntp.html">SUSE Linux Enterprise Server Administration Guide</link> (Guide d'administration de SUSE Linux Enterprise Server).
+  </para>
+
+  <para>
+   Ensuite, pour régler l'heure sur votre grappe, procédez comme suit :
+  </para>
+
+  <important>
+   <title>réglage de l'heure</title>
+   <para>
+    Il peut arriver que vous deviez reculer l'horloge, par exemple, lors du passage de l'heure d'été à l'heure d'hiver. Il est déconseillé de reculer l'horloge sur une période supérieure à celle de l'arrêt de la grappe. Avancer l'horloge ne pose pas de problème.
+   </para>
+  </important>
+
+  <procedure>
+   <title>Synchronisation horaire sur la grappe</title>
+   <step>
+    <para>
+     Arrêtez tous les clients accédant à la grappe Ceph, en particulier ceux qui utilisent iSCSI.
+    </para>
+   </step>
+   <step>
+    <para>
+     Arrêtez votre grappe Ceph. Sur chaque noeud, exécutez :
+    </para>
+<screen><prompt>root # </prompt>systemctl stop ceph.target</screen>
+    <note>
+     <para>
+      Si vous utilisez Ceph et SUSE OpenStack Cloud, arrêtez également celui-ci.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Vérifiez que votre serveur NTP est correctement configuré : tous les daemons <systemitem class="daemon">chronyd</systemitem> ont leur heure déterminée à partir d'une source ou de plusieurs sources sur le réseau local.
+    </para>
+   </step>
+   <step>
+    <para>
+     Réglez l'heure correcte sur votre serveur NTP.
+    </para>
+   </step>
+   <step>
+    <para>
+     Vérifiez que NTP est en cours d'exécution et fonctionne correctement. Sur tous les noeuds, exécutez :
+    </para>
+<screen><prompt>root # </prompt>systemctl status chronyd.service</screen>
+   </step>
+   <step>
+    <para>
+     Démarrez tous les noeuds de surveillance et vérifiez qu'il n'y a pas de décalage d'horloge :
+    </para>
+<screen><prompt>root # </prompt>systemctl start <replaceable>target</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     Démarrez tous les noeuds OSD.
+    </para>
+   </step>
+   <step>
+    <para>
+     Démarrez les autres services Ceph.
+    </para>
+   </step>
+   <step>
+    <para>
+     Démarrez Cloud SUSE OpenStack si ce produit est installé.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="storage-bp-cluster-mntc-unbalanced">
+  <title>Vérification de l'écriture de données déséquilibrée</title>
+
+  <para>
+   Lorsque les données sont écrites équitablement sur les OSD, la grappe est considérée comme équilibrée. Une <emphasis>pondération</emphasis> est assignée à chaque OSD au sein d'une grappe. La pondération est un nombre relatif qui indique à Ceph la quantité de données à écrire sur l'OSD associé. Plus la pondération est élevée, plus la quantité de données à écrire est importante. Si un OSD a une pondération nulle, aucune donnée n'est écrite dessus. Si la pondération d'un OSD est relativement élevée par rapport aux autres OSD, une grande partie des données est écrite dessus, ce qui déséquilibre la grappe.
+  </para>
+
+  <para>
+   Les grappes déséquilibrées ont des performances médiocres. Dans le cas où un OSD de pondération élevée tombe soudainement en panne, beaucoup de données doivent être déplacées vers d'autres OSD, ce qui ralentit également la grappe.
+  </para>
+
+  <para>
+   Pour éviter cela, vous devez vérifier régulièrement la quantité de données écrites sur les OSD. Si la quantité est comprise entre 30 et 50 % de la capacité d'un groupe d'OSD indiquée par un ensemble de règles donné, vous devez repondérer les OSD. Vérifiez les disques individuels, découvrez lesquels se remplissent plus rapidement que les autres (ou sont généralement plus lents) et diminuez leur pondération en conséquence. Il en va de même pour les OSD sur lesquels la quantité de données écrites est insuffisante : vous pouvez augmenter leur pondération de sorte que Ceph écrive plus de données sur ces OSD. Dans l'exemple suivant, la pondération de l'OSD possédant l'ID 13 passe de 3 à 3,05 :
+  </para>
+
+<screen>$ ceph osd tree | grep osd.13
+ 13  3                   osd.13  up  1
+
+ $ ceph osd crush reweight osd.13 3.05
+ reweighted item id 13 name 'osd.13' to 3.05 in crush map
+
+ $ ceph osd tree | grep osd.13
+ 13  3.05                osd.13  up  1</screen>
+
+  <para/>
+
+  <tip>
+   <title>repondération d'un OSD selon l'utilisation</title>
+   <para>
+    La commande <command>ceph osd reweight-by-utilization</command> <replaceable>seuil</replaceable> automatise le processus de réduction de la pondération des OSD qui sont trop sollicités. Par défaut, la commande réduit les pondérations sur les OSD qui atteignent 120 % de l'utilisation moyenne, mais si vous incluez le seuil, elle utilisera ce pourcentage à la place.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage-tips-ceph-btrfs-subvol">
+  <title>Sous-volume Btrfs pour <filename>/var/lib/ceph</filename> sur les noeuds Ceph Monitor</title>
+
+  <para>
+   Par défaut, SUSE Linux Enterprise est installé sur une partition Btrfs. Les moniteurs Ceph stockent leur état et leur base de données dans le répertoire <filename>/var/lib/ceph</filename>. Pour éviter l'endommagement d'un moniteur Ceph à la suite du rétablissement système d'un précédent instantané, créez un sous-volume Btrfs pour <filename>/var/lib/ceph</filename>. Un sous-volume dédié exclut les données de moniteur des instantanés du sous-volume racine.
+  </para>
+
+  <tip>
+   <para>
+    Créez le sous-volume <filename>/var/lib/ceph</filename> avant d'exécuter la phase 0 de DeepSea étant donné que celle-ci installe les paquetages associés à Ceph et crée le répertoire <filename>/var/lib/ceph</filename>.
+   </para>
+  </tip>
+
+  <para>
+   La phase 3 de DeepSea vérifie alors si <filename>@/var/lib/ceph</filename> est un sous-volume Btrfs et échoue s'il s'agit d'un répertoire normal.
+  </para>
+
+  <sect2 xml:id="btrfs-subvol-requirements">
+   <title>Configuration requise</title>
+   <sect3 xml:id="tips-ceph-btrfs-subvol-new">
+    <title>Nouveaux déploiements</title>
+    <para>
+     Salt et DeepSea doivent être correctement installés et opérationnels.
+    </para>
+   </sect3>
+   <sect3 xml:id="storage-tips-ceph-btrfs-subvol-req-existing">
+    <title>Déploiements existants</title>
+    <para>
+     Si votre grappe est déjà installée, les conditions suivantes doivent être remplies :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Les noeuds sont mis à niveau vers SUSE Enterprise Storage 6 et la grappe est placée sous le contrôle de DeepSea.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       La grappe Ceph est opérationnelle et saine.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Le processus de mise à niveau a synchronisé les modules Salt et DeepSea sur tous les noeuds de minion.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage-tips-ceph-btrfs-subvol-automatic">
+   <title>Étapes requises lors du déploiement d'une nouvelle grappe</title>
+   <sect3 xml:id="var-lib-ceph-stage0">
+    <title>Avant d'exécuter la phase 0 de DeepSea</title>
+    <para>
+     Avant d'exécuter la phase 0 de DeepSea, appliquez les commandes suivantes à chacun des minions Salt qui deviendront des moniteurs Ceph :
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' saltutil.sync_all
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' state.apply ceph.subvolume
+</screen>
+    <para>
+     La commande <command>ceph.subvolume</command> effectue les opérations suivantes :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Elle crée le répertoire <filename>/var/lib/ceph</filename> en tant que sous-volume Btrfs <literal>@/var/lib/ceph</literal>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Elle monte le nouveau sous-volume et met à jour <filename>/etc/fstab</filename> comme il se doit.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>Échec de la validation de la phase 3 de DeepSea</title>
+    <para>
+     Si vous avez oublié d'exécuter les commandes mentionnées à la <xref linkend="var-lib-ceph-stage0"/> avant d'effectuer la phase 0, le sous-répertoire <filename>/var/lib/ceph</filename> existe déjà, ce qui entraîne l'échec de la validation de la phase 3 de DeepSea. Pour le convertir en sous-volume, procédez comme suit :
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Remplacez le répertoire par <filename>/var/lib</filename> :
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib</screen>
+     </step>
+     <step>
+      <para>
+       Sauvegardez le contenu actuel du sous-répertoire <filename>ceph</filename> :
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>sudo mv ceph ceph-</screen>
+     </step>
+     <step>
+      <para>
+       Créez le sous-volume, montez-le et mettez à jour <filename>/etc/fstab</filename> :
+      </para>
+<screen><prompt>root@master # </prompt>salt 'MONITOR_NODES' state.apply ceph.subvolume</screen>
+     </step>
+     <step>
+      <para>
+       Accédez au sous-répertoire de sauvegarde, synchronisez son contenu avec le nouveau sous-volume, puis supprimez-le :
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="btrfs-subvol-upgrades">
+   <title>Étapes requises lors de la mise à niveau de la grappe</title>
+   <para>
+    Sous SUSE Enterprise Storage 5.5, le répertoire <filename>/var</filename> n'est pas sur un sous-volume Btrfs, mais ses sous-dossiers (tels que <filename>/var/log</filename> ou <filename>/var/cache</filename>) sont des sous-volumes Btrfs sous « @ ». La création de sous-volumes <filename>@/var/lib/ceph</filename> nécessite de monter le sous-volume « @ » d'abord (il n'est pas monté par défaut) et de créer le sous-volume <filename>@/var/lib/ceph</filename> sous celui-ci.
+   </para>
+   <para>
+    Voici des exemples de commandes qui illustrent le processus :
+   </para>
+<screen>
+<prompt>root # </prompt>mkdir -p /mnt/btrfs
+<prompt>root # </prompt>mount -o subvol=@ <replaceable>ROOT_DEVICE</replaceable> /mnt/btrfs
+<prompt>root # </prompt>btrfs subvolume create /mnt/btrfs/var/lib/ceph
+<prompt>root # </prompt>umount /mnt/btrfs
+</screen>
+   <para>
+    À ce stade, le sous-volume <filename>@/var/lib/ceph</filename> est créé et vous pouvez continuer comme décrit à la <xref linkend="storage-tips-ceph-btrfs-subvol-automatic"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-manual">
+   <title>Configuration manuelle</title>
+   <para>
+    La configuration automatique du sous-volume Btrfs <filename>@/var/lib/ceph</filename> sur les noeuds Ceph Monitor peut ne pas convenir à tous les scénarios. Vous pouvez migrer votre répertoire <filename>/var/lib/ceph</filename> vers un sous-volume <filename>/var/lib/ceph</filename> en effectuant les étapes suivantes :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Mettez fin aux processus Ceph en cours d'exécution.
+     </para>
+    </step>
+    <step>
+     <para>
+      Démontez les OSD sur le noeud.
+     </para>
+    </step>
+    <step>
+     <para>
+      Accédez au sous-répertoire de sauvegarde, synchronisez son contenu avec le nouveau sous-volume, puis supprimez-le :
+     </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+    </step>
+    <step>
+     <para>
+      Remontez les OSD.
+     </para>
+    </step>
+    <step>
+     <para>
+      Redémarrez les daemons Ceph.
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-moreinfo">
+   <title>Complément d'informations</title>
+   <para>
+    Trouvez des informations plus détaillées sur la configuration manuelle dans le fichier <filename>/srv/salt/ceph/subvolume/README.md</filename> sur le noeud Salt Master.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-srv-maint-fds-inc">
+  <title>Augmentation du nombre de descripteurs de fichier</title>
+
+  <para>
+   Pour les daemons OSD, les opérations de lecture/écriture sont essentielles au maintien de l'équilibre de la grappe Ceph. Ils ont souvent besoin que plusieurs fichiers soient ouverts pour lire et écrire en même temps. Au niveau du système d'exploitation, le nombre maximal de fichiers ouverts simultanément est appelé « nombre maximal de descripteurs de fichiers ».
+  </para>
+
+  <para>
+   Pour que les OSD ne manquent pas de descripteurs de fichiers, vous pouvez remplacer la valeur par défaut du système d'exploitation et indiquer la nouvelle valeur dans <filename> /etc/ceph/ceph.conf</filename>, par exemple :
+  </para>
+
+<screen>max_open_files = 131072</screen>
+
+  <para>
+   Après avoir modifié la valeur de <option>max_open_files</option>, vous devez redémarrer le service OSD sur le noeud Ceph correspondant.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-admin-integration">
+  <title>Intégration des logiciels de virtualisation</title>
+
+  <sect2 xml:id="storage-bp-integration-kvm">
+   <title>Stockage des disques KVM dans une grappe Ceph</title>
+   <para>
+    Vous pouvez créer une image disque pour une machine virtuelle pilotée par KVM, la stocker dans une réserve Ceph, éventuellement convertir le contenu d'une image existante vers cette réserve, puis exécuter la machine virtuelle avec <command>qemu-kvm</command> en utilisant l'image disque stockée dans la grappe. Pour plus d'informations, reportez-vous au <xref linkend="cha-ceph-kvm"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-libvirt">
+   <title>Stockage des disques <systemitem class="library">libvirt</systemitem> dans une grappe Ceph</title>
+   <para>
+    Comme pour KVM (voir <xref linkend="storage-bp-integration-kvm"/>), vous pouvez utiliser Ceph afin de stocker des machines virtuelles basées sur <systemitem class="library">libvirt</systemitem>. L'avantage est que vous pouvez exécuter n'importe quelle solution de virtualisation prise en charge par <systemitem class="library">libvirt</systemitem>, telle que KVM, Xen ou LXC. Pour plus d'informations, reportez-vous au <xref linkend="cha-ceph-libvirt"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-xen">
+   <title>Stockage des disques Xen dans une grappe Ceph</title>
+   <para>
+    Une façon d'utiliser Ceph pour le stockage des disques Xen est de s'appuyer sur <systemitem class="library">libvirt</systemitem> comme décrit dans le <xref linkend="cha-ceph-libvirt"/>.
+   </para>
+   <para>
+    Une autre option consiste à faire communiquer Xen directement avec le pilote du périphérique de bloc <systemitem>rbd</systemitem> :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Si vous ne disposez d'aucune image disque préparée pour Xen, créez-en une nouvelle :
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd create myimage --size 8000 --pool mypool</screen>
+    </step>
+    <step>
+     <para>
+      Dressez la liste des images dans la réserve <literal>monpool</literal> afin de vérifier si votre nouvelle image s'y trouve :
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd list mypool</screen>
+    </step>
+    <step>
+     <para>
+      Créez un périphérique de bloc en assignant l'image <literal>myimage</literal> au module du kernel <systemitem>rbd</systemitem> :
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool mypool myimage</screen>
+     <tip>
+      <title>nom d'utilisateur et authentification</title>
+      <para>
+       Pour indiquer un nom d'utilisateur, utilisez <option>--id <replaceable>nom-utilisateur</replaceable></option>. En outre, si vous utilisez l'authentification <systemitem>cephx</systemitem>, vous devez également indiquer un secret. Il peut provenir d'un trousseau de clés ou d'un fichier contenant le secret :
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+      <para>
+       ou
+      </para>
+<screen><systemitem class="username">cephadm</systemitem>rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Dressez la liste de tous les périphériques assignés :
+     </para>
+<screen><command>rbd showmapped</command>
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    </step>
+    <step>
+     <para>
+      Vous pouvez à présent configurer Xen afin d'utiliser ce périphérique en tant que disque d'exécution d'une machine virtuelle. Vous pouvez par exemple ajouter la ligne suivante au fichier de configuration de domaine de type <command>xl</command> :
+     </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-net-firewall">
+  <title>Paramètres de pare-feu pour Ceph</title>
+
+  <warning>
+   <title>échec des phases DeepSea avec le pare-feu</title>
+   <para>
+    Les phases de déploiement de DeepSea échouent si le pare-feu est actif (ou tout simplement configuré). Pour effectuer correctement les phases, vous devez désactiver le pare-feu en exécutant
+   </para>
+<screen>
+<prompt>root # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+   <para>
+    ou définir l'option <option>FAIL_ON_WARNING</option> sur « False » dans le fichier <filename>/srv/pillar/ceph/stack/global.yml</filename> :
+   </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+  </warning>
+
+  <para>
+   Il est recommandé de protéger la communication de la grappe réseau avec SUSE Firewall. Vous pouvez modifier sa configuration en sélectionnant <menuchoice><guimenu>YaST</guimenu><guimenu>Sécurité et utilisateurs</guimenu><guimenu>Pare-feu</guimenu><guimenu>Services autorisés</guimenu></menuchoice>.
+  </para>
+
+  <para>
+   Veuillez trouver ci-après la liste des services Ceph des numéros des ports qui leur sont généralement associés :
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>Ceph Monitor</term>
+    <listitem>
+     <para>
+      Activez le service <guimenu>Ceph MON</guimenu> ou le port 6789 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Ceph OSD ou MDS</term>
+    <listitem>
+     <para>
+      Activez le service <guimenu>Ceph OSD/MDS</guimenu> ou les ports 6800-7300 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Passerelle iSCSI</term>
+    <listitem>
+     <para>
+      Ouvrez le port 3260 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Object Gateway</term>
+    <listitem>
+     <para>
+      Ouvrez le port sur lequel la communication Object Gateway est établie. Il est défini dans le fichier <filename>/etc/ceph.conf</filename> à la ligne commençant par <literal>rgw frontends = </literal>. La valeur par défaut est 80 pour HTTP et 443 pour HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NFS Ganesha</term>
+    <listitem>
+     <para>
+      Par défaut, NFS Ganesha utilise les ports 2049 (service NFS, TCP) et 875 (prise en charge de rquota, TCP). Reportez-vous à la <xref linkend="ganesha-nfsport"/> pour plus d'informations sur la modification des ports par défaut de Ganesha NFS.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Services basés sur Apache, tels que SMT ou SUSE Manager</term>
+    <listitem>
+     <para>
+      Ouvrez les ports 80 pour HTTP et 443 pour HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>SSH</term>
+    <listitem>
+     <para>
+      Ouvrez le port 22 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NTP</term>
+    <listitem>
+     <para>
+      Ouvrez le port 123 (UDP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Salt</term>
+    <listitem>
+     <para>
+      Ouvrez les ports 4505 et 4506 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Grafana</term>
+    <listitem>
+     <para>
+      Ouvrez le port 3000 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Prometheus</term>
+    <listitem>
+     <para>
+      Ouvrez le port 9100 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="storage-bp-network-test">
+  <title>Test des performances du réseau</title>
+
+  <para>
+   Pour tester les performances du réseau, l'exécuteur <literal>net</literal> de DeepSea offre les commandes suivantes :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Un ping simple à tous les noeuds :
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.ping
+Succeeded: 9 addresses from 9 minions average rtt 1.35 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Un ping jumbo à tous les noeuds :
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.jumbo_ping
+Succeeded: 9 addresses from 9 minions average rtt 2.13 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Un test de bande passante :
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.iperf
+Fastest 2 hosts:
+    |_
+      - 192.168.58.106
+      - 2981 Mbits/sec
+    |_
+      - 192.168.58.107
+      - 2967 Mbits/sec
+Slowest 2 hosts:
+    |_
+      - 192.168.58.102
+      - 2857 Mbits/sec
+    |_
+      - 192.168.58.103
+      - 2842 Mbits/sec</screen>
+    <tip>
+     <title>arrêt manuel des processus « iperf3 »</title>
+     <para>
+      Lors de l'exécution d'un test à l'aide de l'exécuteur <command>net.iperf</command>, les processus de serveur « iperf3 » qui sont démarrés ne s'arrêtent pas automatiquement lorsqu'un test est terminé. Pour arrêter les processus, utilisez l'exécuteur suivant :
+     </para>
+<screen><prompt>root@master # </prompt>salt '*' multi.kill_iperf_cmd</screen>
+    </tip>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="bp-flash-led-lights">
+  <title>Localisation des disques physiques à l'aide de témoins LED</title>
+
+  <para>
+   Cette section décrit l'utilisation de <systemitem>libstoragemgmt</systemitem> et/ou d'outils tiers pour ajuster les témoins LED sur les disques physiques. Cette fonctionnalité peut ne pas être disponible pour toutes les plates-formes matérielles.
+  </para>
+
+  <para>
+   La mise en correspondance d'un disque OSD avec un disque physique peut être difficile, en particulier sur les noeuds avec une forte densité de disques. Certains environnements matériels incluent des témoins LED qui peuvent être ajustés via un logiciel pour clignoter ou s'illuminer avec une couleur différente à des fins d'identification. SUSE Enterprise Storage offre un support pour cette fonctionnalité par le biais de Salt, <systemitem>libstoragemgmt</systemitem> et d'outils tiers spécifiques au matériel utilisé. La configuration de cette fonctionnalité est définie dans l'interface Pillar de Salt <filename>/srv/pillar/ceph/disk_led.sls</filename> :
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+# This is the default configuration for the storage enclosure LED blinking.
+# The placeholder {device_file} will be replaced with the device file of
+# the disk when the command is executed.
+#
+# Have a look into the /srv/pillar/ceph/README file to find out how to
+# customize this configuration per minion/host.
+
+disk_led:
+  cmd:
+    ident:
+      'on': lsmcli local-disk-ident-led-on --path '{device_file}'
+      'off': lsmcli local-disk-ident-led-off --path '{device_file}'
+    fault:
+      'on': lsmcli local-disk-fault-led-on --path '{device_file}'
+      'off': lsmcli local-disk-fault-led-off --path '{device_file}'</screen>
+
+  <para>
+   La configuration par défaut de <filename>disk_led.sls</filename> offre une prise en charge LED des disques via la couche <systemitem>libstoragemgmt</systemitem>. Cependant, <systemitem>libstoragemgmt</systemitem> assure ce support par le biais d'un plug-in et d'outils tiers spécifiques au matériel. À moins que le plug-in <systemitem>libstoragemgmt</systemitem> et les outils tiers appropriés au matériel soient installés, <systemitem>libstoragemgmt</systemitem> ne sera pas en mesure d'ajuster les LED.
+  </para>
+
+  <para>
+   Que ce soit avec ou sans <systemitem>libstoragemgmt</systemitem>, des outils tiers peuvent être nécessaires pour ajuster les témoins LED. Ces outils tiers sont disponibles auprès de divers fournisseurs de matériel. Voici quelques-uns des fournisseurs et outils courants :
+  </para>
+
+  <table>
+   <title>Outils de stockage tiers</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>Fournisseur/Contrôleur de disque</entry>
+      <entry>Outil</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>HPE SmartArray</entry>
+      <entry>hpssacli</entry>
+     </row>
+     <row>
+      <entry>LSI MegaRAID</entry>
+      <entry>storcli</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   SUSE Linux Enterprise Server fournit également le paquetage <package>ledmon</package> et l'outil <command>ledctl</command>. Cet outil peut également fonctionner pour les environnements matériels utilisant des boîtiers de stockage Intel. Une syntaxe appropriée lors de l'utilisation de cet outil se présente comme suit :
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'
+    fault:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'</screen>
+
+  <para>
+   Si vous êtes sur du matériel pris en charge, avec tous les outils tiers requis, les LED peuvent être activées ou désactivées à l'aide de la syntaxe de commande suivante à partir du noeud Salt Master :
+  </para>
+
+<screen>
+<prompt>root # </prompt>salt-run disk_led.device <replaceable>NODE</replaceable> <replaceable>DISK</replaceable> <replaceable>fault|ident</replaceable> <replaceable>on|off</replaceable>
+</screen>
+
+  <para>
+   Par exemple, pour activer ou désactiver l'identification LED ou les témoins de défaillance sur <filename>/dev/sdd</filename> sur le noeud OSD <filename>srv16.ceph</filename>, exécutez ceci :
+  </para>
+
+<screen><prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident off
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault off</screen>
+
+  <note>
+   <title>dénomination de périphérique</title>
+   <para>
+    Le nom de périphérique utilisé dans la commande <command>salt-run</command> doit correspondre au nom reconnu par Salt. La commande suivante peut être utilisée pour afficher ces noms :
+   </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>minion_name</replaceable>' grains.get disks
+</screen>
+  </note>
+
+  <para>
+   Dans de nombreux environnements, la configuration <filename>/srv/pillar/ceph/disk_led.sls</filename> nécessite des modifications afin d'ajuster les témoins LED à des fins matérielles spécifiques. Des modifications simples peuvent être effectuées en remplaçant <command>lsmcli</command> par un autre outil ou en ajustant les paramètres de la ligne de commande. Pour des changements plus complexes, appelez un script externe à la place de la commande <filename>lsmcli</filename>. Lors de la modification de <filename>/srv/pillar/ceph/disk_led.sls</filename>, procédez comme suit :
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Effectuez les modifications requises pour <filename>/srv/pillar/ceph/disk_led.sls</filename> sur le noeud Salt Master.
+    </para>
+   </step>
+   <step>
+    <para>
+     Vérifiez que les modifications sont correctement reflétées dans les données Pillar :
+    </para>
+<screen><prompt>root # </prompt>salt '<replaceable>SALT MASTER</replaceable>*' pillar.get disk_led</screen>
+   </step>
+   <step>
+    <para>
+     Rafraîchissez les données Pillar sur tous les noeuds en exécutant la commande suivante :
+    </para>
+<screen><prompt>root # </prompt>salt '*' saltutil.pillar_refresh</screen>
+   </step>
+  </procedure>
+
+  <para>
+   Il est possible d'utiliser un script externe pour employer directement des outils tiers afin d'ajuster les témoins LED. Les exemples suivants montrent comment ajuster <filename>/srv/pillar/ceph/disk_led.sls</filename> pour prendre en charge un script externe et illustrent deux scripts pour les environnements HP et LSI.
+  </para>
+
+  <para>
+   <filename>/srv/pillar/ceph/disk_led.sls</filename> modifié appelant un script externe :
+  </para>
+
+<screen><prompt>root # </prompt>cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off
+    fault:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off</screen>
+
+  <para>
+   Exemple de script pour faire clignoter des témoins LED sur du matériel HP à l'aide des utilitaires <systemitem>hpssacli</systemitem> :
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_hp.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+FOUND=0
+MAX_CTRLS=10
+MAX_DISKS=50
+
+for i in $(seq 0 $MAX_CTRLS); do
+  # Search for valid controllers
+  if hpssacli ctrl slot=$i show summary &gt;/dev/null; then
+    # Search all disks on the current controller
+    for j in $(seq 0 $MAX_DISKS); do
+      if hpssacli ctrl slot=$i ld $j show | grep -q $1; then
+        FOUND=1
+        echo "Found $1 on ctrl=$i, ld=$j. Turning LED $2."
+        hpssacli ctrl slot=$i ld $j modify led=$2
+        break;
+      fi
+    done
+    [[ "$FOUND" = "1" ]] &amp;&amp; break
+  fi
+done</screen>
+
+  <para>
+   Exemple de script pour faire clignoter des témoins LED sur du matériel LSI à l'aide des utilitaires <systemitem>storcli</systemitem> :
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_lsi.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+[[ "$2" = "on" ]] &amp;&amp; ACTION="start" || ACTION="stop"
+
+# Determine serial number for the disk
+SERIAL=$(lshw -class disk | grep -A2 $1 | grep serial | awk '{print $NF}')
+if [ ! -z "$SERIAL" ]; then
+  # Search for disk serial number across all controllers and enclosures
+  DEVICE=$(/opt/MegaRAID/storcli/storcli64 /call/eall/sall show all | grep -B6 $SERIAL | grep Drive | awk '{print $2}')
+  if [ ! -z "$DEVICE" ]; then
+    echo "Found $1 on device $DEVICE. Turning LED $2."
+    /opt/MegaRAID/storcli/storcli64 $DEVICE $ACTION locate
+  else
+    echo "Device not found!"
+    exit -1
+  fi
+else
+  echo "Disk serial number not found!"
+  exit -1
+fi</screen>
+ </sect1>
+</chapter>

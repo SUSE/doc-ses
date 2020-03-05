@@ -1,0 +1,969 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_cephfs.xml" version="5.0" xml:id="cha-ceph-as-cephfs">
+
+ <title>Installation des CephFS</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>Bearbeiten</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>Ja</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Das Ceph-Dateisystem (CephFS) ist ein POSIX-fähiges Dateisystem, das seine Daten in einem Ceph Storage Cluster speichert. CephFS verwendet dasselbe Cluster-System wie Ceph-Blockgeräte, Ceph-Objektspeicher mit seinen S3 und Swift APIs, oder systemeigene Bindungen (<systemitem>librados</systemitem>).
+ </para>
+ <para>
+  Zur Verwendung eines CephFS muss ein Ceph Storage Cluster und mindestens ein <emphasis>Ceph Metadata Server</emphasis> ausgeführt werden.
+ </para>
+ <sect1 xml:id="ceph-cephfs-limitations">
+  <title>Unterstützte CephFS-Szenarios und Anleitungen</title>
+
+  <para>
+   Mit SUSE Enterprise Storage 6 führt SUSE den offiziellen Support für viele Szenarios ein, in denen die dezentrale Scale-Out-Komponente CephFS verwendet wird. Dieser Eintrag beschreibt klare Grenzen und stellt Anleitungen für die vorgeschlagenen Anwendungsfälle zur Verfügung.
+  </para>
+
+  <para>
+   Eine unterstützte CephFS-Bereitstellung muss die folgenden Anforderungen erfüllen:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Mindestens einen Metadatenserver. SUSE empfiehlt die Bereitstellung von mehreren Nodes mit der MDS-Rolle. Nur einer davon ist <literal>aktiv</literal>, die anderen sind <literal>passiv</literal>. Denken Sie daran, alle MON Nodes im Kommando <command>mount</command> anzugeben, wenn Sie das CephFS von einem Client aus einhängen.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Clients arbeiten mit SUSE Linux Enterprise Server 12 SP3 (oder höher) bzw. SUSE Linux Enterprise Server 15 (oder höher) und dem Kernel-Modultreiber <literal>cephfs</literal>. Das FUSE-Modul wird nicht unterstützt.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     CephFS-Kontingente werden in SUSE Enterprise Storage 6 unterstützt und können für beliebige Unterverzeichnisse im Ceph-Dateisystem festgelegt werden. Das Kontingent beschränkt entweder die Anzahl der <literal>Byte</literal> oder die Anzahl der <literal>Dateien</literal>, die unterhalb des angegebenen Punkts in der Verzeichnishierarchie gespeichert werden können. Weitere Informationen finden Sie in <xref linkend="cephfs-quotas"/>. 
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     CephFS unterstützt Änderungen des Datei-Layouts wie unter <xref linkend="cephfs-layouts"/> dokumentiert. Weil das Dateisystem jedoch von einem beliebigen Client aus eingehängt wird, werden neue Daten-Pools möglicherweise nicht zu einem bestehenden CephFS-Dateisystem hinzugefügt (<literal>ceph mds add_data_pool</literal>). Sie dürfen nur hinzugefügt werden, wenn das Dateisystem ausgehängt ist.
+    </para>
+   </listitem>
+   <listitem>
+     <para>
+       Mindestens einen Metadatenserver. SUSE empfiehlt die Bereitstellung von mehreren Nodes mit der MDS-Rolle. Zusätzliche MDS Daemons werden standardmäßig als <literal>Standby</literal>-Daemons eingerichtet und fungieren als Reserve für die aktiven MDS. Auch mehrere aktive MDS Daemons werden unterstützt (siehe <xref linkend="ceph-cephfs-multimds"/>).
+     </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph-cephfs-mds">
+  <title>Ceph Metadata Server</title>
+
+  <para>
+   Der Ceph Metadata Server (MDS) speichert Metadaten für das CephFS. Ceph-Blockgeräte und Ceph-Objektspeicher verwenden <emphasis>keinen</emphasis> MDS. MDSs ermöglichen es Benutzern eines POSIX-Dateisystems, einfache Kommandos auszuführen wie <command>ls</command> oder <command>find</command>, ohne dass der Ceph Storage Cluster übermäßig belastet wird.
+  </para>
+
+  <sect2 xml:id="ceph-cephfs-mdf-add">
+   <title>Hinzufügen eines Metadatenservers</title>
+   <para>
+    Einen MDS stellen Sie im Zug der ersten Cluster-Bereitstellung bereit. Eine Beschreibung hierzu finden Sie in <xref linkend="ceph-install-stack"/>. Alternativ können Sie ihn auch zu einem bereits bereitgestellten Cluster hinzufügen wie in <xref linkend="salt-adding-nodes"/> beschrieben.
+   </para>
+   <para>
+    Nach der Bereitstellung des MDS müssen Sie den <literal>Ceph OSD/MDS</literal>-Service in den Firewall-Einstellungen des Servers zulassen, auf dem der MDS bereitgestellt ist: Starten Sie <literal>yast</literal>, navigieren Sie zu<menuchoice> <guimenu>Security and Users (Sicherheit und Benutzer)</guimenu> <guimenu>Firewall</guimenu> <guimenu>Allowed Services (Zugelassene Services)</guimenu> </menuchoice> und wählen Sie im Dropdown-Menü <guimenu>Service to Allow (Zuzulassender Service)</guimenu> die Option <guimenu>Ceph OSD/MDS</guimenu> aus. Wenn im Ceph MDS Node kein umfassender Datenverkehr zugelassen ist, tritt beim Einhängen eines Dateisystems ein Fehler auf, auch wenn andere Operationen ordnungsgemäß funktionieren.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-mds-config">
+   <title>Konfigurieren eines Metadata Server</title>
+   <para>
+    Sie können das Verhalten des MDS durch Einfügen relevanter Optionen in der <filename>ceph.conf</filename>-Konfigurationsdatei weiter anpassen.
+   </para>
+   <variablelist>
+    <title>Metadatenserver-Einstellungen</title>
+    <varlistentry>
+     <term>mon force standby active</term>
+     <listitem>
+      <para>
+       Mit „true“ (Standard) erzwingen die Monitors, dass Standby Replay aktiv ist. Festlegung im Abschnitt <literal>[mon]</literal> oder <literal>[global]</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>mds cache memory limit</option></term>
+     <listitem>
+      <para>
+       Das Softlimit des Arbeitsspeichers (in Byte), das der MDS für seinen Cache erzwingt. Administratoren sollten dies anstelle der alten Einstellung <option>mds cache size</option> verwenden. Der Standardwert ist 1 GB.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>mds cache reservation</option></term>
+     <listitem>
+      <para>
+       Die Cache-Reservierung (Arbeitsspeicher oder Inode) für den MDS Cache, die beibehalten werden soll. Wenn der MDS seinen reservierten Cache nahezu auslastet, stellt er den Client-Zustand vorübergehend wieder her, bis sich die Größe des Cache so weit verringert hat, dass die Reservierung wiederhergestellt wird. Der Standardwert ist 0,05.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds cache size</term>
+     <listitem>
+      <para>
+       Anzahl der im Cache zu speichernden Inodes. Der Wert 0 (Standard) bedeutet eine unbegrenzte Anzahl. Es wird empfohlen, die vom MDS Cache genutzte Speichermenge mit <option>mds cache memory limit</option> einzuschränken.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds cache mid</term>
+     <listitem>
+      <para>
+       Einfügepunkt für neue Elemente im Cache LRU (von oben). Der Standardwert ist 0.7.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dir commit ratio</term>
+     <listitem>
+      <para>
+       Anteil des Verzeichnisses mit kürzlich bearbeiteten („dirty“) Daten, bevor Ceph eine vollständige Aktualisierung anstelle einer Teilaktualisierung durchführt. Der Standardwert ist 0,5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dir max commit size</term>
+     <listitem>
+      <para>
+       Maximale Größe einer Verzeichnisaktualisierung, bevor Ceph sie in kleinere Transaktionen aufteilt. Der Standardwert ist 90 MB.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds decay halflife</term>
+     <listitem>
+      <para>
+       Halbwertszeit der MDS Cache-Temperatur. Der Standardwert ist 5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds beacon interval</term>
+     <listitem>
+      <para>
+       Zeitabschnitt (in Sekunden), in dem Beacon-Meldungen an den Monitor gesendet werden. Der Standardwert ist 4.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds beacon grace</term>
+     <listitem>
+      <para>
+       Zeitraum ohne Beacons, bevor Ceph einen MDS als langsam kennzeichnet und ggf. ersetzt. Der Standardwert ist 15.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds blacklist interval</term>
+     <listitem>
+      <para>
+       Blacklist-Dauer für ausgefallene MDSs in der OSD-Karte. Diese Einstellung steuert, wie lange ausgefallene MDS Daemons in der Blacklist der OSD-Karte verbleiben. Für den Fall, dass der Administrator ein Element manuell in die Blacklist aufnimmt, bleibt die Blacklist-Dauer unverändert. Das Kommando <command>ceph osd blacklist add</command> greift beispielsweise weiterhin auf die standardmäßige Blacklist-Zeit zurück. Der Standardwert ist 24 * 60.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds reconnect timeout</term>
+     <listitem>
+      <para>
+       Zeitraum (in Sekunden), den die Clients beim MDS-Neustart auf die Wiederherstellung der Verbindung warten. Der Standardwert ist 45.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds tick interval</term>
+     <listitem>
+      <para>
+       Zeitabstand, in dem der MDS interne periodische Aufgaben durchführt. Der Standardwert ist 5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dirstat min interval</term>
+     <listitem>
+      <para>
+       Mindestzeitabstand (in Sekunden), mit dem die Übertragung rekursiver Statistiken nach oben in der Baumstruktur unterbunden werden soll. Der Standardwert ist 1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds scatter nudge interval</term>
+     <listitem>
+      <para>
+       Zeitraum, in dem dirstat-Änderungen nach oben übertragen werden. Der Standardwert ist 5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds client prealloc inos</term>
+     <listitem>
+      <para>
+       Anzahl der Inode-Nummern, die pro Client-Sitzung vorab zugewiesen werden sollen. Der Standardwert ist 1000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds early reply</term>
+     <listitem>
+      <para>
+       Angabe, ob das MDS den Clients gestatten soll, die Anforderungsergebnisse abzurufen, bevor sie in das Journal aufgenommen wurden. Die Standardeinstellung ist „true“.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds use tmap</term>
+     <listitem>
+      <para>
+       Angabe, dass eine triviale Karte für Verzeichnisaktualisierungen verwendet werden soll. Die Standardeinstellung ist „true“.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds default dir hash</term>
+     <listitem>
+      <para>
+       Funktion für das Hashing von Dateien über Verzeichnisfragmente hinweg. Der Standardwert ist 2 (also „rjenkins“).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log skip corrupt events</term>
+     <listitem>
+      <para>
+       Angabe, ob das MDS versuchen soll, beschädigte Journal-Ereignisse bei der Wiedergabe des Journals zu überspringen. Die Standardeinstellung ist „false“.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max events</term>
+     <listitem>
+      <para>
+       Maximale Anzahl der Ereignisse im Journal, bevor eine Kürzung eingeleitet wird. Mit dem Wert -1 (Standard) werden die Grenzwerte deaktiviert.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max segments</term>
+     <listitem>
+      <para>
+       Manchmal Anzahl der Segmente (Objekte) im Journal, bevor eine Kürzung eingeleitet wird. Mit dem Wert -1 werden die Grenzwerte deaktiviert. Der Standardwert ist 30.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max expiring</term>
+     <listitem>
+      <para>
+       Maximale Anzahl der Segmente, die parallel ablaufen sollen. Der Standardwert ist 20.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log eopen size</term>
+     <listitem>
+      <para>
+       Maximale Anzahl von Inoden in einem EOpen-Ereignis. Der Standardwert ist 100.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal sample interval</term>
+     <listitem>
+      <para>
+       Zeitabstand für die Ermittlung der Verzeichnistemperatur im Rahmen von Fragmentierungsentscheidungen. Der Standardwert ist 3.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal replicate threshold</term>
+     <listitem>
+      <para>
+       Maximale Temperatur, bevor Ceph versucht, die Metadaten auf anderen Knoten zu reproduzieren. Der Standardwert ist 8000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal unreplicate threshold</term>
+     <listitem>
+      <para>
+       Minimale Temperatur, bevor Ceph die Reproduktion der Metadaten auf anderen Knoten anhält. Der Standardwert ist 0.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split size</term>
+     <listitem>
+      <para>
+       Maximale Verzeichnisgröße, bevor der MDS ein Verzeichnisfragment in kleinere Teile aufteilt. Der Standardwert ist 10000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split rd</term>
+     <listitem>
+      <para>
+       Maximale Verzeichnis-Lesetemperatur, bevor Ceph ein Verzeichnisfragment aufteilt. Der Standardwert ist 25000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split wr</term>
+     <listitem>
+      <para>
+       Maximale Verzeichnis-Schreibtemperatur, bevor Ceph ein Verzeichnisfragment aufteilt. Der Standardwert ist 10000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split bits</term>
+     <listitem>
+      <para>
+       Datenmenge (in Bit), nach der ein Verzeichnisfragment aufgeteilt werden soll. Der Standardwert ist 3.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal merge size</term>
+     <listitem>
+      <para>
+       Minimale Verzeichnisgröße, bevor Ceph versucht, nebeneinanderliegende Verzeichnisfragmente zusammenzuführen. Der Standardwert ist 50.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal interval</term>
+     <listitem>
+      <para>
+       Zeitabstand (in Sekunden) für den Workload-Austausch zwischen MDSs. Der Standardwert ist 10.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment interval</term>
+     <listitem>
+      <para>
+       Verzögerung (in Sekunden) zwischen dem Zeitpunkt, an dem ein Fragment aufgeteilt oder zusammengeführt werden kann, und der Durchführung der Fragmentierungsänderung. Der Standardwert ist 5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment fast factor</term>
+     <listitem>
+      <para>
+       Verhältnis, um das die Fragmente die Aufteilungsgröße überschreiten können, bevor eine Aufteilung sofort durchgeführt wird (also ohne den Fragmentzeitabstand abzuwarten). Der Standardwert ist 1.5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment size max</term>
+     <listitem>
+      <para>
+       Maximale Größe eines Fragments, bevor neue Einträge mit ENOSPC abgelehnt werden. Der Standardwert ist 100000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal idle threshold</term>
+     <listitem>
+      <para>
+       Minimale Temperatur, bevor Ceph einen Teilbaum wieder zurück zu dessen übergeordnetem Baum migriert. Der Standardwert ist 0.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal mode</term>
+     <listitem>
+      <para>
+       Methode zur Berechnung der MDS-Last:
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         0 = Hybrid.
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         1 = Anforderungsrate und Latenz.
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         2 = CPU-Last.
+        </para>
+       </listitem>
+      </itemizedlist>
+      <para>
+       Der Standardwert ist 0.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal min rebalance</term>
+     <listitem>
+      <para>
+       Minimale Teilbaumtemperatur, bevor Ceph die Migration durchführt. Der Standardwert ist 0.1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal min start</term>
+     <listitem>
+      <para>
+       Minimale Teilbaumtemperatur, bevor Ceph einen Teilbaum durchsucht. Der Standardwert ist 0.2.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal need min</term>
+     <listitem>
+      <para>
+       Minimaler zu akzeptierender Anteil der Zielteilbaumgröße. Der Standardwert ist 0.8.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal need max</term>
+     <listitem>
+      <para>
+       Maximaler zu akzeptierender Anteil der Zielteilbaumgröße. Der Standardwert ist 1.2.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal midchunk</term>
+     <listitem>
+      <para>
+       Ceph migriert alle Teilbäume, die größer als dieser Anteil der Zielteilbaumgröße sind. Der Standardwert ist 0.3.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal minchunk</term>
+     <listitem>
+      <para>
+       Ceph ignoriert alle Teilbäume, die kleiner als dieser Anteil der Zielteilbaumgröße sind. Der Standardwert ist 0.001.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal target removal min</term>
+     <listitem>
+      <para>
+       Minimale Anzahl an Ausgleichsprogramm-Iterationen, bevor Ceph ein altes MDS-Ziel aus der MDS-Karte entfernt. Der Standardwert ist 5.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal target removal max</term>
+     <listitem>
+      <para>
+       Maximale Anzahl an Ausgleichsprogramm-Iterationen, bevor Ceph ein altes MDS-Ziel aus der MDS-Karte entfernt. Der Standardwert ist 10.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds replay interval</term>
+     <listitem>
+      <para>
+       Zeitabstand für das Journal-Polling im Standby Replay-Modus („unmittelbar betriebsbereit im Standby-Modus“). Der Standardwert ist 1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds shutdown check</term>
+     <listitem>
+      <para>
+       Zeitabstand für das Cache-Polling beim Herunterfahren des MDS. Der Standardwert ist 0.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds thrash fragments</term>
+     <listitem>
+      <para>
+       Ceph führt eine willkürliche Fragmentierung oder Zusammenführung der Verzeichnisse durch. Der Standardwert ist 0.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dump cache on map</term>
+     <listitem>
+      <para>
+       Ceph legt den Inhalt des MDS-Caches in eine Datei auf jeder MDS-Karte ab. Die Standardeinstellung ist „false“.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dump cache after rejoin</term>
+     <listitem>
+      <para>
+       Ceph legt den Inhalt des MDS-Caches in eine Datei ab, nachdem er bei einer Wiederherstellung wieder in den Cache aufgenommen wurde. Die Standardeinstellung ist „false“.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby for name</term>
+     <listitem>
+      <para>
+       Ein MDS Daemon fungiert als Standby für einen anderen MDS Daemon mit dem Namen, der in dieser Einstellung angegeben ist.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby for rank</term>
+     <listitem>
+      <para>
+       Ein MDS Daemon fungiert als Standby für einen MDS Daemon mit diesem Rang. Der Standardwert ist -1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby replay</term>
+     <listitem>
+      <para>
+       Angabe, ob ein Ceph MDS Daemon ein Polling für das Protokoll eines aktiven MDS durchführen und dieses Protokoll wiedergeben soll („unmittelbar betriebsbereit im Standby-Modus“). Die Standardeinstellung ist „false“.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds min caps per client</term>
+     <listitem>
+      <para>
+       Mindestanzahl der Capabilities, die ein Client besitzen kann. Der Standardwert ist 100.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds max ratio caps per client</term>
+     <listitem>
+      <para>
+       Maximales Verhältnis der aktuellen Caps, die bei MDS-Cache-Druck abgerufen werden können. Der Standardwert ist 0.8.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Metadatenserver-Journaler-Einstellungen</title>
+    <varlistentry>
+     <term>journaler write head interval</term>
+     <listitem>
+      <para>
+       Zeitabstand, in dem das Journal-Kopfobjekt aktualisiert wird. Der Standardwert ist 15.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler prefetch periods</term>
+     <listitem>
+      <para>
+       Anzahl der Stripe-Zeiträume, die bei der Wiedergabe des Journals im Voraus gelesen werden. Der Standardwert ist 10.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journal prezero periods</term>
+     <listitem>
+      <para>
+       Anzahl der Stripe-Zeiträume bis null vor der Schreibposition. Der Standardwert ist 10.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler batch interval</term>
+     <listitem>
+      <para>
+       Maximale zusätzliche Latenz (in Sekunden), die künstlich hervorgerufen wird. Der Standardwert ist 0.001.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler batch max</term>
+     <listitem>
+      <para>
+       Maximale Datenmenge (in Byte), um die die Verschiebung verzögert wird. Der Standardwert ist 0.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-cephfs-cephfs">
+  <title>CephFS</title>
+
+  <para>
+   Wenn Ihr Ceph Storage Cluster mit mindestens einem Ceph Metadata Server ordnungsgemäß funktioniert, können Sie Ihr Ceph-Dateisystem erstellen und einhängen. Stellen Sie sicher, dass Ihr Client mit dem Netzwerk verbunden ist und über einen ordnungsgemäßen Schlüsselbund zur Authentifizierung verfügt.
+  </para>
+
+  <sect2 xml:id="ceph-cephfs-cephfs-create">
+   <title>Erstellen eines CephFS</title>
+   <para>
+    Ein CephFS benötigt mindestens zwei RADOS-Pools: einen für <emphasis>Daten</emphasis> und einen für <emphasis>Metadaten</emphasis>. Beim Konfigurieren dieser Pools sollten Sie Folgendes in Erwägung ziehen:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Eine höhere Reproduktionsstufe für den Metadaten-Pool, da jeglicher Datenverlust in diesem Pool dazu führen kann, dass auf das gesamte Dateisystem nicht mehr zugegriffen werden kann.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Ein Speicher mit geringerer Latenz für den Metadaten-Pool wie SSDs, weil dadurch die beobachtete Latenz der Dateisystemoperationen an Clients verbessert wird.
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    Bei der Zuweisung eines <literal>role-mds</literal> in Datei <filename>policy.cfg</filename> werden die erforderlichen Pools automatisch erstellt. Sie können vor dem Einrichten des Metadata Server die Pools <literal>cephfs_data</literal> und <literal>cephfs_metadata</literal> manuell erstellen, um die Leistung manuell anzupassen. Diese Pools werden von DeepSea nicht erstellt, wenn sie bereits vorhanden sind.
+   </para>
+   <para>
+    Weitere Informationen zur Verwaltung von Pools finden Sie im <xref linkend="ceph-pools"/>.
+   </para>
+   <para>
+    Führen Sie die folgenden Kommandos aus, um die beiden erforderlichen Pools (z. B. „cephfs_data“ und „cephfs_metadata“) mit Standardeinstellungen für das CephFS zu erstellen:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create cephfs_data <replaceable>pg_num</replaceable>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool create cephfs_metadata <replaceable>pg_num</replaceable></screen>
+   <para>
+    Es ist möglich, EC-Pools anstelle von reproduzierten Pools zu verwenden. Wir empfehlen, EC-Pools nur für geringe Leistungsanforderungen und gelegentlichen zufälligen Zugriff zu verwenden, beispielsweise für Cold Storage, Sicherungen oder Archivierung. Für die Aktivierung von CephFS in EC-Pools ist BlueStore erforderlich und die Option <literal>allow_ec_overwrite</literal> muss für den Pool festgelegt sein. Diese Option kann durch Ausführung des Kommandos <command>ceph osd pool set ec_pool allow_ec_overwrites true</command> festgelegt werden.
+   </para>
+   <para>
+    Ein Erasure Coding (EC) vergrößert erheblich den Overhead für Dateisystemoperationen, insbesondere kleine Updates. Dieser Overhead entsteht zwangsläufig, wenn Erasure Coding als Fehlertoleranzmechanismus verwendet wird. Diese Einbuße ist der Ausgleich für einen erheblich reduzierten Speicherplatz-Overhead.
+   </para>
+   <para>
+    Wenn die Pools erstellt sind, können Sie das Dateisystem mit dem Kommando <command>ceph fs new</command> aktivieren:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs new <replaceable>fs_name</replaceable> <replaceable>metadata_pool_name</replaceable> <replaceable>data_pool_name</replaceable></screen>
+   <para>
+    Beispiel:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs new cephfs cephfs_metadata cephfs_data</screen>
+   <para>
+    Durch Auflisten aller verfügbarer CephFSs prüfen Sie, ob das Dateisystem erstellt wurde:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> <option>fs ls</option>
+ name: cephfs, metadata pool: cephfs_metadata, data pools: [cephfs_data ]</screen>
+   <para>
+    Wenn das Dateisystem erstellt wurde, kann der MDS den Zustand <emphasis>aktiv</emphasis> annehmen. Beispielsweise in einem einzelnen MDS-System:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> <option>mds stat</option>
+e5: 1/1/1 up</screen>
+   <tip>
+    <title>Weitere Themen</title>
+    <para>
+     Weitere Informationen zu spezifischen Aufgaben (beispielsweise Einhängen, Aushängen und erweiterte CephFS-Einrichtung) finden Sie im <xref linkend="cha-ceph-cephfs"/>.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-multimds">
+   <title>Größe des MDS Clusters</title>
+   <para>
+    Eine CephFS-Instanz kann von mehreren aktiven MDS Daemons bedient werden. Alle aktiven MDS Daemons, die einer CephFS-Instanz zugewiesen sind, teilen den Verzeichnisbaum des Dateisystems unter sich auf. Dadurch wird die Last gleichmäßig auf die gleichzeitig ausgeführten Clients verteilt. Zum Hinzufügen eines aktiven MDS Daemon zu einer CephFS-Instanz ist eine zusätzliche Standby-Instanz erforderlich. Starten Sie entweder einen zusätzlichen Daemon oder verwenden Sie eine vorhandene Standby-Instanz.
+   </para>
+   <para>
+    Durch das folgende Kommando wird die aktuelle Anzahl der aktiven und passiven MDS Daemons angezeigt.
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph mds stat</screen>
+   <para>
+    Durch die folgenden Kommandos wird die Anzahl der aktiven MDSs auf zwei pro Dateisysteminstanz festgelegt.
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs set <replaceable>fs_name</replaceable> max_mds 2</screen>
+   <para>
+    Sie müssen zwei Schritte ausführen, um den MDS Cluster vor einem Update zu verkleinern. Legen Sie zunächst <option>max_mds</option> fest, damit nur noch eine Instanz vorhanden ist:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs set <replaceable>fs_name</replaceable> max_mds 1</screen>
+   <para>
+    Deaktivieren Sie danach explizit die anderen MDS Daemons:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph mds deactivate <replaceable>fs_name</replaceable>:<replaceable>rank</replaceable></screen>
+   <para>
+    Dabei bezeichnet <replaceable>rank</replaceable> die Nummer eines aktiven MDS Daemons einer Dateisysteminstanz im Bereich von 0 bis <option>max_mds</option>-1.
+   </para>
+   <para>
+    Es wird empfohlen, mindestens einen MDS als Standby-Daemon beizubehalten.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-multimds-updates">
+   <title>MDS Cluster und Updates</title>
+   <para>
+    Bei Ceph Updates ändern sich möglicherweise die Feature-Einstellungen (normalerweise durch Hinzufügen neuer Features). Nicht kompatible Daemons (wie die älteren Versionen) funktionieren nicht bei einem nicht kompatiblen Feature-Satz und starten nicht. Dies bedeutet, dass durch das Update und den Neustart eines Daemons alle anderen noch nicht aktualisierten Daemons möglicherweise anhalten und nicht mehr starten. Aus diesem Grund empfehlen wir, vor einem Update von Ceph den aktiven MDS Cluster auf die Größe einer Instanz zu verkleinern und alle Standby Daemons anzuhalten. Die manuellen Schritte für diesen Update-Vorgang sind wie folgt:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Aktualisieren Sie die auf Ceph bezogenen Pakete mithilfe von <command>zypper</command>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Verkleinern Sie den MDS Cluster wie oben beschrieben auf eine Instanz und halten Sie alle MDS Standby Daemons an. Verwenden Sie dazu deren <systemitem class="daemon">systemd</systemitem>-Einheiten in allen anderen Nodes:
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl stop ceph-mds\*.service ceph-mds.target</screen>
+    </step>
+    <step>
+     <para>
+      Starten Sie erst dann den einzig verbleibenden MDS Daemon und verursachen Sie seinen Neustart anhand der aktualisierten Binärdatei.
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl restart ceph-mds\*.service ceph-mds.target</screen>
+    </step>
+    <step>
+     <para>
+      Starten Sie alle anderen MDS Daemons neu und legen Sie die gewünschte Einstellung <option>max_mds</option> neu fest.
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl start ceph-mds.target</screen>
+    </step>
+   </procedure>
+   <para>
+    Wenn Sie DeepSea verwenden, führt es diesen Vorgang aus, falls das
+    <package>ceph</package> -Paket in Phase 0 und 4 aktualisiert wurde. Es ist möglich, diesen Vorgang auszuführen, während bei Clients die CephFS-Instanz eingehängt ist und E/A weiterhin ausgeführt wird. Beachten Sie jedoch, dass es beim Neustart des aktiven MDS eine kurze E/A-Pause gibt. Die Clients werden automatisch wiederhergestellt.
+   </para>
+   <para>
+    Es hat sich bewährt, vor dem Aktualisieren eines MDS Clusters die E/A-Last so weit wie möglich zu reduzieren. Ein inaktiver MDS Cluster durchläuft diesen Update-Vorgang schneller. Umgekehrt ist es auf einem sehr ausgelasteten Cluster mit mehreren MDS Daemons sehr wichtig, die Last vorher zu reduzieren, um zu verhindern, dass ein einzelner MDS Daemon durch fortlaufende E/A-Vorgänge überlastet wird.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-layouts">
+   <title>Datei-Layouts</title>
+   <para>
+    Das Layout einer Datei steuert die Zuordnung ihrer Inhalte zu Ceph RADOS-Objekten. Sie können das Layout einer Datei mit <emphasis>virtuellen erweiterten Attributen</emphasis> (kurz <emphasis>xattrs</emphasis>) lesen und schreiben.
+   </para>
+   <para>
+    Der Name des Layout-xattrs ist davon abhängig, ob eine Datei eine normale Datei oder ein Verzeichnis ist. Die Layout-xattrs normaler Dateien werden als <literal>ceph.file.layout</literal> bezeichnet, die Layout-xattrs von Verzeichnissen dagegen als <literal>ceph.dir.layout</literal>. In Beispielen, die auf <literal>ceph.file.layout</literal> verweisen, tragen Sie entsprechend den Teil <literal>.dir.</literal> ein, wenn Sie mit Verzeichnissen arbeiten.
+   </para>
+   <sect3>
+    <title>Layoutfelder</title>
+    <para>
+     Die folgenden Attributfelder werden erkannt:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>pool</term>
+      <listitem>
+       <para>
+        ID oder Name eines RADOS-Pools, in dem die Datenobjekte einer Datei gespeichert werden.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>pool_namespace</term>
+      <listitem>
+       <para>
+        RADOS-Namespace in einem Daten-Pool, in den die Objekte geschrieben werden. Dieses Attribut ist standardmäßig leer, sodass der standardmäßige Namespace verwendet wird.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>stripe_unit</term>
+      <listitem>
+       <para>
+        Größe eines Datenblocks (in Byte) in der RAID-0-Verteilung einer Datei. Alle Stripe-Einheiten für eine Datei sind gleich groß. Die letzte Stripe-Einheit ist in der Regel unvollständig – sie enthält die Daten am Ende der Datei sowie den nicht belegten „Platz“ nach dem Dateiende bis zum Ende der festen Größe der Stripe-Einheit.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>stripe_count</term>
+      <listitem>
+       <para>
+        Anzahl aufeinanderfolgender Stripe-Einheiten, die einen RAID-0-„Stripe“ mit Dateidaten bilden.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>object_size</term>
+      <listitem>
+       <para>
+        Größe der RADOS-Objekte (in Byte), auf die die Dateidaten blockweise aufgeteilt werden.
+       </para>
+       <tip>
+        <title>Objektgrößen</title>
+        <para>
+         RADOS erzwingt einen konfigurierbaren Grenzwert für Objektgrößen. Wenn Sie die CephFS-Objektgrößen über diesen Grenzwert hinaus erhöhen, schlagen Schreibvorgänge möglicherweise fehl. Die OSD-Einstellung lautet <option>osd_max_object_size</option> und liegt standardmäßig bei 128 MB. Sehr große RADOS-Objekte können den reibungslosen Betrieb des Clusters beeinträchtigen. Es wird daher nicht empfohlen, den Grenzwert für die Objektgröße über den Standardwert hinaus zu erhöhen.
+        </para>
+       </tip>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>Lesen des Layouts mit <command>getfattr</command></title>
+    <para>
+     Mit dem Kommando <command>getfattr</command> lesen Sie die Layoutinformationen der Beispieldatei <filename>file</filename> als einzelne Zeichenkette:
+    </para>
+<screen>
+<prompt>root # </prompt>touch file
+<prompt>root # </prompt>getfattr -n ceph.file.layout file
+# file: file
+ceph.file.layout="stripe_unit=4194304 stripe_count=1 object_size=419430
+</screen>
+    <para>
+     So lesen Sie einzelne Layoutfelder:
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.file.layout.pool file
+# file: file
+ceph.file.layout.pool="cephfs_data"
+<prompt>root # </prompt>getfattr -n ceph.file.layout.stripe_unit file
+# file: file
+ceph.file.layout.stripe_unit="4194304"
+</screen>
+    <tip>
+     <title>Pool-ID oder Name</title>
+     <para>
+      Beim Lesen der Layouts ist der Pool in der Regel mit seinem Namen angegeben. Wenn ein Pool erst vor Kurzem erstellt wurde, wird in seltenen Fällen stattdessen die ID ausgegeben.
+     </para>
+    </tip>
+    <para>
+     Verzeichnisse besitzen erst dann ein explizites Layout, wenn es angepasst wird. Ein Versuch, das Layout zu lesen, schlägt fehl, wenn das Layout bislang noch nicht bearbeitet wurde. Dies bedeutet, dass das Layout des nächstgelegenen übergeordneten Verzeichnisses mit explizitem Layout verwendet wird.
+    </para>
+<screen>
+<prompt>root # </prompt>mkdir dir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+dir: ceph.dir.layout: No such attribute
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.stripe_count -v 2 dir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 pool=cephfs_data"
+</screen>
+   </sect3>
+   <sect3>
+    <title>Schreiben von Layouts mit <command>setfattr</command></title>
+    <para>
+     Mit dem Kommando <command>setfattr</command> bearbeiten Sie die Layoutfelder der Beispieldatei <command>file</command>:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd lspools
+0 rbd
+1 cephfs_data
+2 cephfs_metadata
+<prompt>root # </prompt>setfattr -n ceph.file.layout.stripe_unit -v 1048576 file
+<prompt>root # </prompt>setfattr -n ceph.file.layout.stripe_count -v 8 file
+# Setting pool by ID:
+<prompt>root # </prompt>setfattr -n ceph.file.layout.pool -v 1 file
+# Setting pool by name:
+<prompt>root # </prompt>setfattr -n ceph.file.layout.pool -v cephfs_data file
+</screen>
+    <note>
+     <title>Leere Datei</title>
+     <para>
+      Wenn die Layoutfelder einer Datei mit <command>setfattr</command> bearbeitet werden, muss diese Datei leer sein, da ansonsten ein Fehler auftritt.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Löschen von Layouts</title>
+    <para>
+     Mit folgendem Kommando können Sie ein explizites Layout aus dem Beispielverzeichnis <filename>mydir</filename> entfernen und wieder zur Übernahme des Layouts vom übergeordneten Element zurückkehren:
+    </para>
+<screen>
+<prompt>root # </prompt>setfattr -x ceph.dir.layout mydir
+</screen>
+    <para>
+     Ähnliches gilt, wenn Sie das Attribut „pool_namespace“ festgelegt haben und das Layout nun wieder auf den Standard-Namespace zurückgreifen soll:
+    </para>
+<screen>
+# Create a directory and set a namespace on it
+<prompt>root # </prompt>mkdir mydir
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.pool_namespace -v foons mydir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout mydir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=1 object_size=4194304 \
+ pool=cephfs_data_a pool_namespace=foons"
+
+# Clear the namespace from the directory's layout
+<prompt>root # </prompt>setfattr -x ceph.dir.layout.pool_namespace mydir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout mydir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=1 object_size=4194304 \
+ pool=cephfs_data_a"
+</screen>
+   </sect3>
+   <sect3>
+    <title>Übernahme von Layouts</title>
+    <para>
+     Dateien übernehmen bei ihrer Erstellung das Layout ihres übergeordneten Verzeichnisses. Nachfolgende Änderungen am Layout des übergeordneten Verzeichnisses wirken sich jedoch nicht auf die untergeordneten Elemente aus:
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# file1 inherits its parent's layout
+<prompt>root # </prompt>touch dir/file1
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file1
+# file: dir/file1
+ceph.file.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# update the layout of the directory before creating a second file
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.stripe_count -v 4 dir
+<prompt>root # </prompt>touch dir/file2
+
+# file1's layout is unchanged
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file1
+# file: dir/file1
+ceph.file.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# ...while file2 has the parent directory's new layout
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file2
+# file: dir/file2
+ceph.file.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+</screen>
+    <para>
+     Dateien, die als untergeordnete Elemente des Verzeichnisses erstellt wurden, übernehmen ebenfalls dessen Layout, wenn für die dazwischenliegenden Verzeichnisse keine Layouts festgelegt sind:
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+<prompt>root # </prompt>mkdir dir/childdir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir/childdir
+dir/childdir: ceph.dir.layout: No such attribute
+<prompt>root # </prompt>touch dir/childdir/grandchild
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/childdir/grandchild
+# file: dir/childdir/grandchild
+ceph.file.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+</screen>
+   </sect3>
+   <sect3>
+    <title>Hinzufügen eines Daten-Pools zum Metadatenserver</title>
+    <para>
+     Bevor Sie einen Pool mit CephFS verwenden können, müssen Sie ihn zum Metadatenserver hinzufügen:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph fs add_data_pool cephfs cephfs_data_ssd
+<prompt>cephadm@adm &gt; </prompt>ceph fs ls  # Pool should now show up
+.... data pools: [cephfs_data cephfs_data_ssd ]
+</screen>
+    <tip>
+     <title>cephx-Schlüssel</title>
+     <para>
+      Die cephx-Schlüssel müssen dem Client den Zugriff auf diesen neuen Pool gestatten.
+     </para>
+    </tip>
+    <para>
+     Anschließend können Sie das Layout für ein Verzeichnis in CephFS aktualisieren und dabei den hinzugefügten Pool angeben:
+    </para>
+<screen>
+<prompt>root # </prompt>mkdir /mnt/cephfs/myssddir
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.pool -v cephfs_data_ssd /mnt/cephfs/myssddir
+</screen>
+    <para>
+     Alle in diesem Verzeichnis erstellten neuen Dateien übernehmen nun dessen Layout und platzieren die Daten in den soeben hinzugefügten Pool. Unter Umständen steigt die Anzahl der Objekte in primären Daten-Pool selbst dann weiterhin an, wenn die Dateien im soeben hinzugefügten Pool erstellt werden. Dies ist völlig normal. Die Dateidaten werden in dem Pool gespeichert, der im Layout angegeben ist, doch für alle Dateien wird eine kleine Metadaten-Menge im primären Daten-Pool abgelegt.
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,499 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_ds_custom.xml" version="5.0" xml:id="ceph-deploy-ds-custom">
+ <title>自定义默认配置</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  可以更改在阶段 2 生成的默认集群配置（请参见<xref linkend="deepsea-stage-description"/>）。例如，您可能需要更改网络设置或默认安装在管理节点上的软件。要执行前一项操作，可以修改在阶段 2 之后更新的 pillar；对于后一项操作，通常可以通过创建自定义 <literal>sls</literal> 文件并将其添加到 pillar 来完成。以下各节介绍了详细信息。
+ </para>
+ <sect1 xml:id="using-customized-files">
+  <title>使用自定义的配置文件</title>
+
+  <para>
+   本节列出了需要添加/更改您自己的 <literal>sls</literal> 文件的多个任务。当您需要更改默认部署流程时，通常会使用这样的过程。
+  </para>
+
+  <tip>
+   <title>为自定义 .sls 文件添加前缀</title>
+   <para>
+    您的自定义 .sls 文件与 DeepSea 的 .sls 文件属于同一个子目录。为了防止从 DeepSea 包中新添加的文件重写您的 .sls 文件，请在您的文件名前面加上 <filename>custom-</filename> 字符串前缀。
+   </para>
+  </tip>
+
+  <sect2>
+   <title>禁用部署步骤</title>
+   <para>
+    如果您遇到一个不属于 DeepSea 部署过程的特定任务，因而需要跳过此任务，请按照下面的示例创建一个“no-operation”文件：
+   </para>
+   <procedure>
+    <title>禁用时间同步</title>
+    <step>
+     <para>
+      创建并保存包含以下内容的 <filename>/srv/salt/ceph/time/disabled.sls</filename>：
+     </para>
+<screen>disable time setting:
+test.nop</screen>
+    </step>
+    <step>
+     <para>
+      编辑 <filename>/srv/pillar/ceph/stack/global.yml</filename>，添加下行，并保存该文件：
+     </para>
+<screen>time_init: disabled</screen>
+    </step>
+    <step>
+     <para>
+      通过刷新 pillar 并运行以下步骤进行校验：
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.time
+admin.ceph:
+  Name: disable time setting - Function: test.nop - Result: Clean
+
+Summary for admin.ceph
+------------
+Succeeded: 1
+Failed:    0
+------------
+Total states run:     1</screen>
+     <note>
+      <title>唯一 ID</title>
+      <para>
+       任务 ID“disable time setting”可以是在 <literal>sls</literal> 文件中唯一的任何讯息。可通过指定唯一的说明来防止 ID 冲突。
+      </para>
+     </note>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="deepsea-replacing-step">
+   <title>替换部署步骤</title>
+   <para>
+    如果需要将特定步骤的默认行为替换为自定义行为，请创建包含替换内容的自定义 <literal>sls</literal> 文件。
+   </para>
+   <para>
+    默认情况下，<filename>/srv/salt/ceph/pool/default.sls</filename> 会创建名为“demo”的 rbd 映像。在本示例中，我们不想创建此映像，而是需要以下两个映像：“archive1”和“archive2”。
+   </para>
+   <procedure>
+    <title>将 <emphasis>demo</emphasis> rbd 映像替换为两个自定义 rbd 映像</title>
+    <step>
+     <para>
+      创建并保存包含以下内容的 <filename>/srv/salt/ceph/pool/custom.sls</filename>：
+     </para>
+<screen>wait:
+  module.run:
+    - name: wait.out
+    - kwargs:
+        'status': "HEALTH_ERR"<co xml:id="co-deepsea-replace-wait"/>
+    - fire_event: True
+
+archive1:
+  cmd.run:
+    - name: "rbd -p rbd create archive1 --size=1024"<co xml:id="co-deepsea-replace-rbd"/>
+    - unless: "rbd -p rbd ls | grep -q archive1$"
+    - fire_event: True
+
+archive2:
+  cmd.run:
+    - name: "rbd -p rbd create archive2 --size=768"
+    - unless: "rbd -p rbd ls | grep -q archive2$"
+    - fire_event: True</screen>
+     <calloutlist>
+      <callout arearefs="co-deepsea-replace-wait">
+       <para>
+        <emphasis role="bold">wait</emphasis> 扩展模块将会暂停，直到 Ceph 集群状态不是 <literal>HEALTH_ERR</literal> 为止。在全新安装中，当有足够数量的 OSD 可用且存储池创建完成之前，Ceph 集群可能会一直保持此状态。
+       </para>
+      </callout>
+      <callout arearefs="co-deepsea-replace-rbd">
+       <para>
+        <command>rbd</command> 命令不是幂等的。如果在提供映像之后重新运行同一个创建命令，则 Salt 状态将失败。<emphasis role="bold">unless</emphasis> 语句可防止这种情况。
+       </para>
+      </callout>
+     </calloutlist>
+    </step>
+    <step>
+     <para>
+      要调用新建的自定义文件而不是默认文件，需要编辑 <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>，添加下行，然后保存该文件：
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      通过刷新 pillar 并运行以下步骤进行校验：
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+   <note>
+    <title>授权</title>
+    <para>
+     创建存储池或映像需要有足够的授权。<literal>admin.ceph</literal> Minion 具有管理密钥环。
+    </para>
+   </note>
+   <tip>
+    <title>替代方法</title>
+    <para>
+     另一种做法是更改 <filename>/srv/pillar/ceph/stack/ceph/roles/master.yml</filename> 中的变量。使用此文件可缓解其他 Minion 的 pillar 数据的混乱情况。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2>
+   <title>修改部署步骤</title>
+   <para>
+    有时，您可能需要通过特定的步骤来执行某些附加任务。不建议修改相关的状态文件，因为这可能导致将来的升级变得复杂。应创建一个单独的文件来执行<xref linkend="deepsea-replacing-step"/>中所述的相同附加任务。
+   </para>
+   <para>
+    为新的 <literal>sls</literal> 文件提供一个描述性名称。例如，如果除了 demo 映像以外，您还需要创建两个 rbd 映像，则可将文件命名为 <filename>archive.sls</filename>。
+   </para>
+   <procedure>
+    <title>创建两个附加 rbd 映像</title>
+    <step>
+     <para>
+      创建并保存包含以下内容的 <filename>/srv/salt/ceph/pool/custom.sls</filename>：
+     </para>
+<screen>include:
+ - .archive
+ - .default</screen>
+     <tip>
+      <title>Include 优先顺序</title>
+      <para>
+       在本示例中，Salt 将会依次创建 <emphasis>archive</emphasis> 映像和 <emphasis>demo</emphasis> 映像。本示例中的顺序并不重要。要更改顺序，请颠倒 <literal>include:</literal> 指令后面的行。
+      </para>
+      <para>
+       可将 include 行直接添加到 <filename>archive.sls</filename>，这样也会创建所有映像。但是，不管将 include 行放在哪个位置，Salt 都会先处理所包含文件中的步骤。尽管可以使用 <emphasis>requires</emphasis> 和 <emphasis>order</emphasis> 语句覆盖此行为，但使用包含其他语句的单独文件可保证顺序正确，并减少出现混淆的可能性。
+      </para>
+     </tip>
+    </step>
+    <step>
+     <para>
+      编辑 <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>，添加下行，并保存该文件：
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      通过刷新 pillar 并运行以下步骤进行校验：
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2>
+   <title>修改部署阶段</title>
+   <para>
+    如果需要添加完全独立的部署步骤，请创建 3 个新文件：用于执行命令的 <literal>sls</literal> 文件、编制文件，以及使新步骤与原始部署步骤保持一致的自定义文件。
+   </para>
+   <para>
+    例如，如果在执行准备阶段的过程中需要在所有 Minion 上运行 <command>logrotate</command>：
+   </para>
+   <para>
+    首先创建一个 <literal>sls</literal> 文件并包含 <command>logrotate</command> 命令。
+   </para>
+   <procedure>
+    <title>在所有 Salt Minion 上运行 <command>logrotate</command></title>
+    <step>
+     <para>
+      创建一个目录，例如 <filename>/srv/salt/ceph/logrotate</filename>。
+     </para>
+    </step>
+    <step>
+     <para>
+      创建并保存包含以下内容的 <filename>/srv/salt/ceph/logrotate/init.sls</filename>：
+     </para>
+<screen>rotate logs:
+  cmd.run:
+    - name: "/usr/sbin/logrotate /etc/logrotate.conf"</screen>
+    </step>
+    <step>
+     <para>
+      校验该命令是否在 Minion 上正常工作：
+     </para>
+<screen><prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    由于编制文件需要在其他所有准备步骤之前运行，因此请将其添加到<emphasis>准备</emphasis>阶段 0：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      创建并保存包含以下内容的 <filename>/srv/salt/ceph/stage/prep/logrotate.sls</filename>：
+     </para>
+<screen>logrotate:
+  salt.state:
+    - tgt: '*'
+    - sls: ceph.logrotate</screen>
+    </step>
+    <step>
+     <para>
+      校验编制文件是否正常工作：
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.prep.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    最后一个文件是自定义文件，其中包含附加步骤和原始步骤：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      创建并保存包含以下内容的 <filename>/srv/salt/ceph/stage/prep/custom.sls</filename>：
+     </para>
+<screen>include:
+  - .logrotate
+  - .master
+  - .minion</screen>
+    </step>
+    <step>
+     <para>
+      覆盖默认行为。编辑 <filename>/srv/pillar/ceph/stack/global.yml</filename>，添加下行，并保存该文件：
+     </para>
+<screen>stage_prep: custom</screen>
+    </step>
+    <step>
+     <para>
+      校验阶段 0 是否正常工作：
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    </step>
+   </procedure>
+   <note>
+    <title>为何使用 <filename>global.yml</filename>？</title>
+    <para>
+     之所以选择 <filename>global.yml</filename> 文件而不选择 <filename>cluster.yml</filename>，是因为在<emphasis>准备</emphasis>阶段，所有 Minion 都不属于 Ceph 集群，并且无权访问 <filename>cluster.yml</filename> 中的任何设置。
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ds-disable-reboots">
+   <title>阶段 0 期间的更新和重引导</title>
+   <para>
+    在阶段 0（有关 DeepSea 阶段的详细信息，请参见<xref linkend="deepsea-stage-description"/>）期间，Salt Master 和 Salt Minion 可能会选择性地重引导，因为新更新的包（例如
+    <package>kernel</package>）需要重引导系统。
+   </para>
+   <para>
+    默认行为是安装可用的新更新且<emphasis>不</emphasis>重引导节点，即使进行内核更新时也是如此。
+   </para>
+   <para>
+    您可以在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 文件中添加/更改 <option>stage_prep_master</option> 和 <option>stage_prep_minion</option> 选项，以更改 DeepSea 阶段 0 的默认更新/重引导行为。<option>_prep_master</option> 用于设置 Salt Master 的阶段 行为，<option>stage_prep_minion</option> 用于设置所有 Minion 的行为。所有可用的参数如下：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>default</term>
+     <listitem>
+      <para>
+       安装更新而不重引导。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>default-update-reboot</term>
+     <listitem>
+      <para>
+       安装更新并在更新之后重引导。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>default-no-update-reboot</term>
+     <listitem>
+      <para>
+       重引导而不安装更新。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>default-no-update-no-reboot</term>
+     <listitem>
+      <para>
+       不安装更新，也不重引导。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    例如，要防止集群节点安装更新和重引导，请编辑 <filename>/srv/pillar/ceph/stack/global.yml</filename>，添加以下几行：
+   </para>
+<screen>
+stage_prep_master: default-no-update-no-reboot
+stage_prep_minion: default-no-update-no-reboot
+</screen>
+   <tip>
+    <title>值和相应文件</title>
+    <para>
+     <option>stage_prep_master</option> 的值与位于 <filename>/srv/salt/ceph/stage/0/master</filename> 中的文件名相对应，而 <option>stage_prep_minion</option> 的值与位于 <filename>/srv/salt/ceph/stage/0/minion</filename> 中的文件相对应：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ls -l /srv/salt/ceph/stage/0/master
+default-no-update-no-reboot.sls
+default-no-update-reboot.sls
+default-update-reboot.sls
+[...]
+
+<prompt>root@master # </prompt>ls -l /srv/salt/ceph/stage/0/minion
+default-no-update-no-reboot.sls
+default-no-update-reboot.sls
+default-update-reboot.sls
+[...]
+</screen>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="discovered-configuration-modification">
+  <title>修改已发现的配置</title>
+
+  <para>
+   完成阶段 2 之后，您可能需要更改已发现的配置。要查看当前设置，请运行：
+  </para>
+
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+
+  <para>
+   单个 Minion 的默认配置的输出通常类似下方所示：
+  </para>
+
+<screen>----------
+    available_roles:
+        - admin
+        - mon
+        - storage
+        - mds
+        - igw
+        - rgw
+        - client-cephfs
+        - client-radosgw
+        - client-iscsi
+        - mds-nfs
+        - rgw-nfs
+        - master
+    cluster:
+        ceph
+    cluster_network:
+        172.16.22.0/24
+    fsid:
+        e08ec63c-8268-3f04-bcdb-614921e94342
+    master_minion:
+        admin.ceph
+    mon_host:
+        - 172.16.21.13
+        - 172.16.21.11
+        - 172.16.21.12
+    mon_initial_members:
+        - mon3
+        - mon1
+        - mon2
+    public_address:
+        172.16.21.11
+    public_network:
+        172.16.21.0/24
+    roles:
+        - admin
+        - mon
+        - mds
+    time_server:
+        admin.ceph
+    time_service:
+        ntp</screen>
+
+  <para>
+   将在多个配置文件之间分布上述设置。包含这些文件的目录结构在 <filename>/srv/pillar/ceph/stack/stack.cfg</filename> 目录中定义。以下文件通常用于描述您的集群：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/global.yml</filename> - 该文件会影响 Salt 集群中的所有 Minion。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/cluster.yml</filename> - 该文件会影响名为 <literal>ceph</literal> 的 Ceph 集群中的所有 Minion。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/roles/<replaceable>role</replaceable>.yml</filename> - 会影响 <literal>ceph</literal> 集群中指定了特定角色的所有 Minion。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/minions/<replaceable>MINION_ID</replaceable>/yml</filename> - 会影响单个 Minion。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>重写包含默认值的目录</title>
+   <para>
+    <filename>/srv/pillar/ceph/stack/default</filename> 中存在存储了默认配置设置的平行目录树。请不要更改此处的值，否则会将其重写。
+   </para>
+  </note>
+
+  <para>
+   更改所收集的配置的典型过程如下：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     找到需要更改的配置项目的所在位置。例如，如果需要更改集群网络等集群相关设置，请编辑文件 <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>。
+    </para>
+   </step>
+   <step>
+    <para>
+     保存文件。
+    </para>
+   </step>
+   <step>
+    <para>
+     运行以下命令来校验所做的更改：
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh</screen>
+    <para>
+     ，再输入
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="ds-modify-ipv6">
+   <title>为 Ceph 集群部署启用 IPv6</title>
+   <para>
+    由于普遍使用的网络寻址是 IPv4，您需要通过自定义设置来启用 IPv6。DeepSea 没有自动发现 IPv6 寻址的功能。
+   </para>
+   <para>
+    要配置 IPv6，请将 <filename>/srv/pillar/ceph/stack/global.yml</filename> 文件中的 <option>public_network</option> 和 <option>cluster_network</option> 变量设置为有效的 IPv6 子网。例如：
+   </para>
+<screen>
+public_network: fd00:10::/64
+cluster_network: fd00:11::/64
+</screen>
+   <para>
+    然后运行 DeepSea 阶段 2，并确认网络信息与该设置匹配。Stage 3 将生成包含必要标志的 <filename>ceph.conf</filename>。
+   </para>
+   <important>
+    <title>不支持双栈</title>
+    <para>
+     Ceph 不支持双栈，即无法同时在 IPv4 和 IPv6 上运行 Ceph。DeepSea 验证将拒绝 <option>public_network</option> 与 <option>cluster_network</option> 之间或任一变量内的不匹配项。下面就是未通过验证的示例。
+    </para>
+<screen>
+public_network: "192.168.10.0/24 fd00:10::/64"
+</screen>
+   </important>
+   <tip>
+    <title>避免使用 <literal>fe80::/10 link-local</literal> 地址</title>
+    <para>
+     请避免使用 <literal>fe80::/10 link-local</literal> 地址。所有网络接口都会分配到一个 <literal>fe80</literal> 地址，因而需要有接口限定符才能正确进行路由。请指定分配给您站点的 IPv6 地址，或考虑使用 <literal>fd00::/8</literal>。这些地址是 ULA 的一部分，无法进行全局路由。
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,368 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_troubleshooting.xml" version="5.0" xml:id="storage-troubleshooting">
+ <title>查错</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  本章描述您在操作 Ceph 集群时可能会遇到的多种问题。
+ </para>
+ <sect1 xml:id="storage-bp-report-bug">
+  <title>报告软件问题</title>
+
+  <para>
+   如果您在运行 SUSE Enterprise Storage 6 时遇到了与集群的某些组件（例如 Ceph 或对象网关）相关的问题，请向 SUSE 技术支持报告该问题。建议使用 <command>supportconfig</command> 实用程序来报告问题。
+  </para>
+
+  <tip>
+   <para>
+    由于 <command>supportconfig</command> 是模块化软件，因此请确保已安装 <systemitem>supportutils-plugin-ses</systemitem> 包。
+   </para>
+<screen><prompt>tux &gt; </prompt>rpm -q supportutils-plugin-ses</screen>
+   <para>
+    如果 Ceph 服务器上缺少此包，可使用以下命令安装
+   </para>
+<screen><prompt>root # </prompt>zypper ref &amp;&amp; zypper in supportutils-plugin-ses</screen>
+  </tip>
+
+  <para>
+   尽管您可以在命令行中使用 <command>supportconfig</command>，但我们建议使用相关的 YaST 扩展模块。<link xlink:href="https://www.suse.com/documentation/sles-15/singlehtml/book_sle_admin/book_sle_admin.html#sec.admsupport.supportconfig"/> 上提供了有关 <command>supportconfig</command> 的详细信息。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-cluster-mntc-rados-striping">
+  <title>使用 <command>rados</command> 发送大型对象失败并显示“OSD 已满”</title>
+
+  <para>
+   <command>rados</command> 是用于管理 RADOS 对象存储的命令行实用程序。有关更多信息，请参见 <command>man 8 rados</command>。
+  </para>
+
+  <para>
+   如果您使用 <command>rados</command> 实用程序将大型对象发送到 Ceph 集群，例如
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>rados -p mypool put myobject /file/to/send</screen>
+
+  <para>
+   该对象可能会填满所有相关的 OSD 空间，并导致集群性能出现严重问题。
+  </para>
+ </sect1>
+ <sect1 xml:id="ceph-xfs-corruption">
+  <title>XFS 文件系统损坏</title>
+
+  <para>
+   在极少见的情况下（例如出现内核错误，或硬件损坏/配置不当），OSD 用来存储数据的底层文件系统 (XFS) 可能会受损或无法装入。
+  </para>
+
+  <para>
+   如果您确定硬件没有问题并且系统配置正确，请报告 SUSE Linux Enterprise Server 内核的 XFS 子系统出现了错误，并将特定的 OSD 标记为停机：
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd down <replaceable>OSD_ID</replaceable></screen>
+
+  <warning>
+   <title>不要格式化或修改受损的设备</title>
+   <para>
+    尽管使用 <command>xfs_repair</command> 来修复文件系统问题看似合理，但它会修改文件系统，因此请不要使用该命令。OSD 可以启动，但它的运行可能会受到影响。
+   </para>
+  </warning>
+
+  <para>
+   现在，请运行以下命令擦除底层磁盘，并重新创建 OSD：
+  </para>
+
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvm zap --data /dev/<replaceable>OSD_DISK_DEVICE</replaceable>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvm prepare --bluestore --data /dev/<replaceable>OSD_DISK_DEVICE</replaceable>
+</screen>
+ </sect1>
+ <sect1 xml:id="storage-bp-recover-toomanypgs">
+  <title>“每个 OSD 的 PG 数过多”状态讯息</title>
+
+  <para>
+   如果在运行 <command>ceph status</command> 之后收到<literal>每个 OSD 的 PG 数过多</literal>讯息，则表示超出了 <option>mon_pg_warn_max_per_osd</option> 值（默认值为 300）。系统会将此值与每个 OSD 的 PG 数比率进行比较。这意味着集群设置并不是最佳的。
+  </para>
+
+  <para>
+   创建存储池后，便不能减少 PG 数。您可以放心地删除尚不包含任何数据的存储池，然后重新创建具有较少 PG 的存储池。如果存储池中已包含数据，则唯一的解决方法是将 OSD 添加到集群，使每个 OSD 的 PG 比率变低。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-recover-stuckinactive">
+  <title>“<emphasis>nn</emphasis> pg 停滞在非工作状态”状态讯息</title>
+
+  <para>
+   如果在运行 <command>ceph status</command> 之后收到<literal>停滞在非工作状态</literal>状态讯息，则表示 Ceph 不知道要将存储的数据复制到何处，因此无法遵循复制规则。此问题可能在完成初始 Ceph 设置后立即发生，并且系统可自动修复。在其他情况下出现此问题可能需要进行手动交互，例如激活已中止的 OSD，或者将新的 OSD 添加到集群。在极少见的情况下，降低复制级别可能有所帮助。
+  </para>
+
+  <para>
+   如果位置组一直处于停滞状态，则您需要检查 <command>ceph osd tree</command> 的输出。输出采用的应该是树型结构，类似于<xref linkend="storage-bp-recover-osddown"/>中的示例。
+  </para>
+
+  <para>
+   如果 <command>ceph osd tree</command> 的输出的结构相对扁平，如以下示例中所示
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tree
+ID WEIGHT TYPE NAME    UP/DOWN REWEIGHT PRIMARY-AFFINITY
+-1      0 root default
+ 0      0 osd.0             up  1.00000          1.00000
+ 1      0 osd.1             up  1.00000          1.00000
+ 2      0 osd.2             up  1.00000          1.00000</screen>
+
+  <para>
+   您应该检查相关的 CRUSH 索引是否包含树型结构。如果 CRUSH 索引也是扁平的，或者不包含上面示例中所示的主机，则可能表示集群中的主机名解析未正常工作。
+  </para>
+
+  <para>
+   如果层次结构不正确（例如，根包含主机，但 OSD 位于顶层，并且本身未指定到主机），则您需要将 OSD 移到层次结构中的正确位置。可以使用 <command>ceph osd crush move</command> 和/或 <command>ceph osd crush set</command> 命令实现此目的。有关更多详细信息，请参见<xref linkend="op-crush"/>。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-recover-osdweight">
+  <title>OSD 权重为 0</title>
+
+  <para>
+   当 OSD 启动时，系统会给它指定一个权重。权重越高，集群向该 OSD 写入数据的几率就越大。该权重将在集群 CRUSH 索引中指定，或者通过 OSD 的启动脚本计算得出。
+  </para>
+
+  <para>
+   在某些情况下，计算出的 OSD 权重值可能会向下舍入到零。这表示不会安排该 OSD 存储数据，因此不会向其写入数据。发生此情况的原因通常是相应的磁盘太小（小于 15GB），应该更换为更大的磁盘。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-recover-osddown">
+  <title>OSD 停机</title>
+
+  <para>
+   OSD 守护进程的状态要么是正在运行，要么是已停止/停机。导致 OSD 停机的原因一般有以下三种：
+  </para>
+
+  <itemizedlist mark="bullet" spacing="normal">
+   <listitem>
+    <para>
+     硬盘故障。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     OSD 已崩溃。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     服务器已崩溃。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   可运行以下命令来查看 OSD 的详细状态
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tree
+# id  weight  type name up/down reweight
+ -1    0.02998  root default
+ -2    0.009995   host doc-ceph1
+ 0     0.009995      osd.0 up  1
+ -3    0.009995   host doc-ceph2
+ 1     0.009995      osd.1 up  1
+ -4    0.009995   host doc-ceph3
+ 2     0.009995      osd.2 down  1</screen>
+
+  <para>
+   示例列表显示 <literal>osd.2</literal> 已停机。然后，可以检查是否已装入 OSD 所在的磁盘：
+  </para>
+
+<screen><prompt>root # </prompt>lsblk -f
+ [...]
+ vdb
+ ├─vdb1               /var/lib/ceph/osd/ceph-2
+ └─vdb2</screen>
+
+  <para>
+   可以通过检查 OSD 的日志文件 <filename>/var/log/ceph/ceph-osd.2.log</filename> 来跟踪其停机原因。找到并解决 OSD 未运行的原因之后，请使用以下命令将它启动
+  </para>
+
+<screen><prompt>root # </prompt>systemctl start ceph-osd@2.service</screen>
+
+  <para>
+   请记得将 <literal>2</literal> 替换为已停止的 OSD 的实际编号。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-performance-slowosd">
+  <title>查找运行缓慢的 OSD</title>
+
+  <para>
+   优化集群性能时，识别集群中运行缓慢的存储/OSD 非常重要。原因在于，如果将数据写入（最）缓慢的磁盘，则会拖慢整个写操作，因为它始终要等待在所有相关磁盘上的操作全部完成。
+  </para>
+
+  <para>
+   找到存储瓶颈并非无足轻重。需要检查每一个 OSD 才能找出使写入过程减慢的 OSD。要针对单个 OSD 执行基准测试，请运行：
+  </para>
+
+<screen role="ceph_tell_osd_bench"><command>ceph tell</command> osd.<replaceable>OSD_ID_NUMBER</replaceable> bench</screen>
+
+  <para>
+   例如：
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph tell osd.0 bench
+ { "bytes_written": 1073741824,
+   "blocksize": 4194304,
+   "bytes_per_sec": "19377779.000000"}</screen>
+
+  <para>
+   然后，需要在每个 OSD 上运行此命令，并与 <literal>bytes_per_sec</literal> 值相比较，以找出（最）缓慢的 OSD。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-recover-clockskew">
+  <title>解决时钟偏差警告</title>
+
+  <para>
+   所有集群节点中的时间信息都必须同步。如果某个节点的时间未完全同步，在检查集群状态时，您可能会收到时钟偏差警告。
+  </para>
+
+  <para>
+   可使用 NTP 来管理时间同步（请参见 <link xlink:href="http://en.wikipedia.org/wiki/Network_Time_Protocol"/>）。设置每个节点，使其时间与一台或多台 NTP 服务器同步，最好是与同组的 NTP 服务器同步。如果节点上仍然出现时间偏差，请执行以下步骤予以修复：
+  </para>
+
+<screen><prompt>root # </prompt>systemctl stop chronyd.service
+<prompt>root # </prompt>systemctl stop ceph-mon.target
+<prompt>root # </prompt>systemctl start chronyd.service
+<prompt>root # </prompt>systemctl start ceph-mon.target</screen>
+
+  <para>
+   然后，您可以使用 <command>chronyc sourcestats</command> 查看时间偏差。
+  </para>
+
+  <para>
+   Ceph Monitor 的时钟需要同步，彼此之间的偏差必须控制在 0.05 秒以内。有关详细信息，请参考<xref linkend="Cluster-Time-Setting"/>。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-performance-net-issues">
+  <title>网络问题导致集群性能不佳</title>
+
+  <para>
+   导致集群性能变差的原因有很多，其中之一可能是网络问题。在这种情况下，您可能会发现集群即将达到仲裁数、OSD 和 Monitor 节点脱机、数据传输耗费很长时间，或者尝试了很多次重新连接。
+  </para>
+
+  <para>
+   要检查集群性能下降是否由网络问题导致，请检查 <filename>/var/log/ceph</filename> 目录中的 Ceph 日志文件。
+  </para>
+
+  <para>
+   要解决集群上的网络问题，请重点关注以下几点：
+  </para>
+
+  <itemizedlist mark="bullet" spacing="normal">
+   <listitem>
+    <para>
+     基本网络诊断。尝试使用 DeepSea 诊断工具运行程序 <literal>net.ping</literal> 在集群节点之间执行 ping 命令，确定单个接口是否可以连接到特定的接口，并了解平均响应时间。此命令还会报告比平均值要慢得多的任何特定响应时间。例如：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run net.ping
+  Succeeded: 8 addresses from 7 minions average rtt 0.15 ms</screen>
+    <para>
+     尝试在启用极大帧的情况下验证所有接口：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run net.jumbo_ping
+  Succeeded: 8 addresses from 7 minions average rtt 0.26 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     网络性能基准测试。尝试使用 DeepSea 的网络性能运行程序 <literal>net.iperf</literal> 来测试节点间的网络带宽。在某个给定的集群节点上，有许多 <command>iperf</command> 进程（具体视 CPU 核心数而定）作为服务器启动。其余的集群节点将作为客户端来生成网络流量。该运行程序会报告单个节点上所有 <command>iperf</command> 进程的累积带宽。此值应该能反映所有集群节点上可达到的最大网络吞吐量。例如：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run net.iperf cluster=ceph output=full
+192.168.128.1:
+    8644.0 Mbits/sec
+192.168.128.2:
+    10360.0 Mbits/sec
+192.168.128.3:
+    9336.0 Mbits/sec
+192.168.128.4:
+    9588.56 Mbits/sec
+192.168.128.5:
+    10187.0 Mbits/sec
+192.168.128.6:
+    10465.0 Mbits/sec</screen>
+   </listitem>
+   <listitem>
+    <para>
+     检查集群节点上的防火墙设置。确保这些设置不会阻止 Ceph 运转所需的端口/协议。有关防火墙设置的详细信息，请参见<xref linkend="storage-bp-net-firewall"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     检查网卡、电缆或交换机等网络硬件是否正常运行。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <tip>
+   <title>独立网络</title>
+   <para>
+    为确保在集群节点之间进行快速安全的网络通讯，请设置一个专供集群 OSD 和 Monitor 节点使用的独立网络。
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="trouble-jobcache">
+  <title><filename>/var</filename> 空间不足</title>
+
+  <para>
+   默认情况下，Salt Master 会在其<emphasis>作业缓存</emphasis>中保存每个 Minion 针对每个作业返回的内容。以后便可使用缓存来查找之前的作业的结果。缓存目录默认为 <filename>/var/cache/salt/master/jobs/</filename>。
+  </para>
+
+  <para>
+   每个 Minion 针对每个作业返回的内容都保存在一个文件中。久而久之，此目录会变得非常大，具体大小取决于发布的作业数量和 <filename>/etc/salt/master</filename> 文件中 <option>keep_jobs</option> 选项的值。<option>keep_jobs</option> 用于设置应将有关过去的 Minion 作业的信息保留多少小时（默认值为 24）。
+  </para>
+
+<screen>keep_jobs: 24</screen>
+
+  <important>
+   <title>请勿<option>将 keep_jobs 设置为 0</option></title>
+   <para>
+    如果将 <option>keep_jobs</option> 设置为“0”，则作业缓存清除程序<emphasis>永不</emphasis>运行，可能会导致分区变满。
+   </para>
+  </important>
+
+  <para>
+   要禁用作业缓存，请将 <option>job_cache</option> 设置为“False”：
+  </para>
+
+<screen>job_cache: False</screen>
+
+  <tip>
+   <title>恢复因作业缓存而变满的分区</title>
+   <para>
+    当由于 <option>keep_jobs</option> 设置不当而导致包含作业缓存文件的分区变满时，请执行以下步骤释放磁盘空间并改进作业缓存设置：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      停止 Salt Master 服务：
+     </para>
+<screen><prompt>root@master # </prompt>systemctl stop salt-master</screen>
+    </step>
+    <step>
+     <para>
+      通过编辑 <filename>/etc/salt/master</filename> 来更改与作业缓存相关的 Salt Master 配置：
+     </para>
+<screen>job_cache: False
+keep_jobs: 1</screen>
+    </step>
+    <step>
+     <para>
+      清除 Salt Master 作业缓存：
+     </para>
+<screen><prompt>root # </prompt>rm -rfv /var/cache/salt/master/jobs/*</screen>
+    </step>
+    <step>
+     <para>
+      启动 Salt Master 服务：
+     </para>
+<screen><prompt>root@master # </prompt>systemctl start salt-master</screen>
+    </step>
+   </procedure>
+  </tip>
+ </sect1>
+</chapter>

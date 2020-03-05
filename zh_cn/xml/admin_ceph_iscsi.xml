@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_iscsi.xml" version="5.0" xml:id="cha-ceph-iscsi">
+ <title>Ceph iSCSI 网关</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>编辑</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  本章重点介绍与 iSCSI 网关相关的管理任务。有关部署过程，请参见<xref linkend="cha-ceph-as-iscsi"/>。<remark role="fixme">Can YaST be used for iSCSI?</remark>
+ </para>
+ <sect1 xml:id="ceph-iscsi-connect">
+  <title>连接 <systemitem class="daemon">ceph-iscsi</systemitem> 管理的目标</title>
+
+  <para>
+   本节介绍如何从运行 Linux、Microsoft Windows 或 VMware 的客户端连接到 <systemitem class="daemon">ceph-iscsi</systemitem> 管理的目标。
+  </para>
+
+  <sect2 xml:id="ceph-iscsi-connect-linux">
+   <title>Linux (<systemitem>open-iscsi</systemitem>)</title>
+   <para>
+    使用 <systemitem>open-iscsi</systemitem> 连接 <systemitem class="daemon">ceph-iscsi</systemitem> 支持的 iSCSI 目标需要执行两个步骤。首先，授权人必须发现网关主机上可用的 iSCSI 目标，然后，必须登录并映射可用的逻辑单元 (LU)。
+   </para>
+   <para>
+    这两个步骤都需要 <systemitem>open-iscsi</systemitem> 守护进程处于运行状态。启动 <systemitem>open-iscsi</systemitem> 守护进程的方式取决于您的 Linux 发行套件：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      在 SUSE Linux Enterprise Server (SLES) 和 Red Hat Enterprise Linux (RHEL) 主机上，运行 <command>systemctl start iscsid</command>（如果 <command>systemctl</command> 不可用，请运行 <command>service iscsid start</command>）。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      在 Debian 和 Ubuntu 主机上，运行 <command>systemctl start open-iscsi</command>（或 <command>service open-iscsi start</command>）。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    如果授权人主机运行 SUSE Linux Enterprise Server，请参见 <link xlink:href="https://www.suse.com/documentation/sles-15/book_storage/data/sec_iscsi_initiator.html"/> 了解有关如何连接 iSCSI 目标的详细信息。
+   </para>
+   <para>
+    对于支持 <systemitem>open-iscsi</systemitem> 的任何其他 Linux 发行套件，请继续发现 <systemitem class="daemon">ceph-iscsi</systemitem> 网关上的目标（本示例使用 iscsi1.example.com 作为端口地址；对于多路径访问，请使用 iscsi2.example.com 重复这些步骤）：
+   </para>
+<screen><prompt>root # </prompt>iscsiadm -m discovery -t sendtargets -p iscsi1.example.com
+192.168.124.104:3260,1 iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol</screen>
+   <para>
+    然后登录该端口。如果登录成功完成，则端口中所有基于 RBD 的逻辑单元将立即在系统 SCSI 总线上变为可用：
+   </para>
+<screen><prompt>root # </prompt>iscsiadm -m node -p iscsi1.example.com --login
+Logging in to [iface: default, target: iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260] (multiple)
+Login to [iface: default, target: iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260] successful.</screen>
+   <para>
+    针对其他端口 IP 地址或主机重复此过程。
+   </para>
+   <para>
+    如果系统上已安装 <systemitem>lsscsi</systemitem> 实用程序，您可以使用它来枚举系统上可用的 SCSI 设备：
+   </para>
+<screen>lsscsi
+[8:0:0:0]    disk    SUSE     RBD              4.0   /dev/sde
+[9:0:0:0]    disk    SUSE     RBD              4.0   /dev/sdf</screen>
+   <para>
+    在多路径配置（其中两个已连接的 iSCSI 设备代表一个相同的 LU）中，您还可以使用 <systemitem>multipath</systemitem> 实用程序检查多路径设备状态：
+   </para>
+<screen><prompt>root # </prompt>multipath -ll
+360014050cf9dcfcb2603933ac3298dca dm-9 SUSE,RBD
+size=49G features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 8:0:0:0 sde 8:64 active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+`- 9:0:0:0 sdf 8:80 active ready running</screen>
+   <para>
+    现在，可根据需要，将此多路径设备用作任何块设备。例如，可将该设备用作 Linux 逻辑卷管理 (LVM) 的物理卷，或者直接在该设备上创建文件系统。下面的示例说明如何在新连接的多路径 iSCSI 卷上创建 XFS 文件系统：
+   </para>
+<screen><prompt>root # </prompt>mkfs -t xfs /dev/mapper/360014050cf9dcfcb2603933ac3298dca
+log stripe unit (4194304 bytes) is too large (maximum is 256KiB)
+log stripe unit adjusted to 32KiB
+meta-data=/dev/mapper/360014050cf9dcfcb2603933ac3298dca isize=256    agcount=17, agsize=799744 blks
+         =                       sectsz=512   attr=2, projid32bit=1
+         =                       crc=0        finobt=0
+data     =                       bsize=4096   blocks=12800000, imaxpct=25
+         =                       sunit=1024   swidth=1024 blks
+naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+log      =internal log           bsize=4096   blocks=6256, version=2
+         =                       sectsz=512   sunit=8 blks, lazy-count=1
+realtime =none                   extsz=4096   blocks=0, rtextents=0</screen>
+   <para>
+    请注意，由于 XFS 是非集群文件系统，无论何时，您都只能将它装入到单个 iSCSI 授权人节点上。
+   </para>
+   <para>
+    任何时候如果要停止使用与特定目标关联的 iSCSI LU，请运行以下命令：
+   </para>
+<screen><prompt>root # </prompt>iscsiadm -m node -p iscsi1.example.com --logout
+Logging out of session [sid: 18, iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260]
+Logout of [sid: 18, target: iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol, portal: 192.168.124.104,3260] successful.</screen>
+   <para>
+    与执行发现和登录时一样，必须针对所有端口 IP 地址或主机名重复注销步骤。
+   </para>
+   <sect3 xml:id="ceph-iscsi-connect-linux-multipath">
+    <title>多路径配置</title>
+    <para>
+     多路径配置保留在客户端或授权人上，并不依赖于任何 <systemitem class="daemon">ceph-iscsi</systemitem> 配置。在使用块存储之前，请选择一个策略。编辑 <filename>/etc/multipath.conf</filename> 之后，请使用以下命令重启动 <systemitem>multipathd</systemitem>
+    </para>
+<screen><prompt>root # </prompt>systemctl restart multipathd</screen>
+    <para>
+     对于包含友好名称的主动/被动配置，请将
+    </para>
+<screen>defaults {
+  user_friendly_names yes
+}</screen>
+    <para>
+     添加到 <filename>/etc/multipath.conf</filename>。成功连接目标后，请运行
+    </para>
+<screen><prompt>root # </prompt>multipath -ll
+mpathd (36001405dbb561b2b5e439f0aed2f8e1e) dm-0 SUSE,RBD
+size=2.0G features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 2:0:0:3 sdl 8:176 active ready running
+|-+- policy='service-time 0' prio=1 status=enabled
+| `- 3:0:0:3 sdj 8:144 active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+  `- 4:0:0:3 sdk 8:160 active ready running</screen>
+    <para>
+     注意每个链路的状态。对于主动/主动配置，请将
+    </para>
+<screen>defaults {
+  user_friendly_names yes
+}
+
+devices {
+  device {
+    vendor "(LIO-ORG|SUSE)"
+    product "RBD"
+    path_grouping_policy "multibus"
+    path_checker "tur"
+    features "0"
+    hardware_handler "1 alua"
+    prio "alua"
+    failback "immediate"
+    rr_weight "uniform"
+    no_path_retry 12
+    rr_min_io 100
+  }
+}</screen>
+    <para>
+     添加到 <filename>/etc/multipath.conf</filename>。重启动 <systemitem>multipathd</systemitem> 并运行
+    </para>
+<screen><prompt>root # </prompt>multipath -ll
+mpathd (36001405dbb561b2b5e439f0aed2f8e1e) dm-3 SUSE,RBD
+size=2.0G features='1 queue_if_no_path' hwhandler='1 alua' wp=rw
+`-+- policy='service-time 0' prio=50 status=active
+  |- 4:0:0:3 sdj 8:144 active ready running
+  |- 3:0:0:3 sdk 8:160 active ready running
+  `- 2:0:0:3 sdl 8:176 active ready running</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-connect-win">
+   <title>Microsoft Windows（Microsoft iSCSI 授权人）</title>
+   <para>
+    要从 Windows 2012 服务器连接 SUSE Enterprise Storage iSCSI 目标，请执行以下步骤：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      打开 Windows 服务器管理器。在仪表盘中，选择 <menuchoice><guimenu>Tools（工具）</guimenu><guimenu>iSCSI Initiator（iSCSI 授权人）</guimenu></menuchoice>。<guimenu>iSCSI Initiator Properties</guimenu>（iSCSI 授权人属性）对话框随即显示。选择 <guimenu>Discovery</guimenu>（发现）选项卡：
+     </para>
+     <figure>
+      <title>iSCSI 授权人属性</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-initiator-props.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-initiator-props.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      在 <guimenu>Discover Target Portal</guimenu>（发现目标端口）对话框中的 <guimenu>Target</guimenu>（目标）字段内，输入目标的主机名或 IP 地址，然后点击 <guimenu>OK</guimenu>（确定）：
+     </para>
+     <figure>
+      <title>发现目标端口</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-ip.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-ip.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      针对所有其他网关主机名或 IP 地址重复此过程。完成后，查看 <guimenu>Target Portals</guimenu>（目标端口）列表：
+     </para>
+     <figure>
+      <title>目标端口</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-ip-list.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-ip-list.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      接下来，切换到 <guimenu>Targets</guimenu>（目标）选项卡并查看已发现的目标。
+     </para>
+     <figure>
+      <title>目标</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-targets.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-targets.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      在 <guimenu>Targets</guimenu>（目标）选项卡中点击 <guimenu>Connect</guimenu>（连接）。<guimenu>Connect To Target</guimenu>（连接目标）对话框随即显示。选中 <guimenu>Enable Multi-path</guimenu>（启用多路径）复选框以启用多路径 I/O (MPIO)，然后点击 <guimenu>OK</guimenu>（确定）：
+     </para>
+    </step>
+    <step>
+     <para>
+      <guimenu>Connect to Target</guimenu>（连接目标）对话框关闭后，选择 <guimenu>Properties</guimenu>（属性）查看目标的属性：
+     </para>
+     <figure>
+      <title>iSCSI 目标属性</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-properties.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-properties.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      选择 <guimenu>Devices</guimenu>（设备），然后点击 <guimenu>MPIO</guimenu> 查看多路径 I/O 配置：
+     </para>
+     <figure>
+      <title>设备详细信息</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-device-details.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-device-details.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      默认的<guimenu>负载平衡策略</guimenu>为 <guimenu>Round Robin With Subset</guimenu>（带子集的循环法）。如果您偏向于单纯的故障转移配置，请将策略更改为 <guimenu>Fail Over Only</guimenu>（仅故障转移）。
+     </para>
+    </step>
+   </procedure>
+   <para>
+    iSCSI 授权人的配置到此结束。现在，可以像使用任何其他 SCSI 设备一样使用 iSCSI 卷，并可将其初始化，使其可用作卷和驱动器。点击 <guimenu>OK</guimenu>（确定）关闭 <guimenu>iSCSI Initiator Properties</guimenu>（iSCSI 授权人属性）对话框，然后继续在 <guimenu>Server Manager</guimenu>（服务器管理器）仪表盘中配置 <guimenu>File and Storage Services</guimenu>（文件和存储服务）角色。
+   </para>
+   <para>
+    观察新连接的卷。该卷标识为 iSCSI 总线上的 <emphasis>SUSE RBD SCSI 多路径驱动器</emphasis>，并且最初标记为<emphasis>脱机</emphasis>状态，其分区表类型为<emphasis>未知</emphasis>。如果新卷未立即显示，请从 <guimenu>Task</guimenu>（任务）下拉框中选择 <guimenu>Rescan Storage</guimenu>（重新扫描存储），以重新扫描 iSCSI 总线。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      右键点击 iSCSI 卷，然后从上下文菜单中选择 <guimenu>New Volume</guimenu>（新建卷）。<guimenu>New Volume Wizard</guimenu>（新建卷向导）随即显示。点击 <guimenu>Next</guimenu>（下一步），突出显示新连接的 iSCSI 卷，然后点击 <guimenu>Next</guimenu>（下一步）开始创建新卷。
+     </para>
+     <figure>
+      <title>新建卷向导</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-volume-wizard.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-volume-wizard.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      该设备最初是空的，不包含任何分区表。当出现对话框指出将要使用 GPT 分区表初始化卷时，确认该操作：
+     </para>
+     <figure>
+      <title>脱机磁盘提示</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-win-prompt1.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-win-prompt1.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      选择卷大小。通常，用户会使用设备的全部容量。然后，指定新建卷将在其上变为可用状态的驱动器盘符或目录名称。接下来，选择要在新卷上创建的文件系统。最后，点击 <guimenu>Create</guimenu>（创建）确认所做的选择并完成卷的创建：
+     </para>
+     <figure>
+      <title>确认选择的卷设置</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-volume-confirm.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-volume-confirm.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      完成该过程后，请检查结果，然后点击 <guimenu>Close</guimenu>（关闭）结束驱动器初始化。完成初始化后，便可以像使用新初始化的本地驱动器一样使用该卷（及其 NTFS 文件系统）。
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-connect-vmware">
+   <title>VMware</title>
+   <para/>
+   <procedure>
+    <step>
+     <para>
+      要连接到 <systemitem class="daemon">ceph-iscsi</systemitem> 管理的 iSCSI 卷，需要有配置好的 iSCSI 软件适配器。如果 vSphere 配置中未提供此类适配器，请选择 <menuchoice><guimenu>Configuration（配置）</guimenu><guimenu>Storage Adapters（存储适配器）</guimenu> <guimenu>Add（增加）</guimenu><guimenu>iSCSI Software initiator（iSCSI 软件授权人）</guimenu></menuchoice>来创建一个适配器。
+     </para>
+    </step>
+    <step>
+     <para>
+      如果适用，请通过右键点击该适配器并从上下文菜单中选择 <guimenu>Properties</guimenu>（属性），来选择该适配器的属性：
+     </para>
+     <figure>
+      <title>iSCSI 授权人属性</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi_vmware_adapter_props.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi_vmware_adapter_props.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      在 <guimenu>iSCSI Software Initiator</guimenu>（iSCSI 软件授权人）对话框中，点击 <guimenu>Configure</guimenu>（配置）按钮。然后转到 <guimenu>Dynamic Discovery</guimenu>（动态发现）选项卡并选择 <guimenu>Add</guimenu>（增加）。
+     </para>
+    </step>
+    <step>
+     <para>
+      输入 <systemitem class="daemon">ceph-iscsi</systemitem> iSCSI 网关的 IP 地址或主机名。如果在故障转移配置中运行多个 iSCSI 网关，请针对要运行的所有网关重复此步骤。
+     </para>
+     <figure>
+      <title>添加目标服务器</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-add-target.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-add-target.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      输入所有 iSCSI 网关后，请在对话框中点击 <guimenu>OK</guimenu>（确定），发起对 iSCSI 适配器的重新扫描。
+     </para>
+    </step>
+    <step>
+     <para>
+      重新扫描完成后，新的 iSCSI 设备会显示在 <guimenu>Details</guimenu>（详细信息）窗格中的 <guimenu>Storage Adapters</guimenu>（存储适配器）列表下。对于多路径设备，现在可以右键点击该适配器，然后从上下文菜单中选择 <guimenu>Manage Paths</guimenu>（管理路径）：
+     </para>
+     <figure>
+      <title>管理多路径设备</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-multipath.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-multipath.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      您现在应该会看到，所有路径的 <guimenu>Status</guimenu>（状态）下面都带有绿灯。其中一个路径应该已标记为 <guimenu>Active (I/O)</guimenu>（工作 (I/O)），其他所有路径只是标记为 <guimenu>Active</guimenu>（工作）：
+     </para>
+     <figure>
+      <title>多路径的路径列表</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-paths.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-paths.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      现在，您可以从 <guimenu>Storage Adapters</guimenu>（存储适配器）切换到标为 <guimenu>Storage</guimenu>（存储）的项目。在窗格右上角选择 <guimenu>Add Storage...</guimenu>（添加存储...）打开 <guimenu>Add Storage</guimenu>（添加存储）对话框。然后选择 <guimenu>Disk/LUN</guimenu>（磁盘/LUN）并点击 <guimenu>Next</guimenu>（下一步）。新添加的 iSCSI 设备会显示在 <guimenu>选择磁盘/LUN</guimenu>（Select Disk/LUN）列表中。选择该设备，然后点击 <guimenu>Next</guimenu>（下一步）继续：
+     </para>
+     <figure>
+      <title>“Add Storage”（添加存储）对话框</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-add-storage-dialog.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-add-storage-dialog.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      点击 <guimenu>Next</guimenu>（下一步）接受默认的磁盘布局。
+     </para>
+    </step>
+    <step>
+     <para>
+      在 <guimenu>Properties</guimenu>（属性）窗格中，为新数据存储指定名称，然后点击 <guimenu>Next</guimenu>（下一步）。接受将卷的整个空间用于数据存储的默认设置，或者选择 <guimenu>Custom Space Setting</guimenu>（自定义空间设置）以创建较小的数据存储：
+     </para>
+     <figure>
+      <title>自定义空间设置</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-custom-datastore.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-custom-datastore.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      点击 <guimenu>Finish</guimenu>（完成）以完成数据存储的创建。
+     </para>
+     <para>
+      新数据存储现在即会显示在数据存储列表中，您可以选择它来检索详细信息。现在，您可以像使用任何其他 vSphere 数据存储一样使用 <systemitem class="daemon">ceph-iscsi</systemitem> 支持的 iSCSI 卷。
+     </para>
+     <figure>
+      <title>iSCSI 数据存储概述</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-overview.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-overview.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-conclude">
+  <title>结论</title>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> 是 SUSE Enterprise Storage 6 的一个关键组件，使用它可以从任何支持 iSCSI 协议的服务器或客户端访问高度可用的分布式块存储。在一个或多个 iSCSI 网关主机上使用 <systemitem class="daemon">ceph-iscsi</systemitem> 可将 Ceph RBD 映像用作与 iSCSI 目标关联的逻辑单元 (LU)，并可根据需要以负载平衡且高度可用的方式来访问该逻辑单元。
+  </para>
+
+  <para>
+   由于所有 <systemitem class="daemon">ceph-iscsi</systemitem> 配置都存储在 Ceph RADOS 对象存储中，<systemitem class="daemon">ceph-iscsi</systemitem> 网关主机先天就不具有持久性状态，因而可以任意对其进行更换或者增减。因此，借助 SUSE Enterprise Storage 6，SUSE 客户可在市售硬件和完全开源的平台上运行真正的分布式、高度可用、有弹性且可自我修复的企业存储技术。
+  </para>
+ </sect1>
+</chapter>

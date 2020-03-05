@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="containerized-kubernetes.xml" version="5.0" xml:id="cha-container-kubernetes">
+
+ <title>SUSE Enterprise Storage 6 zusätzlich zu SUSE CaaS Platform 4 auf einem Kubernetes-Cluster</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>Bearbeiten</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>Ja</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <warning>
+  <title>Technology Preview</title>
+  <para>
+   Die Ausführung eines containerisierten Ceph Clusters auf SUSE CaaS Platform ist eine Technology Preview. Nehmen Sie keine Implementierung auf einem Produktions-Kubernetes-Cluster vor.
+  </para>
+ </warning>
+ <para>
+  In diesem Kapitel wird die Implementierung von SUSE Enterprise Storage 6 in containerisierter Form zusätzlich zu SUSE CaaS Platform 4 auf einem Kubernetes-Cluster erläutert.
+ </para>
+ <sect1 xml:id="kube-consider">
+  <title>Vorüberlegungen</title>
+
+  <para>
+   Vor der Implementierung sind folgende Punkte zu beachten:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     SUSE Enterprise Storage 6 führt Ceph in Kubernetes mithilfe des vorgeschalteten Projekts Rook aus (<link xlink:href="https://rook.io/"/>).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Je nach Konfiguration belegt Rook unter Umständen <emphasis>alle</emphasis> nicht genutzten Datenträger auf allen Knoten in einem Kubernetes-Cluster.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Für die Einrichtung sind privilegierte Container erforderlich.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="kube-prereq">
+  <title>Voraussetzungen</title>
+
+  <para>
+   Vor der Implementierung muss Folgendes vorliegen:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Ein funktionsfähiger Cluster mit SUSE CaaS Platform 4.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Worker-Knoten mit SUSE CaaS Platform 4 und einer Reihe zusätzlicher Datenträger, die als Speicher für den Ceph Cluster angehängt sind.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="kube-rook-manifests">
+  <title>Abrufen der Rook-Manifeste</title>
+
+  <para>
+   Der Rook-Orchestrator nutzt Konfigurationsdateien im YAML-Format, sogenannte <emphasis>Manifeste</emphasis>. Die erforderlichen Manifeste befinden sich im RPM-Paket
+   <package>rook-k8s-yaml</package> . Führen Sie die Installation mit folgendem Befehl aus:
+  </para>
+
+<screen><prompt>root # </prompt>zypper install rook-k8s-yaml</screen>
+ </sect1>
+ <sect1 xml:id="kube-install">
+  <title>Installation</title>
+
+  <para>
+   Rook-Ceph besteht aus zwei Hauptkomponenten: dem „Operator“, der durch Kubernetes ausgeführt wird und die Erstellung von Ceph Clustern ermöglicht, und dem Ceph „Cluster“ selbst, der vom Operator erstellt und teilweise verwaltet wird.
+  </para>
+
+  <sect2 xml:id="kube-configure">
+   <title>Konfiguration</title>
+   <sect3 xml:id="kube-configure-global">
+    <title>Globale Konfiguration</title>
+    <para>
+     Mit den Manifesten in dieser Einrichtung werden alle Rook- und Ceph-Komponenten im Namespace „rook-ceph“ installiert. Soll dies geändert werden, passen Sie alle Verweise auf den Namespace in den Kubernetes-Manifesten entsprechend an.
+    </para>
+    <para>
+     Bearbeiten Sie ggf. die Konfiguration der Pod-Sicherheitsrichtlinie (Pod Security Policy) in <filename>common.yaml</filename> und beschränken Sie die Sicherheitsanforderungen von Rook, je nach den zu verwendenden Rook-Funktionen. Beachten Sie die Kommentare in der Manifestdatei.
+    </para>
+   </sect3>
+   <sect3 xml:id="kube-config-operator">
+    <title>Operatorkonfiguration</title>
+    <para>
+     Mit dem Manifest <filename>operator.yaml</filename> wird der Rook-Operator konfiguriert. Änderungen sind in der Regel nicht erforderlich. Weitere Informationen finden Sie in den Kommentaren in der Manifestdatei.
+    </para>
+   </sect3>
+   <sect3 xml:id="kube-config-ceph">
+    <title>Ceph Cluster-Konfiguration</title>
+    <para>
+     Das Manifest <filename>cluster.yaml</filename> ist für die Konfiguration des eigentlichen Ceph Clusters zuständig, der in Kubernetes ausgeführt wird. Eine ausführliche Beschreibung aller verfügbaren Optionen finden Sie in der vorgeschalteten Rook-Dokumentation unter <link xlink:href="https://rook.io/docs/rook/v1.0/ceph-cluster-crd.html"/>.
+    </para>
+    <para>
+     Standardmäßig ist Rook für die Nutzung aller Knoten konfiguriert, die nicht mit <option>node-role.kubernetes.io/master:NoSchedule</option> behaftet sind und die konfigurierten Platzierungseinstellungen befolgen (siehe <link xlink:href="https://rook.io/docs/rook/v1.0/ceph-cluster-crd.html#placement-configuration-settings"/>). Im folgenden Beispiel wird dieses Verhalten deaktiviert und es werden nur die Knoten herangezogen, die explizit im Abschnitt mit den Knoten angegeben sind:
+    </para>
+<screen>
+storage:
+  useAllNodes: false
+  nodes:
+    - name: caasp4-worker-0
+    - name: caasp4-worker-1
+    - name: caasp4-worker-2
+</screen>
+    <note>
+     <para>
+      Standardmäßig ist Rook für die Nutzung aller freien und leeren Datenträger auf allen Knoten als Ceph-Speicher konfiguriert.
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="kube-config-docs">
+    <title>Dokumentation</title>
+    <itemizedlist>
+     <listitem>
+      <para>
+       In der vorgeschalteten Rook-Ceph-Dokumentation unter <link xlink:href="https://rook.github.io/docs/rook/master/ceph-storage.html"/> finden Sie ausführliche Informationen zur Konfiguration erweiterter Implementierungen. Hier finden Sie Erläuterungen zu den Grundlagen von Rook-Ceph, bevor Sie sich mit erweiterten Konfigurationen beschäftigen.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Weitere Informationen zu SUSE CaaS Platform finden Sie unter <link xlink:href="https://www.suse.com/documentation/suse-caasp"/>.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="kube-config-rook-operator">
+   <title>Erstellen des Rook-Operators</title>
+   <para>
+    Installieren Sie die gängigen Rook-Ceph-Komponenten, die CSI-Rollen und den Rook-Ceph-Operator. Führen Sie hierzu folgendes Kommando auf dem SUSE CaaS Platform Master Node aus:
+   </para>
+<screen><prompt>root # </prompt>kubectl apply -f common.yaml -f operator.yaml</screen>
+   <para>
+    Mit <filename>common.yaml</filename> werden der Namespace „rook-ceph“, die Ceph CRDs (Custom Resource Definition) (siehe <link xlink:href="https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/"/>), mit denen Kubernetes die Ceph-Objekte erkennt (z. B. „CephCluster“), sowie die RBAC-Rollen und die Pod-Sicherheitsrichtlinien erstellt (siehe <link xlink:href="https://kubernetes.io/docs/concepts/policy/pod-security-policy/"/>), sodass Rook in der Lage ist, die clusterspezifischen Ressourcen zu verwalten.
+   </para>
+   <tip>
+    <title>Verwendung von <option>hostNetwork</option> und <option>hostPorts</option></title>
+    <para>
+     Wenn <option>hostNetwork: true</option> in der Cluster-Ressourcendefinition angegeben ist, muss die Nutzung von <option>hostNetwork</option> zugelassen werden. Außerdem muss die Nutzung von <option>hostPorts</option> in <literal>PodSecurityPolicy</literal> zugelassen werden.
+    </para>
+   </tip>
+   <para>
+    Prüfen Sie die Installation. Führen Sie hierzu <command>kubectl get pods -n rook-ceph</command> auf dem SUSE CaaS Platform Master Node aus, beispielsweise:
+   </para>
+<screen><prompt>root # </prompt>kubectl get pods -n rook-ceph
+NAME                                     READY   STATUS      RESTARTS   AGE
+rook-ceph-agent-57c9j                    1/1     Running     0          22h
+rook-ceph-agent-b9j4x                    1/1     Running     0          22h
+rook-ceph-operator-cf6fb96-lhbj7         1/1     Running     0          22h
+rook-discover-mb8gv                      1/1     Running     0          22h
+rook-discover-tztz4                      1/1     Running     0          22h</screen>
+  </sect2>
+
+  <sect2 xml:id="kube-create-ceph-cluster">
+   <title>Erstellen des Ceph Clusters</title>
+   <para>
+    Sobald Sie <filename>cluster.yaml</filename> gemäß Ihren Anforderungen angepasst haben, können Sie den Ceph Cluster erstellen. Führen Sie folgendes Kommando auf dem SUSE CaaS Platform Master Node aus:
+   </para>
+<screen><prompt>root # </prompt>kubectl apply -f cluster.yaml</screen>
+   <para>
+    Beobachten Sie den Namespace „rook-ceph“, in dem der Ceph Cluster erstellt wird. Sie werden so viele Ceph Monitors sehen, wie im Manifest <filename>cluster.yaml</filename> konfiguriert (standardmäßig 3), außerdem einen Ceph Manager und so viele Ceph OSDs, wie freie Datenträger vorhanden sind.
+   </para>
+   <tip>
+    <title>Temporäre OSD-Pods</title>
+    <para>
+     Beim Bootstrapping des Ceph Clusters werden einige Pods mit dem Namen <literal>rook-ceph-osd-prepare-<replaceable>NODE-NAME</replaceable></literal> eine Zeit lang ausgeführt und dann mit dem Status „Completed“ beendet. Wie der Name schon besagt, implementieren diese Pods die Ceph OSDs. Sie werden nicht gelöscht, sodass Sie ihre Protokolle nach dem Beenden einsehen können. Beispiel:
+    </para>
+<screen><prompt>root # </prompt>kubectl get pods --namespace rook-ceph
+NAME                                         READY  STATUS     RESTARTS  AGE
+rook-ceph-agent-57c9j                        1/1    Running    0         22h
+rook-ceph-agent-b9j4x                        1/1    Running    0         22h
+rook-ceph-mgr-a-6d48564b84-k7dft             1/1    Running    0         22h
+rook-ceph-mon-a-cc44b479-5qvdb               1/1    Running    0         22h
+rook-ceph-mon-b-6c6565ff48-gm9wz             1/1    Running    0         22h
+rook-ceph-operator-cf6fb96-lhbj7             1/1    Running    0         22h
+rook-ceph-osd-0-57bf997cbd-4wspg             1/1    Running    0         22h
+rook-ceph-osd-1-54cf468bf8-z8jhp             1/1    Running    0         22h
+rook-ceph-osd-prepare-caasp4-worker-0-f2tmw  0/2    Completed  0         9m35s
+rook-ceph-osd-prepare-caasp4-worker-1-qsfhz  0/2    Completed  0         9m33s
+rook-ceph-tools-76c7d559b6-64rkw             1/1    Running    0         22h
+rook-discover-mb8gv                          1/1    Running    0         22h
+rook-discover-tztz4                          1/1    Running    0         22h</screen>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="kube-using-rook">
+  <title>Rook als Speicher für Kubernetes-Workload</title>
+
+  <para>
+   Mit Rook können Sie drei verschiedene Speicherarten nutzen:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><emphasis role="bold">Objektspeicher</emphasis></term>
+    <listitem>
+     <para>
+      Der Objektspeicher stellt eine S3-API für den Speicher-Cluster bereit, mit der die Anwendungen Daten schreiben und abrufen können. Eine ausführliche Beschreibung finden Sie in <link xlink:href="https://rook.io/docs/rook/v1.0/ceph-object.html"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Gemeinsames Dateisystem</term>
+    <listitem>
+     <para>
+      Ein gemeinsames Dateisystem kann mit Lese-/Schreibberechtigungen von mehreren Pods eingehängt werden. Dies ist für Anwendungen nützlich, die mithilfe eines gemeinsamen Dateisystems zu einem Cluster zusammengefasst sind. Eine ausführliche Beschreibung finden Sie in <link xlink:href="https://rook.io/docs/rook/v1.0/ceph-filesystem.html"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Blockspeicher</term>
+    <listitem>
+     <para>
+      Mithilfe des Blockspeichers können Sie Speicher für einen einzelnen Pod einhängen. Eine ausführliche Beschreibung finden Sie in <link xlink:href="https://rook.io/docs/rook/v1.0/ceph-block.html"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="kube-uninstall">
+  <title>Deinstallation von Rook</title>
+
+  <para>
+   So deinstallieren Sie Rook:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Löschen Sie alle Kubernetes-Anwendungen, die Rook-Speicher belegen.
+    </para>
+   </step>
+   <step>
+    <para>
+     Löschen Sie alle erstellten Objekt-, Datei- und/oder Blockspeicherartefakte gemäß den Anweisungen in <xref linkend="kube-using-rook"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Löschen Sie den Ceph Cluster, den Operator und die zugehörigen Ressourcen:
+    </para>
+<screen>
+<prompt>root # </prompt>kubectl delete -f cluster.yaml
+<prompt>root # </prompt>kubectl delete -f operator.yaml
+<prompt>root # </prompt>kubectl delete -f common.yaml
+</screen>
+   </step>
+   <step>
+    <para>
+     Löschen Sie die Daten auf Hosts:
+    </para>
+<screen><prompt>root # </prompt>rm -rf /var/lib/rook</screen>
+   </step>
+   <step>
+    <para>
+     Löschen Sie ggf. die von Rook verwendeten Datenträger. Weitere Informationen finden Sie in <link xlink:href="https://rook.io/docs/rook/master/ceph-teardown.html"/>.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

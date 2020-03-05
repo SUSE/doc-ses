@@ -1,0 +1,885 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tips.xml" version="5.0" xml:id="storage-tips">
+ <title>ヒント</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  この章には、Cephクラスタのパフォーマンス向上に役立つ情報と、クラスタの設定方法のヒントが記載されています。
+ </para>
+ <sect1 xml:id="tips-orphaned-partitions">
+  <title>孤立パーティションの特定</title>
+
+  <para>
+   孤立している可能性があるジャーナル/WAL/DBデバイスを特定するには、次の手順に従います。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     孤立パーティションが存在する可能性があるデバイスを選択して、そのパーティションのリストをファイルに保存します。
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ls /dev/sdd?* &gt; /tmp/partitions
+</screen>
+   </step>
+   <step>
+    <para>
+     block.wal、block.db、およびjournalのすべてのデバイスに対して<command>readlink</command>を実行し、その出力を、先ほど保存したパーティションリストと比較します。
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>readlink -f /var/lib/ceph/osd/ceph-*/{block.wal,block.db,journal} \
+ | sort | comm -23 /tmp/partitions -
+</screen>
+    <para>
+     この出力は、Cephによって使用されて「いない」<emphasis/>パーティションのリストです。
+    </para>
+   </step>
+   <step>
+    <para>
+     好みのコマンド(たとえば、<command>fdisk</command>、<command>parted</command>、または<command>sgdisk</command>)を使用して、Cephに属していない孤立パーティションを削除します。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="tips-scrubbing">
+  <title>スクラブの調整</title>
+
+  <para>
+   デフォルトでは、Cephは軽量スクラブ(詳細については、<xref linkend="scrubbing"/>を参照)を毎日、詳細スクラブを週1回実行します。「軽量」<emphasis/>スクラブは、オブジェクトのサイズとチェックサムを調べて、配置グループが同じオブジェクトデータを保存していることを確認します。「詳細」<emphasis/>スクラブは、オブジェクトの内容とレプリカの内容を調べて、実際の内容が同じであることを確認します。データ整合性チェックには、スクラブ手順中にクラスタのI/O負荷が増加するという代償があります。
+  </para>
+
+  <para>
+   デフォルト設定では、Ceph OSDは負荷が高い時間帯など不適切な時間にもスクラブを開始できます。スクラブ操作が顧客の操作と衝突すると、顧客においてレイテンシやパフォーマンスの低下が発生する場合があります。Cephには、低負荷の期間またはピーク時以外の時間帯にスクラブを制限できるスクラブ設定が複数用意されています。
+  </para>
+
+  <para>
+   クラスタの負荷が日中に高く夜間に低い場合は、スクラブを夜間の時間帯(午後11時～午前6時など)に制限することを検討します。
+  </para>
+
+<screen>
+[osd]
+osd_scrub_begin_hour = 23
+osd_scrub_end_hour = 6
+</screen>
+
+  <para>
+   時間制限ではスクラブスケジュールを効果的に決定できない場合は、<option>osd_scrub_load_threshold</option>オプションの使用を検討します。デフォルト値は0.5ですが、低負荷の条件に合わせて変更できます。
+  </para>
+
+<screen>
+[osd]
+osd_scrub_load_threshold = 0.25
+</screen>
+ </sect1>
+ <sect1 xml:id="tips-stopping-osd-without-rebalancing">
+  <title>リバランスなしでのOSDの停止</title>
+
+  <para>
+   保守のために定期的にOSDを停止しなければならないことがあります。大量のデータ転送を避けるため、CRUSHが自動的にクラスタをリバランスしないようにする場合、まずクラスタを<literal>noout</literal>に設定します。
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd set noout
+</screen>
+
+  <para>
+   クラスタが<literal>noout</literal>に設定されたら、保守作業が必要な障害ドメイン内にあるOSDの停止を開始できます。
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl stop ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   詳細情報については、<xref linkend="ceph-operating-services-individual"/>を参照してください。
+  </para>
+
+  <para>
+   保守が完了したら、OSDをもう一度起動します。
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl start ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   OSDサービスが起動したら、クラスタの<literal>noout</literal>を設定解除します。
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd unset noout
+</screen>
+ </sect1>
+ <sect1 xml:id="Cluster-Time-Setting">
+  <title>ノードの時刻同期</title>
+
+  <para>
+   Cephでは、すべてのノード間で時刻が正確に同期している必要があります。
+  </para>
+
+  <para>
+   すべてのCephクラスタノードを、内部ネットワークにある3つ以上の信頼できるタイムソースと同期することをお勧めします。内部のタイムソースは、パブリックタイムサーバをポイントするか、独自のタイムソースを使用できます。
+  </para>
+
+  <important>
+   <title>パブリックタイムサーバ</title>
+   <para>
+    すべてのCephクラスタノードをリモートパブリックタイムサーバと直接同期しないでください。このような設定にすると、クラスタ内の各ノードが専用のNTPデーモンを持ち、そのデーモンがわずかに異なる時刻を提供する可能性のある3～4台の一連のタイムサーバとインターネット上で継続的に通信することになります。このソリューションでは多大なレイテンシ変動が発生し、そのためにクロックの誤差をCeph Monitorで必要な0.05秒未満に抑えることは困難または不可能です。
+   </para>
+  </important>
+
+  <para>
+   NTPサーバの設定方法の詳細については、『<link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/cha_ntp.html">SUSE Linux Enterprise Server Administration Guide</link>』を参照してください。
+  </para>
+
+  <para>
+   その後、クラスタの時刻を変更するため、次の操作を行います。
+  </para>
+
+  <important>
+   <title>時刻の設定</title>
+   <para>
+    たとえば夏時間から標準時間に変わった場合など、時刻を戻さなければならない状況が発生することがあります。クラスタのダウン時間より長く時刻を戻すことはお勧めしません。時刻を進めても問題は発生しません。
+   </para>
+  </important>
+
+  <procedure>
+   <title>クラスタの時刻同期</title>
+   <step>
+    <para>
+     Cephクラスタにアクセスするすべてのクライアントを停止します。特にiSCSIを使用しているクライアントは必ず停止します。
+    </para>
+   </step>
+   <step>
+    <para>
+     Cephクラスタをシャットダウンします。各ノードで、次のコマンドを実行します。
+    </para>
+<screen><prompt>root # </prompt>systemctl stop ceph.target</screen>
+    <note>
+     <para>
+      CephとSUSE OpenStack Cloudを使用する場合は、SUSE OpenStack Cloudも停止します。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     NTPサーバが正しく設定されていて、すべての<systemitem class="daemon">chronyd</systemitem>デーモンがローカルネットワーク内の1つ以上のソースから時刻を取得していることを確認します。
+    </para>
+   </step>
+   <step>
+    <para>
+     NTPサーバに正しい時刻を設定します。
+    </para>
+   </step>
+   <step>
+    <para>
+     NTPが適切に稼働および動作していることを確認し、すべてのノードで次のコマンドを実行します。
+    </para>
+<screen><prompt>root # </prompt>systemctl status chronyd.service</screen>
+   </step>
+   <step>
+    <para>
+     すべてのモニタリングノードを起動して、クロックスキューがないことを確認します。
+    </para>
+<screen><prompt>root # </prompt>systemctl start <replaceable>target</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     すべてのOSDノードを起動します。
+    </para>
+   </step>
+   <step>
+    <para>
+     Cephのその他のサービスを起動します。
+    </para>
+   </step>
+   <step>
+    <para>
+     SUSE OpenStack Cloudを使用している場合は起動します。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="storage-bp-cluster-mntc-unbalanced">
+  <title>不均衡なデータ書き込みの確認</title>
+
+  <para>
+   データが各OSDに均等に書き込まれている場合、クラスタは均衡状態と見なされます。クラスタ内の各OSDには「重み」<emphasis/>が割り当てられます。重みは相対的な数字で、関連するOSDに書き込む必要があるデータの量をCephに指示します。重みが大きいほど、多くのデータが書き込まれます。OSDの重みが0の場合、そのOSDにデータは書き込まれません。あるOSDの重みが他のOSDと比べて比較的大きい場合、大部分のデータがそのOSDに書き込まれ、クラスタが不均衡になります。
+  </para>
+
+  <para>
+   不均衡なクラスタはパフォーマンスが低く、大きい重みを持つOSDが突然クラッシュした場合、大量のデータを他のOSDに移動しなければならず、これによってクラスタの速度も低下します。
+  </para>
+
+  <para>
+   これを避けるには、OSDでデータ書き込みの量を定期的に確認する必要があります。この量が特定のルールセットで指定されたOSDグループの容量の30～50%である場合、OSDの重みを変更する必要があります。個々のディスクを確認して、他のディスクより満杯になるのが早い(または一般的に低速である)ディスクを確認し、その重みを減らします。十分なデータが書き込まれていないOSDでも同じことが有効で、この場合は、重みを増やしてCephが書き込むデータを増やします。次の例では、ID 13のOSDの重みを確認して、重みを3から3.05に変更します。
+  </para>
+
+<screen>$ ceph osd tree | grep osd.13
+ 13  3                   osd.13  up  1
+
+ $ ceph osd crush reweight osd.13 3.05
+ reweighted item id 13 name 'osd.13' to 3.05 in crush map
+
+ $ ceph osd tree | grep osd.13
+ 13  3.05                osd.13  up  1</screen>
+
+  <para/>
+
+  <tip>
+   <title>使用率によるOSDの重みの変更</title>
+   <para>
+    <command>ceph osd reweight-by-utilization</command>
+    <replaceable>threshold</replaceable>コマンドは、きわめて過剰に使用されているOSDの重みを下げるプロセスを自動化します。デフォルトでは、平均使用量が120%に達したOSDの重みが下方に調整されますが、しきい値が指定されている場合は、代わりにその割合が使用されます。
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage-tips-ceph-btrfs-subvol">
+  <title>Ceph Monitorノード上の<filename>/var/lib/ceph</filename>のBtrfsサブボリューム</title>
+
+  <para>
+   SUSE Linux Enterpriseは、デフォルトでBtrfsパーティションにインストールされます。Ceph Monitorは、<filename>/var/lib/ceph</filename>ディレクトリにその状態とデータベースを保存します。以前のスナップショットからシステムをロールバックする際にCeph Monitorが破損しないようにするには、<filename>/var/lib/ceph</filename>用のBtrfsサブボリュームを作成します。専用のサブボリュームにより、ルートサブボリュームのスナップショットからモニターデータを除外します。
+  </para>
+
+  <tip>
+   <para>
+    <filename>/var/lib/ceph</filename>サブボリュームは、DeepSeaステージ0を実行する前に作成します。これは、ステージ0でCeph関連のパッケージがインストールされ、<filename>/var/lib/ceph</filename>ディレクトリが作成されるためです。
+   </para>
+  </tip>
+
+  <para>
+   その後、DeepSeaステージ3で<filename>@/var/lib/ceph</filename>がBtrfsサブボリュームであるかどうかが検証され、通常のディレクトリである場合、ステージ3は失敗します。
+  </para>
+
+  <sect2 xml:id="btrfs-subvol-requirements">
+   <title>要件</title>
+   <sect3 xml:id="tips-ceph-btrfs-subvol-new">
+    <title>新しい展開の場合</title>
+    <para>
+     SaltおよびDeepSeaが適切にインストールされ、動作している必要があります。
+    </para>
+   </sect3>
+   <sect3 xml:id="storage-tips-ceph-btrfs-subvol-req-existing">
+    <title>既存の展開の場合</title>
+    <para>
+     クラスタがすでにインストール済みの場合、次の要件を満たす必要があります。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       ノードがSUSE Enterprise Storage 6にアップグレードされていて、クラスタがDeepSeaによって制御されている。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Cephクラスタが動作していて正常な状態である。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       アップグレードプロセスによってSaltおよびDeepSeaのモジュールがすべてのMinionノードに同期済みである。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage-tips-ceph-btrfs-subvol-automatic">
+   <title>新しいクラスタの展開中に必要な手順</title>
+   <sect3 xml:id="var-lib-ceph-stage0">
+    <title>DeepSeaステージ0の実行前</title>
+    <para>
+     DeepSeaステージ0を実行する前に、Ceph Monitorになる各Salt Minionに次のコマンドを適用します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' saltutil.sync_all
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' state.apply ceph.subvolume
+</screen>
+    <para>
+     <command>ceph.subvolume</command>コマンドは次の処理を実行します。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <filename>/var/lib/ceph</filename>を<literal>@/var/lib/ceph</literal> Btrfsサブボリュームとして作成する。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       新しいサブボリュームをマウントし、<filename>/etc/fstab</filename>を適切に更新する。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>DeepSeaステージ3の検証に失敗する場合</title>
+    <para>
+     <xref linkend="var-lib-ceph-stage0"/>で説明されているコマンドをステージ0の実行前に実行し忘れた場合、<filename>/var/lib/ceph</filename>サブボリュームがすでに存在しているため、DeepSeaステージ3の検証が失敗します。これをサブボリュームに変換するには、次の操作を実行します。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       ディレクトリを<filename>/var/lib</filename>に変更します。
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib</screen>
+     </step>
+     <step>
+      <para>
+       <filename>ceph</filename>サブディレクトリの現在の内容をバックアップします。
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>sudo mv ceph ceph-</screen>
+     </step>
+     <step>
+      <para>
+       サブボリュームを作成してマウントし、<filename>/etc/fstab</filename>を更新します。
+      </para>
+<screen><prompt>root@master # </prompt>salt 'MONITOR_NODES' state.apply ceph.subvolume</screen>
+     </step>
+     <step>
+      <para>
+       バックアップサブディレクトリに変更し、その内容を新しいサブボリュームと同期してから削除します。
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="btrfs-subvol-upgrades">
+   <title>クラスタのアップグレード中に必要な手順</title>
+   <para>
+    SUSE Enterprise Storage 5.5では、<filename>/var</filename>ディレクトリはBtrfsサブボリューム上にはありませんが、そのサブフォルダ(<filename>/var/log</filename>または<filename>/var/cache</filename>など)は「@」の下層にあるBtrfsサブボリュームです。<filename>@/var/lib/ceph</filename>サブボリュームを作成するには、まず「@」サブボリュームをマウントし(デフォルトではマウントされません)、その下層に<filename>@/var/lib/ceph</filename>サブボリュームを作成する必要があります。
+   </para>
+   <para>
+    次に、そのプロセスを説明するコマンドの例を示します。
+   </para>
+<screen>
+<prompt>root # </prompt>mkdir -p /mnt/btrfs
+<prompt>root # </prompt>mount -o subvol=@ <replaceable>ROOT_DEVICE</replaceable> /mnt/btrfs
+<prompt>root # </prompt>btrfs subvolume create /mnt/btrfs/var/lib/ceph
+<prompt>root # </prompt>umount /mnt/btrfs
+</screen>
+   <para>
+    この時点で、<filename>@/var/lib/ceph</filename>サブボリュームが作成され、<xref linkend="storage-tips-ceph-btrfs-subvol-automatic"/>の説明に従って操作を続行できます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-manual">
+   <title>手動セットアップ</title>
+   <para>
+    Ceph Monitorノードへの<filename>@/var/lib/ceph</filename> Btrfsサブボリュームの自動セットアップは、すべてのシナリオには適さない場合があります。次の手順に従って、<filename>/var/lib/ceph</filename>ディレクトリを<filename>@/var/lib/ceph</filename>サブボリュームに移行できます。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      実行中のCephプロセスを終了します。
+     </para>
+    </step>
+    <step>
+     <para>
+      ノードのOSDをアンマウントします。
+     </para>
+    </step>
+    <step>
+     <para>
+      バックアップサブディレクトリに変更し、その内容を新しいサブボリュームと同期してから削除します。
+     </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+    </step>
+    <step>
+     <para>
+      OSDを再マウントします。
+     </para>
+    </step>
+    <step>
+     <para>
+      Cephデーモンを再起動します。
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-moreinfo">
+   <title>その他の情報</title>
+   <para>
+    手動セットアップの詳細については、Salt Masterノード上のファイル<filename>/srv/salt/ceph/subvolume/README.md</filename>を参照してください。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-srv-maint-fds-inc">
+  <title>ファイル記述子の増加</title>
+
+  <para>
+   OSDデーモンでは、Cephクラスタの均衡を維持するために読み込み/書き込み操作が重要です。ほとんどの場合、OSDデーモンは、読み込みおよび書き込み対象のファイルを同時に複数開いておく必要があります。OSレベルでは、同時に開いているファイルの最大数を「ファイル記述子の最大数」と呼びます。
+  </para>
+
+  <para>
+   OSDでファイル記述子が不足するのを防ぐには、OSのデフォルト値を上書きして、<filename>/etc/ceph/ceph.conf</filename>で数値を指定できます。次に例を示します。
+  </para>
+
+<screen>max_open_files = 131072</screen>
+
+  <para>
+   <option>max_open_files</option>を変更した後、関連するCephノードでOSDサービスを再起動する必要があります。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-admin-integration">
+  <title>仮想化ソフトウェアとの統合</title>
+
+  <sect2 xml:id="storage-bp-integration-kvm">
+   <title>CephクラスタへのKVMディスクの保存</title>
+   <para>
+    KVMで動作する仮想マシンのディスクイメージを作成してCephプール内に保存し、オプションで既存のイメージの内容をそのディスクイメージに変換できます。その後、<command>qemu-kvm</command>を使用して、クラスタに保存したディスクイメージを利用して仮想マシンを実行できます。詳細については、<xref linkend="cha-ceph-kvm"/>を参照してください。 
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-libvirt">
+   <title>Cephクラスタへの<systemitem class="library">libvirt</systemitem>ディスクの保存</title>
+   <para>
+    KVMの場合と同様に(<xref linkend="storage-bp-integration-kvm"/>を参照)、Cephを使用して、<systemitem class="library">libvirt</systemitem>で動作する仮想マシンを保存できます。これには、KVM、Xen、LXCなど、<systemitem class="library">libvirt</systemitem>でサポートされているあらゆる仮想化ソリューションを実行できるという利点があります。詳細については、<xref linkend="cha-ceph-libvirt"/>を参照してください。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-xen">
+   <title>CephクラスタへのXenディスクの保存</title>
+   <para>
+    Cephを使用してXenディスクを保存する方法の1つは、<xref linkend="cha-ceph-libvirt"/>で説明されているように<systemitem class="library">libvirt</systemitem>を利用する方法です。
+   </para>
+   <para>
+    Xenが<systemitem>rbd</systemitem> Block Deviceドライバと直接通信するようにするオプションもあります。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Xen用に準備されたディスクイメージがない場合は、新規に作成します。
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd create myimage --size 8000 --pool mypool</screen>
+    </step>
+    <step>
+     <para>
+      プール<literal>mypool</literal>内のイメージを一覧にして、新しいイメージがそこに存在するかどうかを確認します。
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd list mypool</screen>
+    </step>
+    <step>
+     <para>
+      <literal>myimage</literal>イメージを<systemitem>rbd</systemitem>カーネルモジュールにマップすることにより、新しいBlock Deviceを作成します。
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool mypool myimage</screen>
+     <tip>
+      <title>ユーザ名と認証</title>
+      <para>
+       ユーザ名を指定するには、<option>--id <replaceable>user-name</replaceable></option>を使用します。さらに、<systemitem>cephx</systemitem>認証を使用する場合は、秘密も指定する必要があります。秘密は、キーリング、または秘密が含まれるファイルから取得できます。
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+      <para>
+       または
+      </para>
+<screen><systemitem class="username">cephadm</systemitem>rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      すべてのマップ済みデバイスを一覧にします。
+     </para>
+<screen><command>rbd showmapped</command>
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    </step>
+    <step>
+     <para>
+      これで、このデバイスを仮想マシンとして実行するためのディスクとして使用するようXenを設定できます。たとえば、<command>xl</command>形式のドメイン設定ファイルに次の行を追加できます。
+     </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-net-firewall">
+  <title>Cephのファイアウォール設定</title>
+
+  <warning>
+   <title>ファイアウォールがアクティブな場合、DeepSeaのステージが失敗する</title>
+   <para>
+    ファイアウォールがアクティブな場合(かつ設定されている場合)、DeepSeaの展開ステージが失敗します。ステージを正しく実行するには、次のコマンドを実行してファイアウォールをオフにします。
+   </para>
+<screen>
+<prompt>root # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+   <para>
+    または、<filename>/srv/pillar/ceph/stack/global.yml</filename>の<option>FAIL_ON_WARNING</option>オプションを「False」に設定します。
+   </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+  </warning>
+
+  <para>
+   ネットワーククラスタの通信をSUSE Firewallで保護することをお勧めします。この設定ファイルを編集するには、<menuchoice><guimenu>YaST</guimenu><guimenu>Security and Users (セキュリティとユーザ)</guimenu><guimenu>Firewall (ファイアウォール)</guimenu><guimenu>Allowed Services (許可するサービス)</guimenu></menuchoice>を選択します。
+  </para>
+
+  <para>
+   次に、Ceph関連サービスと通常使用されるポートの番号のリストを示します。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>Ceph Monitor</term>
+    <listitem>
+     <para>
+      <guimenu>Ceph MON</guimenu>サービスまたはポート6789 (TCP)を有効にします。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Ceph OSDまたはMetadata Server</term>
+    <listitem>
+     <para>
+      <guimenu>Ceph OSD/MDS</guimenu>サービスまたはポート6800～7300 (TCP)を有効にします。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>iSCSI Gateway</term>
+    <listitem>
+     <para>
+      ポート3260 (TCP)を開きます。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Object Gateway</term>
+    <listitem>
+     <para>
+      Object Gatewayが通信するポートを開きます。これは、<filename>/etc/ceph.conf</filename>の<literal>rgw frontends =</literal>から始まる行で設定されています。デフォルトはHTTPの場合は80、HTTPSの場合は443 (TCP)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NFS Ganesha</term>
+    <listitem>
+     <para>
+      デフォルトでは、NFS Ganeshaはポート2049 (NFSサービス、TCP)と875 (rquotaサポート、TCP)を使用します。NFS Ganeshaのデフォルトポートの変更の詳細については、<xref linkend="ganesha-nfsport"/>を参照してください。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Apacheベースのサービス(SMT、SUSE Managerなど)</term>
+    <listitem>
+     <para>
+      HTTPの場合はポート80、HTTPSの場合はポート443 (TCP)を開きます。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>SSH</term>
+    <listitem>
+     <para>
+      ポート22 (TCP)を開きます。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NTP</term>
+    <listitem>
+     <para>
+      ポート123 (UDP)を開きます。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Salt</term>
+    <listitem>
+     <para>
+      ポート4505および4506 (TCP)を開きます。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Grafana</term>
+    <listitem>
+     <para>
+      ポート3000 (TCP)を開きます。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Prometheus</term>
+    <listitem>
+     <para>
+      ポート9100 (TCP)を開きます。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="storage-bp-network-test">
+  <title>ネットワークパフォーマンスのテスト</title>
+
+  <para>
+   ネットワークパフォーマンスをテストするために、DeepSeaの<literal>net</literal>ランナは次のコマンドを提供しています。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     すべてのノードに対する単純なping:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.ping
+Succeeded: 9 addresses from 9 minions average rtt 1.35 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     すべてのノードに対するジャンボping:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.jumbo_ping
+Succeeded: 9 addresses from 9 minions average rtt 2.13 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     帯域幅のテスト:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.iperf
+Fastest 2 hosts:
+    |_
+      - 192.168.58.106
+      - 2981 Mbits/sec
+    |_
+      - 192.168.58.107
+      - 2967 Mbits/sec
+Slowest 2 hosts:
+    |_
+      - 192.168.58.102
+      - 2857 Mbits/sec
+    |_
+      - 192.168.58.103
+      - 2842 Mbits/sec</screen>
+    <tip>
+     <title>「iperf3」プロセスの手動停止</title>
+     <para>
+      <command>net.iperf</command>ランナを使用してテストを実行する場合、起動される「iperf3」サーバプロセスは、テストの完了時に自動的には停止しません。プロセスを停止するには、次のランナを使用します。
+     </para>
+<screen><prompt>root@master # </prompt>salt '*' multi.kill_iperf_cmd</screen>
+    </tip>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="bp-flash-led-lights">
+  <title>LEDライトを使用して物理ディスクを特定する方法</title>
+
+  <para>
+   このセクションでは、<systemitem>libstoragemgmt</systemitem>やサードパーティツールを使用して、物理ディスク上のLEDライトを調整する方法について説明します。この機能は、すべてのハードウェアプラットフォームで利用できるわけではありません。
+  </para>
+
+  <para>
+   特に高密度のディスクを使用するノードでは、OSDディスクを物理ディスクに一致させるのが難しい場合があります。一部のハードウェア環境にはLEDライトが組み込まれており、これをソフトウェア経由で調整したり、識別のために異なる色を点滅または点灯させたりすることができます。SUSE Enterprise Storageでは、Salt、<systemitem>libstoragemgmt</systemitem>、および使用しているハードウェア専用のサードパーティツールを使用して、この機能をサポートします。この機能の設定は、<filename>/srv/pillar/ceph/disk_led.sls</filename>のSalt Pillarで定義します。
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+# This is the default configuration for the storage enclosure LED blinking.
+# The placeholder {device_file} will be replaced with the device file of
+# the disk when the command is executed.
+#
+# Have a look into the /srv/pillar/ceph/README file to find out how to
+# customize this configuration per minion/host.
+
+disk_led:
+  cmd:
+    ident:
+      'on': lsmcli local-disk-ident-led-on --path '{device_file}'
+      'off': lsmcli local-disk-ident-led-off --path '{device_file}'
+    fault:
+      'on': lsmcli local-disk-fault-led-on --path '{device_file}'
+      'off': lsmcli local-disk-fault-led-off --path '{device_file}'</screen>
+
+  <para>
+   <filename>disk_led.sls</filename>のデフォルト設定では、<systemitem>libstoragemgmt</systemitem>層を通じてディスクLEDのサポートを提供します。ただし、<systemitem>libstoragemgmt</systemitem>では、ハードウェア固有のプラグインやサードパーティツールを通じてこのサポートを提供します。<systemitem>libstoragemgmt</systemitem>プラグインとハードウェアに適したサードパーティツールの両方がインストールされていない限り、<systemitem>libstoragemgmt</systemitem>でLEDを調整することはできません。
+  </para>
+
+  <para>
+   <systemitem>libstoragemgmt</systemitem>の有無にかかわらず、LEDライトを調整するためにサードパーティツールが必要な場合があります。このようなサードパーティツールは、さまざまなハードウェアベンダーから提供されています。次に、一般的なベンダーとツールをいくつか示します。
+  </para>
+
+  <table>
+   <title>サードパーティのストレージツール</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>ベンダー/ディスクコントローラ</entry>
+      <entry>ツール</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>HPE SmartArray</entry>
+      <entry>hpssacli</entry>
+     </row>
+     <row>
+      <entry>LSI MegaRAID</entry>
+      <entry>storcli</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   SUSE Linux Enterprise Serverでは、 <package>ledmon</package> パッケージと<command>ledctl</command>ツールも提供されています。このツールは、Intel製のストレージエンクロージャを利用するハードウェア環境でも動作する場合があります。このツールを使用する場合の適切な構文は次のとおりです。
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'
+    fault:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'</screen>
+
+  <para>
+   サポートされているハードウェアを使用していて、必要なサードパーティツールがすべてある場合は、Salt Masterノードから次のコマンド構文を使用してLEDを有効または無効にすることができます。
+  </para>
+
+<screen>
+<prompt>root # </prompt>salt-run disk_led.device <replaceable>NODE</replaceable> <replaceable>DISK</replaceable> <replaceable>fault|ident</replaceable> <replaceable>on|off</replaceable>
+</screen>
+
+  <para>
+   たとえば、OSDノード<filename>srv16.ceph</filename>の<filename>/dev/sdd</filename>のLED識別ライトまたは障害ライトを有効または無効にするには、次のコマンドを実行します。
+  </para>
+
+<screen><prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident off
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault off</screen>
+
+  <note>
+   <title>デバイスの命名</title>
+   <para>
+    <command>salt-run</command>コマンドで使用するデバイス名は、Saltによって認識されている名前に一致する必要があります。次のコマンドを使用して、これらの名前を表示できます。
+   </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>minion_name</replaceable>' grains.get disks
+</screen>
+  </note>
+
+  <para>
+   多くの環境では、特定のハードウェアニーズに合わせてLEDライトを調整するために、<filename>/srv/pillar/ceph/disk_led.sls</filename>設定を変更する必要があります。単純な変更を実行するには、<command>lsmcli</command>を別のツールに置き換えるか、コマンドラインパラメータを調整します。複雑な変更を実行するには、<filename>lsmcli</filename>コマンドの代わりに外部スクリプトを呼び出します。<filename>/srv/pillar/ceph/disk_led.sls</filename>を変更する場合は、次の手順を実行します。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Salt Masterノード上で<filename>/srv/pillar/ceph/disk_led.sls</filename>に必要な変更を行います。
+    </para>
+   </step>
+   <step>
+    <para>
+     変更がPillarデータに正しく反映されていることを確認します。
+    </para>
+<screen><prompt>root # </prompt>salt '<replaceable>SALT MASTER</replaceable>*' pillar.get disk_led</screen>
+   </step>
+   <step>
+    <para>
+     次のコマンドを使用して、すべてのノードでPillarデータを更新します。
+    </para>
+<screen><prompt>root # </prompt>salt '*' saltutil.pillar_refresh</screen>
+   </step>
+  </procedure>
+
+  <para>
+   外部スクリプトを使用し、サードパーティツールを直接使用してLEDライトを調整できます。次の例は、外部スクリプトと、HPおよびLSI環境用の2つのサンプルスクリプトをサポートするために<filename>/srv/pillar/ceph/disk_led.sls</filename>を調整する方法を示しています。
+  </para>
+
+  <para>
+   外部スクリプトを呼び出す変更後の<filename>/srv/pillar/ceph/disk_led.sls</filename>
+  </para>
+
+<screen><prompt>root # </prompt>cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off
+    fault:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off</screen>
+
+  <para>
+   <systemitem>hpssacli</systemitem>ユーティリティを使用してHPハードウェアのLEDライトを点滅させるためのサンプルスクリプト
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_hp.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+FOUND=0
+MAX_CTRLS=10
+MAX_DISKS=50
+
+for i in $(seq 0 $MAX_CTRLS); do
+  # Search for valid controllers
+  if hpssacli ctrl slot=$i show summary &gt;/dev/null; then
+    # Search all disks on the current controller
+    for j in $(seq 0 $MAX_DISKS); do
+      if hpssacli ctrl slot=$i ld $j show | grep -q $1; then
+        FOUND=1
+        echo "Found $1 on ctrl=$i, ld=$j. Turning LED $2."
+        hpssacli ctrl slot=$i ld $j modify led=$2
+        break;
+      fi
+    done
+    [[ "$FOUND" = "1" ]] &amp;&amp; break
+  fi
+done</screen>
+
+  <para>
+   <systemitem>storcli</systemitem>ユーティリティを使用してLSIハードウェアのLEDライトを点滅させるためのサンプルスクリプト
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_lsi.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+[[ "$2" = "on" ]] &amp;&amp; ACTION="start" || ACTION="stop"
+
+# Determine serial number for the disk
+SERIAL=$(lshw -class disk | grep -A2 $1 | grep serial | awk '{print $NF}')
+if [ ! -z "$SERIAL" ]; then
+  # Search for disk serial number across all controllers and enclosures
+  DEVICE=$(/opt/MegaRAID/storcli/storcli64 /call/eall/sall show all | grep -B6 $SERIAL | grep Drive | awk '{print $2}')
+  if [ ! -z "$DEVICE" ]; then
+    echo "Found $1 on device $DEVICE. Turning LED $2."
+    /opt/MegaRAID/storcli/storcli64 $DEVICE $ACTION locate
+  else
+    echo "Device not found!"
+    exit -1
+  fi
+else
+  echo "Disk serial number not found!"
+  exit -1
+fi</screen>
+ </sect1>
+</chapter>

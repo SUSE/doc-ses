@@ -1,0 +1,1501 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_datamgm.xml" version="5.0" xml:id="cha-storage-datamgm">
+ <title>Verwaltung gespeicherter Daten</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>Bearbeiten</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>Ja</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Der CRUSH-Algorithmus bestimmt, wie Daten gespeichert und abgerufen werden, indem er die Datenspeicherorte berechnet. CRUSH ist die Grundlage für die direkte Kommunikation der Ceph Clients mit OSDs, ansonsten müssten sie über einen zentralen Server oder Broker kommunizieren. Mit einer algorithmisch festgelegten Methode zum Speichern und Abrufen von Daten vermeidet Ceph einen Single-Point-of-Failure, einen Leistungsengpass und eine physische Beschränkung der Skalierbarkeit.
+ </para>
+ <para>
+  CRUSH benötigt eine Zuordnung Ihres Clusters und verwendet die CRUSH Map zum pseudozufälligen Speichern und Abrufen von Daten in OSDs gleichmäßiger Datenverteilung im Cluster.
+ </para>
+ <para>
+  CRUSH Maps enthalten eine Liste von OSDs, eine Liste der „Buckets“ zum Aggregieren der Geräte an physischen Standorten sowie eine Liste der Regeln, die CRUSH anweisen, wie es Daten in den Pools eines Ceph Clusters reproduzieren soll. Durch Widerspiegeln der zugrundeliegenden physischen Struktur der Installation kann CRUSH potenzielle Ursachen von korrelierten Gerätefehlern nachbilden und somit eine Lösung suchen. Zu den typischen Ursachen zählen die physische Umgebung, eine gemeinsame Energiequelle und ein gemeinsames Netzwerk. Durch Verschlüsseln dieser Informationen in die Cluster-Zuordnung können CRUSH-Platzierungsrichtlinien Objektreproduktionen auf verschiedene Fehlerdomänen auslagern und gleichzeitig die gewünschte Verteilung beibehalten. Um beispielsweise für den Fall gleichzeitig auftretender Fehler vorzusorgen, sollte am besten sichergestellt werden, dass sich Datenreproduktionen auf Geräten mit unterschiedlichen Ablagefächern, Racks, Netzanschlüssen, Controllern und/oder physischen Speicherorten befinden.
+ </para>
+ <para>
+  Nach Bereitstellung eines Ceph Clusters wird eine standardmäßige CRUSH Map generiert. Sie eignet sich sehr gut für Ihre Ceph Sandbox-Umgebung. Wenn Sie jedoch einen sehr großen Daten-Cluster bereitstellen, sollten Sie die Entwicklung einer benutzerdefinierten CRUSH Map ernsthaft in Erwägung ziehen, weil sie Ihnen die Verwaltung Ihres Ceph Clusters erleichtert, die Leistung verbessert und die Datensicherheit gewährleistet.
+ </para>
+ <para>
+  Wenn beispielsweise ein OSD ausfällt, können Sie anhand der CRUSH Map das physische Rechenzentrum, den Raum, die Reihe und das Rack des Hosts mit dem fehlerhaften OSD finden, für den Fall, dass Sie Support vor Ort benötigen oder die Hardware austauschen müssen.
+ </para>
+ <para>
+  Entsprechend kann CRUSH Ihnen auch dabei helfen, Fehler schneller zu finden. Wenn beispielsweise alle OSDs in einem bestimmten Rack gleichzeitig ausfallen, liegt der Fehler möglicherweise bei einem Netzwerkschalter oder der Energiezufuhr zum Rack bzw. am Netzwerkschalter statt an den OSDs selbst.
+ </para>
+ <para>
+  Eine benutzerdefinierte CRUSH-Zuordnung kann Ihnen auch dabei helfen, die physischen Standorte zu finden, an denen Ceph redundante Kopien der Daten speichert, wenn sich die Platzierungsgruppen (siehe <xref linkend="op-pgs"/>), die mit einem fehlerhaften Host verknüpft sind, in einem eingeschränkt leistungsfähigen Zustand befinden.
+ </para>
+ <para>
+  Eine CRUSH Map setzt sich aus drei Hauptabschnitten zusammen.
+ </para>
+ <itemizedlist mark="bullet" spacing="normal">
+  <listitem>
+   <para>
+    <xref linkend="datamgm-devices" xrefstyle="select: title"/> umfassen alle Objektspeichergeräte, die einem <systemitem>ceph-osd</systemitem>-Daemon entsprechen.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-buckets" xrefstyle="select: title"/> sind eine hierarchische Ansammlung von Speicherorten (beispielsweise Reihen, Racks, Hosts etc.) und deren zugewiesenes Gewicht.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-rules" xrefstyle="select: title"/> bezeichnen die Art und Weise wie Buckets ausgewählt werden.
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="datamgm-devices">
+  <title>Geräte</title>
+
+  <para>
+   Zum Zuordnen von Platzierungsgruppen zu OSDs benötigt eine CRUSH Map eine Liste von OSD-Geräten (den Namen des OSD Daemons). Die Liste der Geräte erscheint in der CRUSH Map an erster Stelle.
+  </para>
+
+<screen>#devices
+device <replaceable>NUM</replaceable> osd.<replaceable>OSD_NAME</replaceable> class <replaceable>CLASS_NAME</replaceable></screen>
+
+  <para>
+   Beispiel:
+  </para>
+
+<screen>
+#devices
+device 0 osd.0 class hdd
+device 1 osd.1 class ssd
+device 2 osd.2 class nvme
+device 3 osd.3class ssd
+</screen>
+
+  <para>
+   In der Regel wird ein OSD-Daemon einer einzelnen Festplatte zugeordnet.
+  </para>
+
+  <sect2 xml:id="crush-devclasses">
+   <title>Geräteklassen</title>
+   <para>
+    Die flexible Steuerung der Datenplatzierung mithilfe der CRUSH-Zuordnung zählt zu Cephs Stärken. Gleichzeitig ist dies mit der schwierigste Teil bei der Clusterverwaltung. Mithilfe von <emphasis>Geräteklassen</emphasis> wird einer der häufigsten Gründe automatisiert, aus denen CRUSH-Zuordnungen bisher direkt manuell bearbeitet wurden.
+   </para>
+   <sect3>
+    <title>Das CRUSH-Verwaltungsproblem</title>
+    <para>
+     Ceph Cluster setzen sich häufig aus verschiedenen Typen von Speichergeräten zusammen, also HDD, SSD, NVMe oder sogar gemischten Klassen dieser Geräte. Diese unterschiedlichen Speichergerättypen werden hier als <emphasis>Geräteklassen</emphasis> bezeichnet, sodass eine Verwechslung mit der Eigenschaft <emphasis>type</emphasis> der CRUSH-Buckets verhindert wird (z. B. „host“, „rack“, „row“; siehe <xref linkend="datamgm-buckets"/>). SSD-gestützte Ceph-OSDs sind deutlich schneller als OSDs mit drehbaren Scheiben und sind damit für bestimmte Workloads besser geeignet. Mit Ceph können Sie ganz einfach RADOS-Pools für unterschiedliche Datenmengen oder Workloads erstellen und unterschiedliche CRUSH-Regeln für die Datenplatzierung in diesen Pools zuweisen.
+    </para>
+    <figure>
+     <title>OSDs mit gemischten Geräteklassen</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     Es ist jedoch mühsam, die CRUSH-Regeln so einzurichten, damit die Daten nur auf eine bestimmte Geräteklasse platziert werden. Die Regeln folgen der CRUSH-Hierarchie, doch wenn die Geräte in den Hosts oder Racks gemischt angeordnet sind (wie in der Beispielhierarchie oben), werden sie (standardmäßig) miteinander vermischt, sodass sie in den gleichen Unterbäumen der Hierarchie auftreten. In früheren Versionen von SUSE Enterprise Storage mussten sie manuell in separate Bäume sortiert werden, wobei für jede Geräteklasse mehrere Versionen der einzelnen Zwischen-Nodes erstellt werden mussten.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Geräteklassen</title>
+    <para>
+     Für diese Situation bietet Ceph eine elegante Lösung: Jedem OSD wird eine <emphasis>Geräteklasse</emphasis> als Eigenschaft zugewiesen. Standardmäßig stellen die OSDs ihre jeweilige Geräteklasse automatisch auf „hdd“, „ssd“ oder „nvme“ ein, abhängig von den Hardware-Eigenschaften, die der Linux-Kernel bereitstellt. Diese Geräte werden in der Ausgabe des Kommandos <command>ceph osd tree</command> in einer neuen Spalte aufgeführt:
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tree
+ ID CLASS WEIGHT   TYPE NAME      STATUS REWEIGHT PRI-AFF
+ -1       83.17899 root default
+ -4       23.86200     host cpach
+ 2   hdd  1.81898         osd.2      up  1.00000 1.00000
+ 3   hdd  1.81898         osd.3      up  1.00000 1.00000
+ 4   hdd  1.81898         osd.4      up  1.00000 1.00000
+ 5   hdd  1.81898         osd.5      up  1.00000 1.00000
+ 6   hdd  1.81898         osd.6      up  1.00000 1.00000
+ 7   hdd  1.81898         osd.7      up  1.00000 1.00000
+ 8   hdd  1.81898         osd.8      up  1.00000 1.00000
+ 15  hdd  1.81898         osd.15     up  1.00000 1.00000
+ 10  nvme 0.93100         osd.10     up  1.00000 1.00000
+ 0   ssd  0.93100         osd.0      up  1.00000 1.00000
+ 9   ssd  0.93100         osd.9      up  1.00000 1.00000</screen>
+    <para>
+     Wenn die automatische Erkennung der Geräteklasse fehlschlägt, da beispielsweise der Gerätetreiber die Daten zum Gerät nicht ordnungsgemäß über <filename>/sys/block</filename> bereitstellt, können Sie die Geräteklassen über die Kommandozeile anpassen:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rm-device-class osd.2 osd.3
+done removing class of osd(s): 2,3
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush set-device-class ssd osd.2 osd.3
+set osd(s) 2,3 to class 'ssd'
+</screen>
+   </sect3>
+   <sect3 xml:id="crush-placement-rules">
+    <title>CRUSH-Platzierungsregeln</title>
+    <para>
+     CRUSH-Regeln beschränken die Platzierung auf eine bestimmte Geräteklasse. Mit folgendem Kommando können Sie beispielsweise einen „schnell“ <emphasis role="bold">reproduzierten</emphasis> Pool erstellen, der die Daten ausschließlich auf SSD-Datenträger verteilt:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rule create-replicated <replaceable>RULE_NAME</replaceable> <replaceable>ROOT</replaceable> <replaceable>FAILURE_DOMAIN_TYPE</replaceable> <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+    <para>
+     Beispiel:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rule create-replicated fast default host ssd
+</screen>
+    <para>
+     Erstellen Sie einen Pool mit der Bezeichnung „fast_pool“ und weisen Sie ihn der Regel „fast“ zu:
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create fast_pool 128 128 replicated fast</screen>
+    <para>
+     Die Erstellung von <emphasis role="bold">Löschcode</emphasis>-Regeln läuft geringfügig anders ab. Zunächst erstellen Sie ein Löschcode-Profil mit einer Eigenschaft für die gewünschte Geräteklasse. Anschließend legen Sie den Pool mit Löschcodierung an:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd erasure-code-profile set myprofile \
+ k=4 m=2 crush-device-class=ssd crush-failure-domain=host
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool create mypool 64 erasure myprofile
+</screen>
+    <para>
+     Die Syntax wurde erweitert, sodass Sie die Geräteklasse auch manuell eingeben können, falls die CRUSH-Zuordnung manuell bearbeitet werden muss. Die obigen Kommandos erzeugen beispielsweise die folgende CRUSH-Regel:
+    </para>
+<screen>
+rule ecpool {
+  id 2
+  type erasure
+  min_size 3
+  max_size 6
+  step set_chooseleaf_tries 5
+  step set_choose_tries 100
+  step take default <emphasis role="bold">class ssd</emphasis>
+  step chooseleaf indep 0 type host
+  step emit
+}
+</screen>
+    <para>
+     Der wichtige Unterschied: Das Kommando „take“ umfasst hier das zusätzliche Suffix „class <replaceable>CLASS_NAME</replaceable>“.
+    </para>
+   </sect3>
+   <sect3 xml:id="crush-additional-commands">
+    <title>Zusätzliche Kommandos</title>
+    <para>
+     Mit folgendem Kommando rufen Sie eine Liste der Geräte in einer CRUSH-Zuordnung ab:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush class ls
+[
+  "hdd",
+  "ssd"
+]
+</screen>
+    <para>
+     Mit folgendem Kommando rufen Sie eine Liste der vorhandenen CRUSH-Regeln ab:
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush rule ls
+replicated_rule
+fast</screen>
+    <para>
+     Mit folgendem Kommando rufen Sie Details zur CRUSH-Regel „+++fast“ ab:
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush rule dump fast
+{
+		"rule_id": 1,
+		"rule_name": "fast",
+		"ruleset": 1,
+		"type": 1,
+		"min_size": 1,
+		"max_size": 10,
+		"steps": [
+						{
+										"op": "take",
+										"item": -21,
+										"item_name": "default~ssd"
+						},
+						{
+										"op": "chooseleaf_firstn",
+										"num": 0,
+										"type": "host"
+						},
+						{
+										"op": "emit"
+						}
+		]
+}</screen>
+    <para>
+     Mit folgendem Kommando rufen Sie eine Liste der OSDs ab, die zur Klasse „ssd“ gehören:
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush class ls-osd ssd
+0
+1
+</screen>
+   </sect3>
+   <sect3 xml:id="device-classes-reclassify">
+    <title>Migration von einer Legacy-SSD-Regel zu Geräteklassen</title>
+    <para>
+     In SUSE Enterprise Storage vor Version 5 mussten Sie die CRUSH-Zuordnung manuell bearbeiten und parallele Hierarchien für jeden einzelnen Gerätetyp (z. B. SSD) pflegen, damit Sie überhaupt Regeln für diese Regeln schreiben konnten. Seit SUSE Enterprise Storage 5 ist dies mit der Geräteklassenfunktion transparent möglich.
+    </para>
+    <para>
+     Mit dem Kommando <command>crushtool</command> wandeln Sie eine Legacy-Regel und -Hierarchie in die neuen klassenbasierten Regeln um. Für die Umwandlung stehen mehrere Möglichkeiten zur Auswahl:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>crushtool --reclassify-root <replaceable>ROOT_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        Dieses Kommando erfasst alle Elemente in der Hierarchie unterhalb von <replaceable>ROOT_NAME</replaceable> und ersetzt alle Regeln, die mit
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable>
+</screen>
+       <para>
+        auf diesen Root verweisen, durch
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable> class <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+       <para>
+        Die Buckets werden neu numeriert, wobei die bisherigen IDs in den „Schattenbaum“ der jeweiligen Klasse übernommen werden. Somit werden keine Daten verschoben.
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-root</command></title>
+        <para>
+         Betrachten Sie die folgende vorhandene Regel:
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+        <para>
+         Wenn Sie den Root „default“ als Klasse „hdd“ neu klassifizieren, lautet die Regel nunmehr
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default class hdd
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+       </example>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --set-subtree-class <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        Mit dieser Methode werden alle Geräte im Teilbaum mit dem Root <replaceable>BUCKET_NAME</replaceable> und der angegebenen Geräteklasse gekennzeichnet.
+       </para>
+       <para>
+        <option>--set-subtree-class</option> wird in der Regel gemeinsam mit der Option <option>--reclassify-root</option> herangezogen, damit alle Geräte im betreffenden Root mit der richtigen Klasse gekennzeichnet werden. Einige Geräte, denen bewusst eine andere Klasse zugewiesen wurde, sollen jedoch nicht neu gekennzeichnet werden. In diesen Fällen lassen Sie die Option <option>--set-subtree-class</option> weg. Beachten Sie, dass diese Neuzuordnung nicht völlig einwandfrei ist, da die bisherige Regel auf Geräten mehrerer Klassen verteilt ist, während die angepassten Regeln lediglich Geräten der angegebenen Geräteklasse zugeordnet werden.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>MATCH_PATTERN</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>DEFAULT_PATTERN</replaceable></command></term>
+      <listitem>
+       <para>
+        Mit dieser Methode lässt sich eine parallele typenspezifische Hierarchie mit der normalen Hierarchie zusammenführen. Bei vielen Benutzern sehen die CRUSH-Zuordnungen beispielsweise so oder ähnlich aus:
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-bucket</command></title>
+<screen>
+host node1 {
+   id -2           # do not change unnecessarily
+   # weight 109.152
+   alg straw
+   hash 0  # rjenkins1
+   item osd.0 weight 9.096
+   item osd.1 weight 9.096
+   item osd.2 weight 9.096
+   item osd.3 weight 9.096
+   item osd.4 weight 9.096
+   item osd.5 weight 9.096
+   [...]
+}
+
+host node1-ssd {
+   id -10          # do not change unnecessarily
+   # weight 2.000
+   alg straw
+   hash 0  # rjenkins1
+   item osd.80 weight 2.000
+   [...]
+}
+
+root default {
+   id -1           # do not change unnecessarily
+   alg straw
+   hash 0  # rjenkins1
+   item node1 weight 110.967
+   [...]
+}
+
+root ssd {
+   id -18          # do not change unnecessarily
+   # weight 16.000
+   alg straw
+   hash 0  # rjenkins1
+   item node1-ssd weight 2.000
+   [...]
+}
+</screen>
+       </example>
+       <para>
+        Mit dieser Funktion werden alle Buckets neu klassifiziert, die mit einem bestimmten Muster übereinstimmen. Dieses Muster lautet beispielsweise <literal>%suffix</literal> oder <literal>prefix%</literal>. Im obigen Beispiel würden Sie das Muster <literal>%-ssd</literal> heranziehen. Bei jedem passenden Bucket bezeichnet der verbleibende Teil des Namens, also der Teil im Platzhalter „%“, den Basis-Bucket. Alle Geräte im passenden Bucket werden mit der angegebenen Geräteklasse gekennzeichnet und dann in den Basis-Bucket verschoben. Wenn der Basis-Bucket noch nicht vorhanden ist („node12-ssd“ liegt beispielsweise vor, „node12“ dagegen nicht), wird er erstellt und unter dem angegebenen standardmäßigen übergeordneten Bucket verknüpft. Die bisherigen Bucket-IDs werden für die neuen Shadow-Buckets beibehalten, wodurch keine Daten verschoben werden müssen. Regeln mit <literal>take</literal>-Schritten, die auf die bisherigen Buckets verweisen, werden angepasst.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>BASE_BUCKET</replaceable></command></term>
+      <listitem>
+       <para>
+        Mit der Option <option>--reclassify-bucket</option>ohne Platzhalter können Sie einen einzelnen Bucket zuordnen. Im obigen Beispiel soll beispielsweise der Bucket „ssd“ dem Standard-Bucket zugeordnet werden.
+       </para>
+       <para>
+        Das Kommando, mit dem die Zuordnung mit den obigen Fragmenten endgültig konvertiert wird, lautet dann:
+       </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd getcrushmap -o original
+<prompt>cephadm@adm &gt; </prompt>crushtool -i original --reclassify \
+  --set-subtree-class default hdd \
+  --reclassify-root default hdd \
+  --reclassify-bucket %-ssd ssd default \
+  --reclassify-bucket ssd ssd default \
+  -o adjusted
+</screen>
+       <para>
+        Mit der Option <option>--compare</option> können Sie prüfen, ob die Konvertierung fehlerfrei durchgeführt wurde. Hiermit wird eine große Anzahl von Eingaben in die CRUSH-Zuordnung getestet und es wird verglichen, ob wieder das gleiche Ergebnis erzielt wird. Diese Eingaben werden mit denselben Optionen gesteuert wie <option>--test</option>. Im obigen Beispiel lautet das Kommando dann:
+       </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>crushtool -i original --compare adjusted
+rule 0 had 0/10240 mismatched mappings (0)
+rule 1 had 0/10240 mismatched mappings (0)
+maps appear equivalent
+</screen>
+       <tip>
+        <para>
+         Bei Abweichungen würde das Verhältnis der neu zugeordneten Eingaben in Klammern angegeben.
+        </para>
+       </tip>
+       <para>
+        Wenn Sie mit der angepassten CRUSH-Zuordnung zufrieden sind, können Sie sie auf den Cluster anwenden:
+       </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd setcrushmap -i adjusted
+</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>Weiterführende Informationen</title>
+    <para>
+     Weitere Informationen zu CRUSH-Zuordnungen finden Sie in <xref linkend="op-crush"/>.
+    </para>
+    <para>
+     Weitere Informationen zu Ceph Pools im Allgemeinen finden Sie in <xref linkend="ceph-pools"/>.
+    </para>
+    <para>
+     Weitere Informationen zu Pools mit Löschcodierung finden Sie in <xref linkend="cha-ceph-erasure"/>.
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="datamgm-buckets">
+  <title>Buckets</title>
+
+  <para>
+   CRUSH Maps enthalten eine Liste von OSDs, die in „Buckets“ angeordnet werden können, um die Geräte an physischen Standorten zu aggregieren.
+  </para>
+
+  <informaltable frame="none">
+   <tgroup cols="3">
+    <colspec colwidth="10*"/>
+    <colspec colwidth="30*"/>
+    <colspec colwidth="70*"/>
+    <tbody>
+     <row>
+      <entry>
+       <para>
+        0
+       </para>
+      </entry>
+      <entry>
+       <para>
+        osd
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Ein OSD-Daemon (osd.1, osd.2 usw.).
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        1
+       </para>
+      </entry>
+      <entry>
+       <para>
+        host
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Ein Hostname, der einen oder mehrere OSDs enthält.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        2
+       </para>
+      </entry>
+      <entry>
+       <para>
+        chassis
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Gehäuse, aus denen sich das Rack zusammensetzt.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        3
+       </para>
+      </entry>
+      <entry>
+       <para>
+        rack
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Ein Computer-Rack. Der Standardwert ist <literal>unknownrack</literal>.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        4
+       </para>
+      </entry>
+      <entry>
+       <para>
+        row
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Eine Reihe in einer Serie von Racks.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        5
+       </para>
+      </entry>
+      <entry>
+       <para>
+        pdu
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Stromverteilungseinheit.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        6
+       </para>
+      </entry>
+      <entry>
+       <para>
+        pod
+       </para>
+      </entry>
+      <entry>
+       <para/>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        7
+       </para>
+      </entry>
+      <entry>
+       <para>
+        room
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Ein Raum mit Racks und Reihen von Hosts.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        8
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Rechenzentrum
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Ein physisches Rechenzentrum mit Räumen.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        9
+       </para>
+      </entry>
+      <entry>
+       <para>
+        region
+       </para>
+      </entry>
+      <entry>
+       <para/>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        10
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Root
+       </para>
+      </entry>
+      <entry>
+       <para/>
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </informaltable>
+
+  <tip>
+   <para>
+    Sie können die vorhandenen Typen bearbeiten und eigene Bucket-Typen erstellen.
+   </para>
+  </tip>
+
+  <para>
+   Die Bereitstellungswerkzeuge von Ceph generieren eine CRUSH-Zuordnung, die einen Bucket für jeden Host sowie den Pool „default“ enthält, was für den standardmäßigen <literal>rbd</literal>-Pool nützlich ist. Die restlichen Bucket-Typen dienen zum Speichern von Informationen zum physischen Standort von Nodes/Buckets. Dadurch wird die Cluster-Verwaltung erheblich erleichtert, wenn bei OSDs, Hosts oder Netzwerkhardware Störungen auftreten und der Administrator Zugriff auf die physische Hardware benötigt.
+  </para>
+
+  <para>
+   Ein Bucket umfasst einen Typ, einen eindeutigen Namen (Zeichenkette), eine eindeutige als negative Ganzzahl ausgedrückte ID, ein Gewicht relativ zur Gesamtkapazität/Capability seiner Elemente, den Bucket-Algorithmus (standardmäßig <literal>straw</literal>) sowie den Hash (standardmäßig <literal>0</literal>, was dem CRUSH Hash <literal>rjenkins1</literal> entspricht). Ein Bucket kann ein oder mehrere Elemente enthalten. Die Elemente bestehen möglicherweise aus anderen Buckets oder OSDs. Elemente können ein Gewicht aufweisen, das dem relativen Gewicht des Elements entspricht.
+  </para>
+
+<screen>[bucket-type] [bucket-name] {
+  id [a unique negative numeric ID]
+  weight [the relative capacity/capability of the item(s)]
+  alg [the bucket type: uniform | list | tree | straw2 | straw ]
+  hash [the hash type: 0 by default]
+  item [item-name] weight [weight]
+}</screen>
+
+  <para>
+   Das folgende Beispiel veranschaulicht, wie Sie Buckets zum Aggregieren eines Pools und der physischen Standorte wie Rechenzentrum, Raum, Rack und Reihe verwenden.
+  </para>
+
+<screen>host ceph-osd-server-1 {
+        id -17
+        alg straw2
+        hash 0
+        item osd.0 weight 0.546
+        item osd.1 weight 0.546
+}
+
+row rack-1-row-1 {
+        id -16
+        alg straw2
+        hash 0
+        item ceph-osd-server-1 weight 2.00
+}
+
+rack rack-3 {
+        id -15
+        alg straw2
+        hash 0
+        item rack-3-row-1 weight 2.00
+        item rack-3-row-2 weight 2.00
+        item rack-3-row-3 weight 2.00
+        item rack-3-row-4 weight 2.00
+        item rack-3-row-5 weight 2.00
+}
+
+rack rack-2 {
+        id -14
+        alg straw2
+        hash 0
+        item rack-2-row-1 weight 2.00
+        item rack-2-row-2 weight 2.00
+        item rack-2-row-3 weight 2.00
+        item rack-2-row-4 weight 2.00
+        item rack-2-row-5 weight 2.00
+}
+
+rack rack-1 {
+        id -13
+        alg straw2
+        hash 0
+        item rack-1-row-1 weight 2.00
+        item rack-1-row-2 weight 2.00
+        item rack-1-row-3 weight 2.00
+        item rack-1-row-4 weight 2.00
+        item rack-1-row-5 weight 2.00
+}
+
+room server-room-1 {
+        id -12
+        alg straw2
+        hash 0
+        item rack-1 weight 10.00
+        item rack-2 weight 10.00
+        item rack-3 weight 10.00
+}
+
+datacenter dc-1 {
+        id -11
+        alg straw2
+        hash 0
+        item server-room-1 weight 30.00
+        item server-room-2 weight 30.00
+}
+
+root data {
+        id -10
+        alg straw2
+        hash 0
+        item dc-1 weight 60.00
+        item dc-2 weight 60.00
+}</screen>
+ </sect1>
+ <sect1 xml:id="datamgm-rules">
+  <title>Regelsätze</title>
+
+  <para>
+   CRUSH Maps unterstützen das Konzept der "CRUSH-Regeln". Dabei handelt es sich um die Regeln, die die Datenplatzierung für einen Pool bestimmen. Bei großen Clustern erstellen Sie wahrscheinlich viele Pools und jeder Pool verfügt über einen eigenen CRUSH-Regelsatz und Regeln. Die standardmäßige CRUSH-Zuordnung umfasst eine Regel für den Standard-Root. Wenn Sie weitere Roots und Regeln benötigen, erstellen Sie sie später. Ansonsten werden sie automatisch angelegt, sobald neue Pools eingerichtet werden.
+  </para>
+
+  <note>
+   <para>
+    In den meisten Fällen müssen Sie die Standardregeln nicht ändern. Beim Erstellen eines neuen Pools lautet der Standardregelsatz 0.
+   </para>
+  </note>
+
+  <para>
+   Eine Regel sieht folgendermaßen aus:
+  </para>
+
+<screen>rule <replaceable>rulename</replaceable> {
+
+        ruleset <replaceable>ruleset</replaceable>
+        type <replaceable>type</replaceable>
+        min_size <replaceable>min-size</replaceable>
+        max_size <replaceable>max-size</replaceable>
+        step <replaceable>step</replaceable>
+
+}</screen>
+
+  <variablelist>
+   <varlistentry>
+    <term>ruleset</term>
+    <listitem>
+     <para>
+      Eine Ganzzahl. Klassifiziert eine Regel als Teil einer Gruppe von Regeln. Wird dadurch aktiviert, dass der Regelsatz in einem Pool festgelegt wird. Diese Option muss aktiviert sein. Der Standardwert ist <literal>0</literal>. 
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>type</term>
+    <listitem>
+     <para>
+      Eine Zeichenkette. Beschreibt eine Regel für einen „reproduzierten“ oder einen „Erasure“ Coded Pool. Diese Option muss aktiviert sein. Die Standardeinstellung ist <literal>replicated</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>min_size</term>
+    <listitem>
+     <para>
+      Eine Ganzzahl. CRUSH wählt diese Regel NICHT aus, wenn eine Poolgruppe weniger Reproduktionen erstellt als diese Zahl. Diese Option muss aktiviert sein. Die Standardeinstellung ist <literal>2</literal>. 
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>max_size</term>
+    <listitem>
+     <para>
+      Eine Ganzzahl. CRUSH wählt diese Regel NICHT aus, wenn eine Poolgruppe mehr Reproduktionen erstellt als diese Zahl. Diese Option muss aktiviert sein. Die Standardeinstellung ist <literal>10</literal>. 
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step take <replaceable>bucket</replaceable></term>
+    <listitem>
+     <para>
+      Nimmt einen Bucket, der durch einen Namen angegeben wird, und beginnt, den Baum nach unten zu durchlaufen. Diese Option muss aktiviert sein. Eine Erläuterung zum Durchlaufen des Baums finden Sie in <xref linkend="datamgm-rules-step-iterate"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step <replaceable>target</replaceable><replaceable>mode</replaceable><replaceable>num</replaceable> type <replaceable>bucket-type</replaceable></term>
+    <listitem>
+     <para>
+      <replaceable>target</replaceable> ist entweder <literal>choose</literal> oder <literal>chooseleaf</literal>. Wenn der Wert auf <literal>choose</literal> festgelegt ist, wird eine Reihe von Buckets ausgewählt. <literal>chooseleaf</literal> wählt direkt die OSDs (Blatt-Nodes) aus dem Teilbaum der einzelnen Buckets in der Gruppe der Buckets aus.
+     </para>
+     <para>
+      <replaceable>mode</replaceable> ist entweder <literal>firstn</literal> oder <literal>indep</literal>. Weitere Informationen hierzu finden Sie in <xref linkend="datamgm-rules-step-mode"/>.
+     </para>
+     <para>
+      Wählt die Anzahl der Buckets des angegebenen Typs aus. Wenn N die Anzahl der verfügbaren Optionen ist und <replaceable>num</replaceable> &gt; 0 &amp;&amp; &lt; N, wählen Sie genauso viele Buckets. <replaceable>num</replaceable> &lt; 0 bedeutet N - <replaceable>num</replaceable>. Bei <replaceable>num</replaceable> == 0 wählen Sie N Buckets (alle verfügbar). Folgt auf <literal>step take</literal> oder <literal>step choose</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step emit</term>
+    <listitem>
+     <para>
+      Gibt den aktuellen Wert aus und leert den Stack. Wird normalerweise am Ende einer Regel verwendet, kann jedoch auch zum Erstellen unterschiedlicher Bäume in derselben Regel verwendet werden. Folgt auf <literal>step choose</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <sect2 xml:id="datamgm-rules-step-iterate">
+   <title>Durchlaufen des Node-Baums</title>
+   <para>
+    Die mit den Buckets definierte Struktur kann als Node-Baum angezeigt werden. Buckets sind Nodes und OSDs sind Blätter an diesem Baum.
+   </para>
+   <para>
+    Die Regeln in der CRUSH Map definieren, wie OSDs aus diesem Baum ausgewählt werden. Eine Regel beginnt mit einem Node und durchläuft dann den Baum nach unten, um eine Reihe von OSDs zurückzugeben. Es ist nicht möglich, zu definieren, welcher Zweig ausgewählt werden muss. Stattdessen wird durch den CRUSH-Algorithmus sichergestellt, dass die Gruppe der OSDs die Reproduktionsanforderungen erfüllt und die Daten gleichmäßig verteilt.
+   </para>
+   <para>
+    Bei <literal>step take</literal> <replaceable>bucket</replaceable> beginnt der Durchlauf des Node-Baums am angegebenen Bucket (nicht am Bucket-Typ). Wenn OSDs aus allen Zweigen am Baum zurückgegeben werden müssen, dann muss der Bucket der Root Bucket sein. Andernfalls durchlaufen die folgenden Schritte nur einen Teilbaum.
+   </para>
+   <para>
+    In der Regeldefinition folgen nach <literal>step take</literal> ein oder zwei <literal>step choose</literal>-Einträge. Mit jedem <literal>step choose</literal> wird eine definierte Anzahl von Nodes (oder Zweigen) aus dem vorher ausgewählten oberen Node gewählt.
+   </para>
+   <para>
+    Am Ende werden die ausgewählten OSDs mit <literal>step emit</literal> zurückgegeben.
+   </para>
+   <para>
+    <literal>step chooseleaf</literal> ist eine praktische Funktion, mit der OSDs direkt aus Zweigen des angegebenen Buckets ausgewählt werden.
+   </para>
+   <para>
+    <xref linkend="datamgm-rules-step-iterate-figure"/> zeigt ein Beispiel, wie <literal>step</literal> zum Durchlaufen eines Baums verwendet wird. In den folgenden Regeldefinitionen entsprechen die orangefarbenen Pfeile und Zahlen <literal>example1a</literal> und <literal>example1b</literal> und die blauen Pfeile entsprechen <literal>example2</literal>.
+   </para>
+   <figure xml:id="datamgm-rules-step-iterate-figure">
+    <title>Beispielbaum</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-step.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-step.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+<screen># orange arrows
+rule example1a {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2)
+        step choose firstn 0 host
+        # orange (3)
+        step choose firstn 1 osd
+        step emit
+}
+
+rule example1b {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2) + (3)
+        step chooseleaf firstn 0 host
+        step emit
+}
+
+# blue arrows
+rule example2 {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # blue (1)
+        step take room1
+        # blue (2)
+        step chooseleaf firstn 0 rack
+        step emit
+}</screen>
+  </sect2>
+
+  <sect2 xml:id="datamgm-rules-step-mode">
+   <title>firstn und indep</title>
+   <para>
+    Eine CRUSH-Regel definiert den Ersatz für fehlerhafte Nodes oder OSDs (weitere Informationen finden Sie in <xref linkend="datamgm-rules"/>). Für das Schlüsselwort <literal>step</literal> ist entweder <literal>firstn</literal> oder <literal>indep</literal> als Parameter erforderlich. <xref linkend="datamgm-rules-step-mode-indep-figure"/> zeigt ein Beispiel.
+   </para>
+   <para>
+    <literal>firstn</literal> fügt Ersatz-Nodes am Ende der Liste der aktiven Nodes hinzu. Im Fall eines fehlerhaften Nodes werden die folgenden fehlerfreien Nodes nach links verschoben, um die Lücke des fehlerhaften Nodes zu schließen. Dies ist die standardmäßige und erwünschte Methode für <emphasis>reproduzierte Pools</emphasis>, weil ein sekundärer Node bereits alle Daten enthält und daher die Aufgaben des primären Nodes sofort übernehmen kann.
+   </para>
+   <para>
+    <literal>indep</literal> wählt feste Ersatz-Nodes für jeden aktiven Node aus. Der Ersatz für einen fehlerhaften Node ändert nicht die Reihenfolge der anderen Nodes. Dies ist die erwünschte Methode für <emphasis>Erasure Coded Pools</emphasis>. In Erasure Coded Pools hängen die in einem Node gespeicherten Daten von ihrer Position in der Node-Auswahl ab. Wenn sich die Reihenfolge der Nodes ändert, müssen alle Daten in den betroffenen Nodes neu platziert werden.
+   </para>
+   <figure xml:id="datamgm-rules-step-mode-indep-figure">
+    <title>Methoden für den Austausch von Nodes</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-firstn-indep.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-firstn-indep.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-pgs">
+  <title>Platzierungsgruppen</title>
+
+  <para>
+   Ceph ordnet die Objekte bestimmten Platzierungsgruppen (PGs) zu. Die Platzierungsgruppen sind Shards oder Fragmente einer logischen Gruppe, mit der Objekte als Gruppe in OSDs platziert werden. Platzierungsgruppen verringern die Menge der Metadaten pro Objekt, wenn Ceph die Daten in OSDs speichert. Eine größere Anzahl von Platzierungsgruppen – beispielsweise 100 pro OSD – bewirkt einen besseren Ausgleich.
+  </para>
+
+  <sect2 xml:id="op-pgs-usage">
+   <title>Wie werden Platzierungsgruppen verwendet?</title>
+   <para>
+    Eine Platzierungsgruppe (PG) aggregiert Objekte in einem Pool. Der wichtigste Grund: Die Nachverfolgung der Objektplatzierung und der Metadaten für einzelne Objekte ist rechnerisch aufwendig. In einem System mit Millionen von Objekten ist es beispielsweise nicht möglich, die Platzierung einzelner Objekte direkt zu verfolgen.
+   </para>
+   <figure>
+    <title>Platzierungsgruppen in einem Pool</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Der Ceph Client berechnet die Platzierungsgruppe, zu der ein Objekt gehört. Hierzu erhält die Objekt-ID ein Hash und es wird eine Aktion aufgeführt, die auf der Anzahl der PGs im definierten Pool und auf der ID des Pools beruht.
+   </para>
+   <para>
+    Der Inhalt des Objekts in einer Platzierungsgruppe wird in einer Gruppe von OSDs gespeichert. In einem reproduzierten Pool der Größe 2 werden Objekte durch die Platzierungsgruppen beispielsweise auf zwei OSDs gespeichert:
+   </para>
+   <figure>
+    <title>Platzierungsgruppen und OSDs</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Wenn OSD 2 ausfällt, wird der Platzierungsgruppe 1 ein anderes OSD zugewiesen, auf dem dann Kopien aller Objekte auf OSD 1 abgelegt werden. Wird die Poolgröße von 2 auf 3 erhöht, wird der Platzierungsgruppe ein zusätzliches OSD zugewiesen, das dann Kopien aller Objekte in der Platzierungsgruppe erhält.
+   </para>
+   <para>
+    Platzierungsgruppen fungieren nicht als Eigentümer des OSD, sondern sie nutzen es gemeinsam mit anderen Platzierungsgruppen aus demselben Pool oder sogar aus anderen Pools. Wenn OSD 2 ausfällt, muss die Platzierungsgruppe 2 ebenfalls Kopien der Objekte wiederherstellen, wobei OSD 3 herangezogen wird.
+   </para>
+   <para>
+    Wenn die Anzahl der Platzierungsgruppen wächst, werden den neuen Platzierungsgruppen entsprechend OSDs zugewiesen. Auch das Ergebnis der CRUSH-Funktion ändert sich und einige Objekte aus den bisherigen Platzierungsgruppen werden in die neuen Platzierungsgruppen kopiert und aus den bisherigen Gruppen entfernt.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pg-num">
+   <title>Ermitteln des Werts für <replaceable>PG_NUM</replaceable></title>
+   <para>
+    Beim Erstellen eines neuen Pools muss ein Wert für <replaceable>PG_NUM</replaceable> festgelegt werden:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd pool create <replaceable>POOL_NAME</replaceable> <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    <replaceable>PG_NUM</replaceable> kann nicht automatisch berechnet werden. Die folgenden Werte kommen häufig zum Einsatz, je nach Anzahl der OSDs im Cluster:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>Weniger als 5 OSDs:</term>
+     <listitem>
+      <para>
+       Legen Sie <replaceable>PG_NUM</replaceable> auf 128 fest.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>Zwischen 5 und 10 OSDs:</term>
+     <listitem>
+      <para>
+       Legen Sie <replaceable>PG_NUM</replaceable> auf 512 fest.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>Zwischen 10 und 50 OSDs:</term>
+     <listitem>
+      <para>
+       Legen Sie <replaceable>PG_NUM</replaceable> auf 1.024 fest.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    Mit wachsender Anzahl der OSDs wird die Auswahl des richtigen Werts für <replaceable>PG_NUM</replaceable> immer wichtiger. <replaceable>PG_NUM</replaceable> wirkt sich stark auf das Verhalten des Clusters und auf die Haltbarkeit der Daten bei einem OSD-Fehler aus.
+   </para>
+   <sect3 xml:id="op-pgs-choosing">
+    <title>Anzahl der Platzierungsgruppen für mehr als 50 OSDs</title>
+    <para>
+     Wenn Sie weniger als 50 OSDs nutzen, beachten Sie die Vorauswahl unter <xref linkend="op-pgs-pg-num"/>. Wenn Sie mehr als 50 OSDs nutzen, werden etwa 50–100 Platzierungsgruppen pro OSD empfohlen, sodass die Ressourcenauslastung, die Datenhaltbarkeit und die Verteilung ausgeglichen sind. Bei einem einzelnen Pool mit Objekten können Sie mit der folgenden Formel einen Referenzwert berechnen:
+    </para>
+<screen>
+          total PGs = (OSDs * 100) / <replaceable>POOL_SIZE</replaceable>
+</screen>
+    <para>
+     <replaceable>POOL_SIZE</replaceable> bezeichnet hierbei entweder die Anzahl der Reproduktionen bei reproduzierten Pools oder die Summe aus „k“+„m“ bei Pools mit Löschcodierung, die durch das Kommando <command>ceph osd erasure-code-profile get</command> zurückgegeben wird. Runden Sie das Ergebnis auf die nächste Zweierpotenz auf. Das Aufrunden wird empfohlen, damit der CRUSH-Algorithmus die Anzahl der Objekte gleichmäßig auf die Platzierungsgruppen verteilen kann.
+    </para>
+    <para>
+     Für einen Cluster mit 200 OSDs und einer Poolgröße von 3 Reproduktionen würden Sie die Anzahl der PGs beispielsweise wie folgt näherungsweise ermitteln:
+    </para>
+<screen>
+          (200 * 100) / 3 = 6667
+</screen>
+    <para>
+     Die nächste Zweierpotenz ist <emphasis role="bold">8.192</emphasis>.
+    </para>
+    <para>
+     Wenn Objekte in mehreren Daten-Pools gespeichert werden, müssen Sie die Anzahl der Platzierungsgruppen pro Pool in jedem Fall mit der Anzahl der Platzierungsgruppen pro OSD abgleichen. Dabei müssen Sie eine sinnvolle Gesamtanzahl der Platzierungsgruppen erreichen, die eine angemessen niedrige Varianz pro OSD gewährleistet, ohne die Systemressourcen überzustrapazieren oder den Peering-Prozess zu stark zu verlangsamen.
+    </para>
+    <para>
+     Ein Cluster mit 10 Pools mit je 512 Platzierungsgruppen auf 10 OSDs umfasst beispielsweise insgesamt 5.120 Platzierungsgruppen auf 10 OSDs, also 512 Platzierungsgruppen pro OSD. Eine solche Einrichtung verbraucht nicht allzu viele Ressourcen. Würden jedoch 1.000 Pools mit je 512 Platzierungsgruppen erstellt, müssten die OSDs je etwa 50.000 Platzierungsgruppen verarbeiten, was die Ressourcenauslastung und den Zeitaufwand für das Peering erheblich erhöhen würde.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-pg-set">
+   <title>Festlegen der Anzahl der Platzierungsgruppen</title>
+   <para>
+    Die Anzahl der Platzierungsgruppen in einem Pool wird beim Erstellen des Pools festgelegt (siehe <xref linkend="ceph-pools-operate-add-pool"/>). Die festgelegte Anzahl der Platzierungsgruppen für einen Pool kann nur erhöht werden, nicht jedoch vermindert. Mit folgendem Kommando erhöhen Sie die Anzahl der Platzierungsgruppen:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_num <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    Wenn Sie die Anzahl der Platzierungsgruppen erhöhen, müssen Sie auch die Anzahl der zu platzierenden Platzierungsgruppen (<option>PGP_NUM</option>) erhöhen, damit der Cluster neu ausgeglichen werden kann. <option>PGP_NUM</option> ist die Anzahl der Platzierungsgruppen, die der CRUSH-Algorithmus zur Platzierung berücksichtigt. Wird <option>PG_NUM</option> erhöht, werden die Platzierungsgruppen geteilt; die Daten werden allerdings erst dann zu den neueren Platzierungsgruppen migriert, wenn <option>PGP_NUM</option> erhöht wird. <option>PGP_NUM</option> muss gleich <option>PG_NUM</option> sein. Mit folgendem Kommando erhöhen Sie die Anzahl der Platzierungsgruppen zur Platzierung:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pgp_num <replaceable>PGP_NUM</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-get">
+   <title>Abrufen der Anzahl der Platzierungsgruppen</title>
+   <para>
+    Mit folgendem Kommando rufen Sie die Anzahl der Platzierungsgruppen in einem Pool ab:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd pool get <replaceable>POOL_NAME</replaceable> pg_num
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getpgstat">
+   <title>Abrufen der PG-Statistiken für einen Cluster</title>
+   <para>
+    Mit folgendem Kommando rufen Sie die Statistik für die Platzierungsgruppen in Ihrem Cluster ab:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg dump [--format <replaceable>FORMAT</replaceable>]
+</screen>
+   <para>
+    Zulässige Formate sind „plain“ (Standard) und „json“.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getstuckstat">
+   <title>Abrufen von Statistiken für hängen gebliebene PGs</title>
+   <para>
+    Mit folgendem Kommando rufen Sie die Statistiken für alle Platzierungsgruppen ab, die in einem bestimmten Status hängen geblieben sind:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg dump_stuck <replaceable>STATE</replaceable> \
+ [--format <replaceable>FORMAT</replaceable>] [--threshold <replaceable>THRESHOLD</replaceable>]
+</screen>
+   <para>
+    <replaceable>STATE</replaceable> lautet „inactive“ (PGs können keine Lese- oder Schreibvorgänge verarbeiten, da sie darauf warten, dass ein OSD die jeweils neuesten Daten bereitstellt), „unclean“ (PGs enthalten Objekte, die nicht so oft wie gefordert reproduziert wurden), „stale“ (PGs besitzen einen unbekannten Status – die OSDs, auf denen sie gehostet werden, haben den Status nicht im Zeitraum zurückgegeben, der in der Option <option>mon_osd_report_timeout</option> festgelegt ist), „undersized“ oder „degraded“.
+   </para>
+   <para>
+    Zulässige Formate sind „plain“ (Standard) und „json“.
+   </para>
+   <para>
+    Der Schwellwert definiert den Mindestzeitraum (in Sekunden), über den die Platzierungsgruppe hängen geblieben sein muss, bevor sie in die zurückgegebenen Statistiken aufgenommen wird (standardmäßig 300 Sekunden).
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pgmap">
+   <title>Abrufen einer Platzierungsgruppenzuordnung</title>
+   <para>
+    Mit folgendem Kommando rufen Sie die Platzierungsgruppenzuordnung für eine bestimmte Platzierungsgruppe ab:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg map <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Ceph gibt die Platzierungsgruppenzuordnung, die Platzierungsgruppe und den OSD-Status zurück:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg map 1.6c
+osdmap e13 pg 1.6c (1.6c) -&gt; up [1,0] acting [1,0]
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-pgstats">
+   <title>Abrufen der Statistiken für eine Platzierungsgruppe</title>
+   <para>
+    Mit folgendem Kommando rufen Sie die Statistiken für eine bestimmte Platzierungsgruppe ab:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg <replaceable>PG_ID</replaceable> query
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-scrubpg">
+   <title>Scrubbing einer Platzierungsgruppe</title>
+   <para>
+    Mit folgendem Kommando führen Sie das Scrubbing (<xref linkend="scrubbing"/>) einer Platzierungsgruppe aus:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg scrub <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Ceph prüft die primären Knoten und die Reproduktionsknoten, erzeugt einen Katalog aller Objekte der Platzierungsgruppe und führt einen Vergleich aus, mit dem gewährleistet wird, dass keine Objekte fehlen oder fehlerhaft zugeordnet wurden und dass die Inhalte der Objekte konsistent sind. Unter der Voraussetzung, dass alle Reproduktionen übereinstimmen, wird mit einem abschließenden semantischen Durchlauf geprüft, ob alle snapshotspezifischen Objekt-Metadaten konsistent sind. Fehler werden in Protokollen erfasst.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-backfill">
+   <title>Priorisierung des Abgleichs und der Wiederherstellung von Platzierungsgruppen</title>
+   <para>
+    Unter Umständen müssen mehrere Platzierungsgruppen wiederhergestellt und/oder abgeglichen werden, deren Daten unterschiedlich wichtig sind. Die PGs enthalten beispielsweise Daten für Images, die auf derzeit laufenden Computern verwendet werden, andere PGs dagegen werden von inaktiven Computern herangezogen oder enthalten weniger relevante Daten. In diesem Fall muss die Wiederherstellung der betreffenden Gruppen priorisiert werden, sodass die Leistung und Verfügbarkeit der in diesen Gruppen gespeicherten Daten rascher wieder bereitstehen. Mit folgendem Kommando markieren Sie bestimmte Platzierungsgruppen bei einem Abgleich oder einer Wiederherstellung als priorisiert:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt>root # </prompt>ceph pg force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    Hiermit führt Ceph zuerst die Wiederherstellung oder den Abgleich der angegebenen Platzierungsgruppen durch und verarbeitet dann erst andere Platzierungsgruppen. Laufende Abgleich- oder Wiederherstellungsvorgänge werden nicht unterbrochen, sondern die angegebenen PGs werden so rasch wie möglich verarbeitet. Wenn Sie Ihre Meinung ändern oder nicht die richtigen Gruppen priorisiert haben, können Sie die Priorisierung abbrechen:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg cancel-force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt>root # </prompt>ceph pg cancel-force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    Mit den Kommandos <command>cancel-*</command> wird die Flagge „force“ aus den PGs entfernt, sodass sie in der standardmäßigen Reihenfolge verarbeitet werden. Auch dieser Vorgang wirkt sich nicht auf die derzeit verarbeiten Platzierungsgruppen aus, sondern lediglich auf Gruppen, die sich noch in der Warteschlange befinden. Nach der Wiederherstellung oder dem Abgleich der Gruppe wird die Flagge „force“ automatisch gelöscht.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-revert">
+   <title>Wiederherstellen verlorener Objekte</title>
+   <para>
+    Wenn mindestens ein Objekt im Cluster verloren gegangen ist und Sie nicht mehr weiter nach den verlorenen Daten suchen möchten, müssen Sie die nicht gefundenen Objekte als „verloren“ markieren.
+   </para>
+   <para>
+    Können die Objekte auch nach Abfrage aller denkbaren Speicherorte nicht abrufen werden, müssen Sie die verlorenen Objekte ggf. aufgeben. Dieser Fall kann bei außergewöhnlichen Fehlerkombinationen auftreten, bei denen Informationen über Schreibvorgänge an den Cluster weitergegeben werden, bevor die Schreibvorgänge selbst wiederhergestellt werden.
+   </para>
+   <para>
+    Derzeit wird ausschließlich die Option „revert“ unterstützt, mit der entweder ein Abgleich mit einer früheren Version des Objekts erfolgt oder das Objekt „vergessen“ wird (sofern ein neues Objekt vorliegt). Mit folgendem Kommando markieren Sie die nicht gefundenen („unfound“) Objekte als verloren („lost“):
+   </para>
+<screen>
+<prompt>root # </prompt>ceph pg <replaceable>PG_ID</replaceable> mark_unfound_lost revert|delete
+</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-crush">
+  <title>Umgang mit der CRUSH Map</title>
+
+  <para>
+   In diesem Abschnitt werden grundlegende Methoden zum Umgang mit der CRUSH Map vorgestellt, wie Bearbeiten einer CRUSH Map, Ändern der CRUSH Map-Parameter und Hinzufügen/Verschieben/Entfernen eines OSD.
+  </para>
+
+  <sect2>
+   <title>Bearbeiten einer CRUSH Map</title>
+   <para>
+    Gehen Sie zum Bearbeiten einer bestehenden CRUSH Map folgendermaßen vor:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Rufen Sie eine CRUSH Map ab. Führen Sie folgendes Kommando aus, um die CRUSH Map für Ihren Cluster abzurufen:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd getcrushmap -o <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph gibt (<option>-o</option>) eine kompilierte CRUSH Map an den angegebenen Dateinamen aus. Da die CRUSH Map in kompilierter Form vorliegt, muss sie vor der Bearbeitung zunächst dekompiliert werden.
+     </para>
+    </step>
+    <step>
+     <para>
+      Dekompilieren Sie eine CRUSH Map. Führen Sie zum Dekompilieren einer CRUSH Map folgendes Kommando aus:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>crushtool -d <replaceable>compiled-crushmap-filename</replaceable> \
+ -o <replaceable>decompiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph dekompiliert (<option>-d</option>) die kompilierte CRUSH Map und gibt Sie (<option>-o</option>) an den angegebenen Dateinamen aus.
+     </para>
+    </step>
+    <step>
+     <para>
+      Bearbeiten Sie mindestens einen der Geräte-, Buckets- und Regel-Parameter.
+     </para>
+    </step>
+    <step>
+     <para>
+      Kompilieren Sie eine CRUSH Map. Führen Sie zum Kompilieren einer CRUSH Map folgendes Kommando aus:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>crushtool -c <replaceable>decompiled-crush-map-filename</replaceable> \
+ -o <replaceable>compiled-crush-map-filename</replaceable></screen>
+     <para>
+      Ceph speichert eine kompilierte CRUSH Map an den angegebenen Dateinamen.
+     </para>
+    </step>
+    <step>
+     <para>
+      Legen Sie eine CRUSH Map fest. Führen Sie folgendes Kommando aus, um die CRUSH Map für Ihren Cluster festzulegen:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd setcrushmap -i <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph gibt die CRUSH Map des angegebenen Dateinamens als CRUSH Map für den Cluster ein.
+     </para>
+    </step>
+   </procedure>
+   <tip>
+    <title>Versionierungssystem verwenden</title>
+    <para>
+     Verwenden Sie ein Versionierungssystem (z. B. git oder svn) für die exportierten und bearbeiteten CRUSH-Zuordnung-Dateien. Damit wird ein etwaiger Abgleich vereinfacht.
+    </para>
+   </tip>
+   <tip>
+    <title>Neue CRUSH-Zuordnung testen</title>
+    <para>
+     Testen Sie die neue, angepasste CRUSH-Zuordnung mit dem Kommando <command>crushtool --test</command> und vergleichen Sie sie mit dem Status vor Anwendung der neuen CRUSH-Zuordnung. Nützliche Kommandoschalter: <option>--show-statistics</option>, <option>--show-mappings</option>, <option>--show-bad-mappings</option>, <option>--show-utilization</option>, <option>--show-utilization-all</option>, <option>--show-choose-tries</option>
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addosd">
+   <title>Hinzufügen/Verschieben eines OSD</title>
+   <para>
+    Führen Sie zum Hinzufügen eines OSD in der CRUSH Map des aktiven Clusters folgendes Kommando aus:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush set <replaceable>id_or_name</replaceable> <replaceable>weight</replaceable> root=<replaceable>pool-name</replaceable>
+<replaceable>bucket-type</replaceable>=<replaceable>bucket-name</replaceable> ...</screen>
+   <variablelist>
+    <varlistentry>
+     <term>id</term>
+     <listitem>
+      <para>
+       Eine Ganzzahl. Die numerische ID des OSD. Diese Option muss aktiviert sein.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>name</term>
+     <listitem>
+      <para>
+       Eine Zeichenkette. Der vollständige Name des OSD. Diese Option muss aktiviert sein.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>weight</term>
+     <listitem>
+      <para>
+       Der Gleitkomma-Datentyp „double“. Das CRUSH-Gewicht für den OSD. Diese Option muss aktiviert sein.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>Root</term>
+     <listitem>
+      <para>
+       Ein Schlüssel/Wert-Paar. Standardmäßig enthält die CRUSH-Hierarchie den Pool-Standardwert als Root. Diese Option muss aktiviert sein.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bucket-type</term>
+     <listitem>
+      <para>
+       Schlüssel/Wert-Paare. Sie haben die Möglichkeit, den Standort des OSD in der CRUSH-Hierarchie anzugeben.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    Im folgenden Beispiel wird <literal>osd.0</literal> zur Hierarchie hinzugefügt oder der OSD wird von einem vorigen Standort verschoben.
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush set osd.0 1.0 root=data datacenter=dc1 room=room1 \
+row=foo rack=bar host=foo-bar-1</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdweight">
+   <title>Unterschied zwischen <command>ceph osd reweight</command> und <command>ceph osd crush reweight</command></title>
+   <para>
+    Das „Gewicht“ eines Ceph OSD kann mit zwei ähnlichen Kommandos geändert werden. Die Kommandos unterscheiden sich durch ihren Nutzungskontext, was zu Verwirrung führen kann.
+   </para>
+   <sect3>
+    <title><command>ceph osd reweight</command></title>
+    <para>
+     Nutzung:
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     Mit <command>ceph osd reweight</command> wird ein überschreibendes Gewicht für das Ceph OSD festgelegt. Dieser Wert im Bereich 0 bis 1 zwingt CRUSH, die Daten zu verlagern, die sich ansonsten auf diesem Laufwerk befinden würden. Das Gewicht, das den Buckets oberhalb des OSD zugewiesen ist, wird hiermit <emphasis role="bold">nicht</emphasis> geändert. Dieser Vorgang fungiert als Korrekturmaßnahme für den Fall, dass die normale CRUSH-Distribution nicht ordnungsgemäß funktioniert. Wenn beispielsweise ein OSD bei 90 % steht und die anderen bei 40 %, können Sie dieses Gewicht senken und das Ungleichgewicht damit beheben.
+    </para>
+    <note>
+     <title>OSD-Gewicht ist temporär</title>
+     <para>
+      Beachten Sie, dass <command>ceph osd reweight</command> keine dauerhafte Einstellung ist. Wird ein OSD als „out“ gekennzeichnet, wird sein Gewicht auf 0 festgelegt; sobald es wieder als „in“ gekennzeichnet wird, erhält das Gewicht den Wert 1.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title><command>ceph osd crush reweight</command></title>
+    <para>
+     Nutzung:
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     Mit <command>ceph osd crush reweight</command> wird das <emphasis role="bold">CRUSH</emphasis>-Gewicht des OSD festgelegt. Dieses Gewicht ist ein willkürlicher Wert (im Allgemeinen die Größe der Festplatte in TB) und steuert die Datenmenge, die das System dem OSD zuordnet.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdremove">
+   <title>Entfernen eines OSD</title>
+   <para>
+    Führen Sie zum Entfernen eines OSD in der CRUSH Map eines aktiven Clusters folgendes Kommando aus:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush remove <replaceable>OSD_NAME</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addbaucket">
+   <title>Hinzufügen eines Buckets</title>
+   <para>
+    Mit dem Kommando <command>ceph osd crush add-bucket</command> fügen Sie der CRUSH-Zuordnung eines aktiven Clients einen Bucket hinzu:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush add-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-movebucket">
+   <title>Verschieben eines Buckets</title>
+   <para>
+    Mit folgendem Kommando verschieben Sie einen Bucket an einen anderen Standort oder eine andere Position in der CRUSH-Zuordnung-Hierarchie:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd crush move <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable>=<replaceable>BUCKET_NAME</replaceable> [...]</screen>
+   <para>
+    Beispiel:
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush move bucket1 datacenter=dc1 room=room1 row=foo rack=bar host=foo-bar-1
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-rmbucket">
+   <title>Entfernen eines Buckets</title>
+   <para>
+    Mit folgendem Kommando entfernen Sie einen Bucket:
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush remove <replaceable>BUCKET_NAME</replaceable>
+</screen>
+   <note>
+    <title>Nur leere Buckets</title>
+    <para>
+     Ein Bucket kann nur dann aus der CRUSH-Hierarchie entfernt werden, wenn er leer ist.
+    </para>
+   </note>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="scrubbing">
+  <title>Scrubbing</title>
+
+  <para>
+   Ceph legt nicht nur mehrere Kopien der Objekte an, sondern schützt die Datenintegrität durch <emphasis>Scrubbing</emphasis> der Platzierungsgruppen (für weitere Informationen zu Platzierungsgruppen siehe <xref linkend="storage-intro-structure-pg"/>). Ceph Scrubbing ist analog zur Ausführung von <command>fsck</command> auf Objektspeicherebene zu verstehen. Ceph generiert für jede Placement Group einen Katalog aller Objekte und vergleicht jedes primäre Objekt und dessen Reproduktionen, um sicherzustellen, dass keine Objekte fehlen oder falsch abgeglichen wurden. Beim täglichen Light Scrubbing werden die Objektgröße und Attribute geprüft. Beim wöchentlichen Deep Scrubbing werden die Daten gelesen und die Datenintegrität wird anhand von Prüfsummen sichergestellt.
+  </para>
+
+  <para>
+   Scrubbing ist wichtig zur Sicherung der Datenintegrität, kann jedoch die Leistung beeinträchtigen. Passen Sie die folgenden Einstellungen an, um mehr oder weniger Scrubbing-Vorgänge festzulegen:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>osd max scrubs</option></term>
+    <listitem>
+     <para>
+      Die maximale Anzahl der gleichzeitig ausgeführten Scrubbing-Operationen für ein Ceph OSD. Der Standardwert ist 1.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub begin hour</option>, <option>osd scrub end hour</option></term>
+    <listitem>
+     <para>
+      Die Stunden am Tag (0 bis 24), die ein Zeitfenster für das Scrubbing definieren. Beginnt standardmäßig bei 0 und endet bei 24.
+     </para>
+     <important>
+      <para>
+       Wenn das Scrubbing-Intervall der Placement Group die Einstellung <option>osd scrub max interval</option> überschreitet, wird das Scrubbing ungeachtet des für ein Scrubbing definiertes Zeitfensters durchgeführt.
+      </para>
+     </important>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub during recovery</option></term>
+    <listitem>
+     <para>
+      Lässt Scrubbing-Vorgänge bei der Wiederherstellung zu. Wird diese Option auf „false“ festgelegt, wird die Planung neuer Scrubbing-Vorgänge während einer aktiven Wiederherstellung deaktiviert. Bereits laufende Scrubbing-Vorgänge werden fortgesetzt. Diese Option ist nützlich, um die Last ausgelasteter Cluster zu reduzieren. Die Standardeinstellung ist „true“.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub thread timeout</option></term>
+    <listitem>
+     <para>
+      Der maximale Zeitraum in Sekunden vor der Zeitüberschreitung eines Scrubbing Threads. Der Standardwert ist 60.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub finalize thread timeout</option></term>
+    <listitem>
+     <para>
+      Der maximale Zeitraum in Sekunden vor der Zeitüberschreitung eines Scrubbing Finalize Threads. Der Standardwert lautet 60*10.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub load threshold</option></term>
+    <listitem>
+     <para>
+      Die normalisierte Maximallast. Ceph führt kein Scrubbing durch, wenn die Systemlast (definiert durch das Verhältnis von <literal>getloadavg()</literal> / Anzahl von <literal>online cpus</literal>) höher ist als dieser Wert. Der Standardwert ist 0,5.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub min interval</option></term>
+    <listitem>
+     <para>
+      Das Mindestintervall in Sekunden für Scrubbing-Vorgänge am Ceph OSD, wenn die Ceph Cluster-Last gering ist. Der Standardwert ist 60*60*24 (einmal täglich).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub max interval</option></term>
+    <listitem>
+     <para>
+      Das maximale Intervall in Sekunden für Scrubbing-Vorgänge am Ceph OSD ungeachtet der Cluster-Last. Der Standardwert ist 7*60*60*24 (einmal pro Woche).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk min</option></term>
+    <listitem>
+     <para>
+      Die maximale Anzahl der Objektspeicher-Datenblöcke für einen einzelnen Scrubbing-Vorgang. Ceph blockiert Schreibvorgänge an einen einzelnen Datenblock während eines Scrubbing-Vorgangs. Der Standardwert ist 5.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk max</option></term>
+    <listitem>
+     <para>
+      Die Mindestanzahl der Objektspeicher-Datenblöcke für einen einzelnen Scrubbing-Vorgang. Der Standardwert ist 25.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub sleep</option></term>
+    <listitem>
+     <para>
+      Ruhezeit vor dem Scrubbing der nächsten Gruppe von Datenblöcken. Durch Erhöhen dieses Werts wird der gesamte Scrubbing-Vorgang verlangsamt. Die Client-Vorgänge insgesamt werden dadurch weniger beeinträchtigt. Der Standardwert ist 0.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub interval</option></term>
+    <listitem>
+     <para>
+      Das Intervall für ein Deep Scrubbing (alle Daten werden vollständig gelesen). Die Option <option>osd scrub load threshold</option> hat keinen Einfluss auf diese Einstellung. Der Standardwert ist 60*60*24*7 (einmal pro Woche).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub interval randomize ratio</option></term>
+    <listitem>
+     <para>
+      Fügen Sie beim Planen des nächsten Scrubbing-Auftrags für eine Placement Group eine zufällige Verzögerung zum Wert <option>osd scrub min interval</option> hinzu. Die Verzögerung ist ein Zufallswert kleiner als das Ergebnis aus <option>osd scrub min interval</option> * <option>osd scrub interval randomized ratio</option>. Daher werden mit dem Standardwert die Scrubbing-Vorgänge praktisch zufällig auf das zulässige Zeitfenster von [1, 1,5] * <option>osd scrub min interval</option> verteilt. Der Standardwert ist 0,5..
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub stride</option></term>
+    <listitem>
+     <para>
+      Lesegröße für ein Deep Scrubbing. Der Standardwert ist 524288 (512 kB).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+</chapter>

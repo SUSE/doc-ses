@@ -1,0 +1,1199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_operating_pools.xml" version="5.0" xml:id="ceph-pools">
+ <title>管理儲存池</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ceph 將資料儲存在池中。池是用於儲存物件的邏輯群組。如果您先部署叢集而不建立池，Ceph 會使用預設池來儲存資料。下面著重指出與 Ceph 池有關的重要特性：
+ </para>
+ <itemizedlist mark="bullet" spacing="normal">
+  <listitem>
+   <para>
+    <emphasis>韌性</emphasis>：您可以設定允許多少個 OSD、桶或葉發生故障而不會遺失資料。對於副本池，它是物件的所需副本/複本數。建立新池時，會將預設複本數設定為 3。對於糾刪碼池，該計數為編碼區塊數 (在糾刪碼設定檔中，設定為 <emphasis>m=2</emphasis>)。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>放置群組</emphasis>：用於跨 OSD 將資料儲存在某個池中的內部資料結構。CRUSH 地圖中定義了 Ceph 將資料儲存到 PG 中的方式。建立池時，您可以為其設定放置群組數量。一般的組態為每個 OSD 使用約 100 個放置群組，以提供最佳平衡而又不會耗費太多運算資源。設定多個池時，請務必將池和叢集做為整體進行考量，以確保設定合理的放置群組數。<link xlink:href="https://ceph.com/pgcalc/">每個池的 Ceph PG 數計算器</link>可為您提供協助。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>CRUSH 規則</emphasis>：在池中儲存資料時，系統會依據對應至該池的 CRUSH 規則集來放置物件及其複本或區塊 (如果是糾刪碼池)。您可以為池建立自訂 CRUSH 規則。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <emphasis>快照</emphasis>：使用 <command>ceph osd pool mksnap</command> 建立快照時，可高效建立特定池的快照。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <para>
+  若要將資料組織到池中，您可以列出、建立和移除池。您還可以檢視每個池的使用量統計資料。
+ </para>
+ <sect1 xml:id="ceph-pools-associate">
+  <title>將池與應用程式關聯</title>
+
+  <para>
+   在使用池之前，需要將它們與應用程式關聯。將與 CephFS 搭配使用或由物件閘道自動建立的池會自動相關聯。
+  </para>
+
+  <para>
+   對於其他情況，可以手動將自由格式的應用程式名稱與池關聯：
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool application enable <replaceable>pool_name</replaceable> <replaceable>application_name</replaceable></screen>
+
+  <tip>
+   <title>預設應用程式名稱</title>
+   <para>
+    CephFS 使用應用程式名稱 <literal>cephfs</literal>，RADOS 區塊裝置使用 <literal>rbd</literal>，物件閘道使用 <literal>rgw</literal>。
+   </para>
+  </tip>
+
+  <para>
+   一個池可以與多個應用程式關聯，而每個應用程式都可具有自己的中繼資料。您可以使用以下指令顯示給定池的應用程式中繼資料：
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool application get <replaceable>pool_name</replaceable></screen>
+ </sect1>
+ <sect1 xml:id="ceph-pools-operate">
+  <title>操作池</title>
+
+  <para>
+   本節介紹對池執行基本任務的特定資訊。您可以瞭解如何列出、建立和刪除池，以及如何顯示池統計資料或管理池快照。
+  </para>
+
+  <sect2>
+   <title>列出池</title>
+   <para>
+    若要列出叢集的池，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool ls</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-pools-operate-add-pool">
+   <title>建立池</title>
+   <para>
+    可以建立「replicated」(用於保留物件的多個複本，以便從發生故障的 OSD 復原) 或「erasure」(用於獲得某種通用 RAID6 功能) 類型的池。複本池所需的原始儲存空間較多，而糾刪碼池所需的原始儲存空間較少。預設值為「replicated」。
+   </para>
+   <para>
+    若要建立副本池，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create <replaceable>pool_name</replaceable> <replaceable>pg_num</replaceable> <replaceable>pgp_num</replaceable> replicated <replaceable>crush_ruleset_name</replaceable> \
+<replaceable>expected_num_objects</replaceable></screen>
+   <para>
+    若要建立糾刪碼池，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create <replaceable>pool_name</replaceable> <replaceable>pg_num</replaceable> <replaceable>pgp_num</replaceable> erasure <replaceable>erasure_code_profile</replaceable> \
+ <replaceable>crush_ruleset_name</replaceable> <replaceable>expected_num_objects</replaceable></screen>
+   <para>
+    如果超出了每個 OSD 的放置群組限制，則 <command>ceph osd pool create</command> 可能會失敗。使用 <option>mon_max_pg_per_osd</option> 選項可設定該限制。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>pool_name</term>
+     <listitem>
+      <para>
+       池的名稱，必須是唯一的。必須指定此選項。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pg_num</term>
+     <listitem>
+      <para>
+       池的放置群組總數，必須指定此選項。預設值為 8。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pgp_num</term>
+     <listitem>
+      <para>
+       用於放置資料的放置群組總數。此數量應該與放置群組總數相等，放置群組拆分情況除外。必須指定此選項。預設值為 8。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>crush_ruleset_name</term>
+     <listitem>
+      <para>
+       此池的 crush 規則集名稱。如果所指定的規則集不存在，則建立複本池的操作將會失敗，並顯示 -ENOENT。對於複本池，該規則集是 <varname>osd pool default crush replicated ruleset</varname> 組態變數所指定的規則集。此規則集必須存在。對於糾刪碼池，如果使用預設糾刪碼設定檔，則規則集為「erasure-code」，否則為 <replaceable>POOL_NAME</replaceable>。如果此規則集尚不存在，系統將隱式建立該規則集。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>erasure_code_profile=profile</term>
+     <listitem>
+      <para>
+       僅適用於糾刪碼池。使用糾刪碼設定檔。該設定檔必須是 <command>osd erasure-code-profile set</command> 所定義的現有設定檔。
+      </para>
+      <para>
+       建立池時，請將放置群組數設定為合理的值。還需考慮每個 OSD 的放置群組總數。放置群組在運算方面的開銷很高，因此如果您的許多池都包含很多放置群組 (例如有 50 個池，每個池各有 100 個放置群組)，效能將會下降。
+      </para>
+      <para>
+       如需計算池的適當放置群組數的詳細資料，請參閱<xref linkend="op-pgs"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>expected_num_objects</term>
+     <listitem>
+      <para>
+       此池的預期物件數。如果設定此值 (與一個為負數的 <option>filestore merge threshold</option> 值)，系統在建立池時會分割 PG 資料夾。這可避免因執行時期資料夾拆分導致的延遲影響。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2>
+   <title>設定池定額</title>
+   <para>
+    您可以設定池定額，限定每個池的最大位元組數和/或最大物件數。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set-quota <replaceable>pool-name</replaceable> <replaceable>max_objects</replaceable> <replaceable>obj-count</replaceable> <replaceable>max_bytes</replaceable> <replaceable>bytes</replaceable></screen>
+   <para>
+    例如：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set-quota data max_objects 10000</screen>
+   <para>
+    若要移除定額，請將其值設定為 0。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-pools-operate-del-pool">
+   <title>刪除池</title>
+   <warning>
+    <title>刪除池的操作不可逆</title>
+    <para>
+     池中可能包含重要資料。刪除池會導致池中的所有資料消失，且無法復原。
+    </para>
+   </warning>
+   <para>
+    不小心刪除池十分危險，因此 Ceph 實作了兩個機制來防止刪除池。若要刪除池，必須先停用這兩個機制。
+   </para>
+   <para>
+    第一個機制是 <literal>NODELETE</literal> 旗標。每個池都有這個旗標，其預設值為「false」。若要確定某個池的此旗標值，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool get <replaceable>pool_name</replaceable> nodelete</screen>
+   <para>
+    如果指令輸出 <literal>nodelete: true</literal>，則只有在使用以下指令變更該旗標後，才能刪除池：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>pool_name</replaceable> nodelete false</screen>
+   <para>
+    第二個機制是叢集範圍的組態參數 <option>mon allow pool delete</option>，其預設值為「false」。這表示預設不能刪除池。顯示的錯誤訊息是：
+   </para>
+<screen>Error EPERM: pool deletion is disabled; you must first set the
+mon_allow_pool_delete config option to true before you can destroy a pool</screen>
+   <para>
+    若要規避此安全設定以刪除池，可以暫時將 <option>mon allow pool delete</option> 設定為「true」，刪除池，然後將該參數恢復為「false」：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph tell mon.* injectargs --mon-allow-pool-delete=true
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool delete pool_name pool_name --yes-i-really-really-mean-it
+<prompt>cephadm@adm &gt; </prompt>ceph tell mon.* injectargs --mon-allow-pool-delete=false</screen>
+   <para>
+    <command>injectargs</command> 指令會顯示以下訊息：
+   </para>
+<screen>injectargs:mon_allow_pool_delete = 'true' (not observed, change may require restart)</screen>
+   <para>
+    這主要用於確認該指令已成功執行。它不是錯誤。
+   </para>
+   <para>
+    如果為您建立的池建立了自己的規則集和規則，則應該考慮在不再需要該池時移除規則集和規則。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>重新命名池</title>
+   <para>
+    若要重新命名池，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool rename <replaceable>current-pool-name</replaceable> <replaceable>new-pool-name</replaceable></screen>
+   <para>
+    如果重新命名了某個池，且為經過驗證的使用者使用了依池能力，則必須用新的池名稱更新使用者的能力。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>顯示池統計資料</title>
+   <para>
+    若要顯示池的使用量統計資料，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rados df
+POOL_NAME                    USED OBJECTS CLONES COPIES MISSING_ON_PRIMARY UNFOUND DEGRADED  RD_OPS      RD  WR_OPS      WR USED COMPR UNDER COMPR
+.rgw.root                 768 KiB       4      0     12                  0       0        0      44  44 KiB       4   4 KiB        0 B         0 B
+cephfs_data               960 KiB       5      0     15                  0       0        0    5502 2.1 MiB      14  11 KiB        0 B         0 B
+cephfs_metadata           1.5 MiB      22      0     66                  0       0        0      26  78 KiB     176 147 KiB        0 B         0 B
+default.rgw.buckets.index     0 B       1      0      3                  0       0        0       4   4 KiB       1     0 B        0 B         0 B
+default.rgw.control           0 B       8      0     24                  0       0        0       0     0 B       0     0 B        0 B         0 B
+default.rgw.log               0 B     207      0    621                  0       0        0 5372132 5.1 GiB 3579618     0 B        0 B         0 B
+default.rgw.meta          961 KiB       6      0     18                  0       0        0     155 140 KiB      14   7 KiB        0 B         0 B
+example_rbd_pool          2.1 MiB      18      0     54                  0       0        0 3350841 2.7 GiB     118  98 KiB        0 B         0 B
+iscsi-images              769 KiB       8      0     24                  0       0        0 1559261 1.3 GiB      61  42 KiB        0 B         0 B
+mirrored-pool             1.1 MiB      10      0     30                  0       0        0  475724 395 MiB      54  48 KiB        0 B         0 B
+pool2                         0 B       0      0      0                  0       0        0       0     0 B       0     0 B        0 B         0 B
+pool3                     333 MiB      37      0    111                  0       0        0 3169308 2.5 GiB   14847 118 MiB        0 B         0 B
+pool4                     1.1 MiB      13      0     39                  0       0        0 1379568 1.1 GiB   16840  16 MiB        0 B         0 B
+</screen>
+   <para>
+    各欄的描述如下：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>USED</term>
+     <listitem>
+      <para>
+       池使用的位元組數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>OBJECTS</term>
+     <listitem>
+      <para>
+       池中儲存的物件數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>CLONES</term>
+     <listitem>
+      <para>
+       池中儲存的克隆數。如果在建立快照時某個用戶端向物件寫入資料，系統將會建立原始物件的克隆，而不是對該物件進行修改，這樣便不會修改已建立快照的原始物件內容。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>COPIES</term>
+     <listitem>
+      <para>
+       物件複本的數量。例如，如果某個複製因數為 3 的複本池有「x」個物件，它通常將會有 3 * x 個複本。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>MISSING_ON_PRIMARY</term>
+     <listitem>
+      <para>
+       當主 OSD 上的複本缺失時，處於降級狀態 (不是所有複本都存在) 的物件的數量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>UNFOUND</term>
+     <listitem>
+      <para>
+       未找到的物件數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>DEGRADED (已降級)</term>
+     <listitem>
+      <para>
+       已降級的物件數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>RD_OPS</term>
+     <listitem>
+      <para>
+       針對此池要求的讀取操作總數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>RD</term>
+     <listitem>
+      <para>
+       從此池讀取的位元組總數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>WR_OPS</term>
+     <listitem>
+      <para>
+       針對此池要求的寫入操作總數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>WR</term>
+     <listitem>
+      <para>
+       寫入池的位元組總數。請注意，該數值與池的使用率不同，因為您可能會多次寫入同一物件。如此一來，池的使用率雖然不變，但寫入池的位元組數會增長。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>USED COMPR</term>
+     <listitem>
+      <para>
+       為壓縮資料配置的位元組數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>UNDER COMPR</term>
+     <listitem>
+      <para>
+       壓縮資料在未壓縮時佔用的位元組數。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2>
+   <title>獲取池的值</title>
+   <para>
+    若要獲取池中的值，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool get <replaceable>pool-name</replaceable> <replaceable>key</replaceable></screen>
+   <para>
+    您可以獲取<xref linkend="ceph-pools-values"/>中所列鍵以及下列鍵的值：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>pg_num</term>
+     <listitem>
+      <para>
+       池的放置群組數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pgp_num</term>
+     <listitem>
+      <para>
+       計算資料放置時要使用的放置群組的有效數量。有效範圍小於或等於 <literal>pg_num</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <tip>
+    <title>池的所有值</title>
+    <para>
+     若要列出與特定池相關的所有值，請執行以下指令：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool get <replaceable>POOL_NAME</replaceable> all
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-pools-values">
+   <title>設定池的值</title>
+   <para>
+    若要設定池的值，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>pool-name</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+   <para>
+    您可以設定以下鍵的值：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>size</term>
+     <listitem>
+      <para>
+       設定池中物件的複本數。如需更多詳細資料，請參閱<xref linkend="ceph-pools-options-num-of-replicas"/>。僅限副本池。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>min_size</term>
+     <listitem>
+      <para>
+       設定 I/O 所需的最小複本數。如需更多詳細資料，請參閱<xref linkend="ceph-pools-options-num-of-replicas"/>。僅限副本池。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>crash_replay_interval</term>
+     <listitem>
+      <para>
+       允許用戶端重送已確認但未提交的要求的秒數。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pg_num</term>
+     <listitem>
+      <para>
+       池的放置群組數。如果您將新 OSD 新增至叢集，請確認所有池上專用於新 OSD 的放置群組的值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>pgp_num</term>
+     <listitem>
+      <para>
+       計算資料放置時要使用的放置群組的有效數量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>crush_ruleset</term>
+     <listitem>
+      <para>
+       用於在叢集中對應物件放置的規則集。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hashpspool</term>
+     <listitem>
+      <para>
+       為給定池設定 (1) 或取消設定 (0) HASHPSPOOL 旗標。啟用此旗標會變更演算法，以採用更佳的方式將 PG 分佈到 OSD 之間。對之前 HASHPSPOOL 旗標設為預設值 0 的池啟用此旗標後，叢集會開始回填，以使所有 PG 恢復正確的放置狀態。請注意，此操作可能會在叢集上產生大量 I/O 負載，因此請勿對負載較高的生產叢集啟用該旗標 (由 0 變更為 1)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>nodelete</term>
+     <listitem>
+      <para>
+       防止移除池。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>nopgchange</term>
+     <listitem>
+      <para>
+       防止變更池的 <option>pg_num</option> 和 <option>pgp_num</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>nosizechange</term>
+     <listitem>
+      <para>
+       防止變更池的大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>write_fadvise_dontneed</term>
+     <listitem>
+      <para>
+       對給定池設定/取消設定 <literal>WRITE_FADVISE_DONTNEED</literal> 旗標。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>noscrub、nodeep-scrub</term>
+     <listitem>
+      <para>
+       停用 (深層) 整理特定池的資料，以解決暫時性的高 I/O 負載問題。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_type</term>
+     <listitem>
+      <para>
+       對快取池啟用命中集追蹤。請參閱<link xlink:href="http://en.wikipedia.org/wiki/Bloom_filter">布隆過濾器</link>以瞭解更多資訊。此選項可用的值如下：<literal>bloom</literal>、<literal>explicit_hash</literal>、<literal>explicit_object</literal>。預設值為 <literal>bloom</literal>，其他值僅用於測試。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_count</term>
+     <listitem>
+      <para>
+       要為快取池儲存的命中集數。該數值越高，<systemitem>ceph-osd</systemitem> 精靈耗用的 RAM 越多。預設值為 <literal>0</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_period</term>
+     <listitem>
+      <para>
+       快取池的命中集期間的時長 (以秒計)。該數值越高，<systemitem>ceph-osd</systemitem> 精靈耗用的 RAM 越多。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_fpp</term>
+     <listitem>
+      <para>
+       布隆命中集類型的誤報率。請參閱<link xlink:href="http://en.wikipedia.org/wiki/Bloom_filter">布隆過濾器</link>以瞭解更多資訊。有效範圍是 0.0 - 1.0，預設值為 <literal>0.05</literal>
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>use_gmt_hitset</term>
+     <listitem>
+      <para>
+       為快取分層建立命中集時，強制 OSD 使用 GMT (格林威治標準時間) 時戳。這可確保在不同時區中的節點傳回相同的結果。預設值為 <literal>1</literal>。不應該變更此值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_target_dirty_ratio</term>
+     <listitem>
+      <para>
+       在快取分層代理程式將已修改 (髒) 物件衝洗到後備儲存池之前，包含此類物件的快取池百分比。預設值為 <literal>0.4</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_target_dirty_high_ratio</term>
+     <listitem>
+      <para>
+       在快取分層代理程式將已修改 (髒) 物件衝洗到速度更快的後備儲存池之前，包含此類物件的快取池百分比。預設值為 <literal>0.6</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_target_full_ratio</term>
+     <listitem>
+      <para>
+       在快取分層代理程式將未修改 (乾淨) 物件從快取池逐出之前，包含此類物件的快取池百分比。預設值為 <literal>0.8</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>target_max_bytes</term>
+     <listitem>
+      <para>
+       觸發 <option>max_bytes</option> 閾值後，Ceph 將會開始衝洗或逐出物件。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>target_max_objects</term>
+     <listitem>
+      <para>
+       觸發 <option>max_objects</option> 閾值後，Ceph 將會開始衝洗或逐出物件。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_grade_decay_rate</term>
+     <listitem>
+      <para>
+       兩次連續的 <literal>hit_set</literal> 之間的溫度降低率。預設值為 <literal>20</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>hit_set_search_last_n</term>
+     <listitem>
+      <para>
+       計算溫度時在 <literal>hit_set</literal> 中對出現的項最多計 <literal>N</literal> 次。預設值為 <literal>1</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_min_flush_age</term>
+     <listitem>
+      <para>
+       在快取分層代理程式將物件從快取池衝洗到儲存池之前的時間 (以秒計)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>cache_min_evict_age</term>
+     <listitem>
+      <para>
+       在快取分層代理程式將物件從快取池中逐出之前的時間 (以秒計)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>fast_read</term>
+     <listitem>
+      <para>
+       如果對糾刪碼池啟用此旗標，則讀取要求會向所有分區發出子讀取指令，並一直等到接收到足夠解碼的分區，才會為用戶端提供服務。對於 <emphasis>jerasure</emphasis> 和 <emphasis>isa</emphasis> 糾刪外掛程式，前 <literal>K</literal> 個複本傳回時，就會使用從這些複本解碼的資料立即處理用戶端的要求。採用此方法會產生較高的 CPU 負載，而磁碟/網路負載則較低。目前，此旗標僅支援用於糾刪碼池。預設值為 <literal>0</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>scrub_min_interval</term>
+     <listitem>
+      <para>
+       叢集負載低時整理池的最小間隔 (以秒計)。預設值 <literal>0</literal> 表示使用來自 Ceph 組態檔案的 <option>osd_scrub_min_interval</option> 值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>scrub_max_interval</term>
+     <listitem>
+      <para>
+       無論叢集負載如何都整理池的最大間隔 (以秒計)。預設值 <literal>0</literal> 表示使用來自 Ceph 組態檔案的 <option>osd_scrub_max_interval</option> 值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>deep_scrub_interval</term>
+     <listitem>
+      <para>
+       <emphasis>深層</emphasis>整理池的間隔 (以秒計)。預設值 <literal>0</literal> 表示使用來自 Ceph 組態檔案的 <option>osd_deep_scrub</option> 值。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ceph-pools-options-num-of-replicas">
+   <title>設定物件複本數</title>
+   <para>
+    若要設定副本池上的物件複本數，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>poolname</replaceable> size <replaceable>num-replicas</replaceable></screen>
+   <para>
+    <replaceable>num-replicas</replaceable> 包括物件自身。例如，如果您想用物件和物件的兩個複本組成物件的三個例項，請指定 3。
+   </para>
+   <warning>
+    <title>設定的複本不能少於 3 個</title>
+    <para>
+     如果將 <replaceable>num-replicas</replaceable> 設定為 2，資料將只有<emphasis>一個</emphasis>副本。例如，如果一個物件例項發生故障，則需要在復原期間確定自上次整理後，另一個複本沒有損毀 (如需詳細資料，請參閱<xref linkend="scrubbing"/>)。
+    </para>
+    <para>
+     將池設定為具有一個複本意味著池中的資料物件只有<emphasis>一個</emphasis>例項。如果 OSD 發生故障，您將遺失資料。若要短時間儲存臨時資料，可能就會用到只有一個副本的池。
+    </para>
+   </warning>
+   <tip>
+    <title>設定 3 個以上的複本</title>
+    <para>
+     為池設定 4 個複本可將可靠性提高 25%。
+    </para>
+    <para>
+     如果有兩個資料中心，您至少需要為池設定 4 個複本，使每個資料中心都有兩個複本。如此，當其中一個資料中心發生故障時，仍有兩個複本存在，並且如果又有一個磁碟發生故障，您仍可確保不會遺失資料。
+    </para>
+   </tip>
+   <note>
+    <para>
+     物件可接受降級模式下複本數量低於 <literal>pool size</literal> 的 I/O。若要設定 I/O 所需複本的最小數量，您應該使用 <literal>min_size</literal> 設定。例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set data min_size 2</screen>
+    <para>
+     這可確保資料池中沒有物件會接收到複本數量低於 <literal>min_size</literal> 的 I/O。
+    </para>
+   </note>
+   <tip>
+    <title>獲取物件複本數</title>
+    <para>
+     若要獲取物件複本數，請執行以下指令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd dump | grep 'replicated size'</screen>
+    <para>
+     Ceph 將列出池，並反白顯示 <literal>replicated size</literal> 屬性。Ceph 預設會建立物件的兩個複本 (共三個副本，或者大小為 3)。
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="pools-migration">
+  <title>池移轉</title>
+
+  <para>
+   建立池 (請參閱<xref linkend="ceph-pools-operate-add-pool"/>) 時，您需要指定池的初始參數，例如池類型或放置群組數量。如果您稍後決定變更其中的任一參數 (例如將複本池轉換為糾刪碼池，或者減少放置群組數量)，您需要將池資料移轉至參數適合您的部署的另一個池。
+  </para>
+
+  <para>
+   移轉池的方法有多種。我們建議使用<emphasis>快取層</emphasis>，因為此方法是透明的，能夠減少叢集停機時間並避免複製整個池的資料。
+  </para>
+
+  <sect2 xml:id="pool-migrate-cache-tier">
+   <title>使用快取層移轉</title>
+   <tip>
+    <title>僅移轉複本池</title>
+    <para>
+     您可以使用快取層方法，從複本池移轉至糾刪碼池或另一個複本池。不支援從糾刪碼池移轉。
+    </para>
+   </tip>
+   <para>
+    該方法的原理十分簡單，只需將需要移轉的池依相反的順序加入快取層中即可。如需快取層的詳細資訊，請參閱<xref linkend="cha-ceph-tiered"/>。下面是將名為「testpool」的複本池移轉至糾刪碼池的範例：
+   </para>
+   <procedure>
+    <title>將複本池移轉至糾刪碼池</title>
+    <step>
+     <para>
+      建立一個名為「newpool」的新糾刪碼池。如需池建立參數的詳細說明，請參閱<xref linkend="ceph-pools-operate-add-pool"/>。
+     </para>
+<screen>
+ <prompt>cephadm@adm &gt; </prompt>ceph osd pool create newpool <replaceable>PG_NUM</replaceable> <replaceable>PGP_NUM</replaceable> erasure default
+</screen>
+     <para>
+      確認使用的用戶端金鑰圈所提供的針對「newpool」的功能至少與針對「testpool」的相同。
+     </para>
+     <para>
+      您現在有兩個池，即填滿資料的原始副本池「testpool」和新的空白糾刪碼池「newpool」：
+     </para>
+     <figure>
+      <title>移轉前的池</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate1.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate1.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      設定快取層，並將複本池「testpool」設定為快取池。透過使用 <option>-force-nonempty</option> 選項，即使池已有資料，您也可以新增快取層：
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph tell mon.* injectargs \
+ '--mon_debug_unsafe_allow_tier_with_nonempty_snaps=1'
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier add newpool testpool --force-nonempty
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier cache-mode testpool proxy
+</screen>
+     <figure>
+      <title>快取層設定</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate2.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate2.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      強制快取池將所有物件移到新池中：
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rados -p testpool cache-flush-evict-all
+</screen>
+     <figure>
+      <title>資料衝洗</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate3.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate3.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      您需要指定一個重疊層，以便在舊池中搜尋物件，直到所有資料都已衝洗到新的糾刪碼池。
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier set-overlay newpool testpool
+</screen>
+     <para>
+      有了重疊層，所有操作都會轉到舊的副本池「testpool」：
+     </para>
+     <figure>
+      <title>設定重疊層</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate4.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate4.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      現在，您可以將所有用戶端都切換為存取新池中的物件。
+     </para>
+    </step>
+    <step>
+     <para>
+      所有資料都移轉至糾刪碼池「newpool」後，移除重疊層和舊快取池「testpool」：
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier remove-overlay newpool
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier remove newpool testpool
+</screen>
+     <figure>
+      <title>完成移轉</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="pool_migrate5.png" width="60%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="pool_migrate5.png" width="60%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      執行
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph tell mon.* injectargs \
+ '--mon_debug_unsafe_allow_tier_with_nonempty_snaps=0'
+</screen>
+    </step>
+   </procedure>
+   <warning>
+    <title>您無法將 RBD 影像和 CephFS 輸出移轉至糾刪碼池</title>
+    <para>
+     您無法將 RBD 影像和 CephFS 輸出從複本池移轉至糾刪碼池。糾刪碼池可以儲存資料，但無法儲存中繼資料。系統將無法衝洗 RBD 的標題物件。這一點對 CephFS 同樣適用。
+    </para>
+   </warning>
+  </sect2>
+
+  <sect2 xml:id="migrate-rbd-image">
+   <title>移轉 RADOS 區塊裝置影像</title>
+   <para>
+    建議採用如下方式將 RBD 影像從一個複本池移轉至另一個複本池。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      禁止用戶端 (例如虛擬機器) 存取 RBD 影像。
+     </para>
+    </step>
+    <step>
+     <para>
+      在目標池中建立新影像，並將其父項設定為來源影像：
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd migration prepare <replaceable>SRC_POOL</replaceable>/<replaceable>IMAGE</replaceable> <replaceable>TARGET_POOL</replaceable>/<replaceable>IMAGE</replaceable>
+</screen>
+     <tip>
+      <title>僅將資料移轉至糾刪碼池</title>
+      <para>
+       如果您只需將影像資料移轉至新糾刪碼池，而將中繼資料保留在原始複本池中，請改為執行以下指令：
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd migration prepare <replaceable>SRC_POOL</replaceable>/<replaceable>IMAGE</replaceable> \
+ --data-pool <replaceable>TARGET_POOL</replaceable>/<replaceable>IMAGE</replaceable>
+</screen>
+     </tip>
+     <note>
+      <title>用戶端支援和停機時間</title>
+      <para>
+       使用 <command>rbd migration</command> 方法可確保在移轉影像時最大限度地減少用戶端停機時間。您只需要在「準備」步驟之前停止用戶端，在此之後便可將其啟動。請注意，只有支援此功能的 <systemitem>librbd</systemitem> 用戶端 (Ceph Nautilus 或更新版本) 才能在「準備」步驟之後開啟影像，而較舊的 <systemitem>librbd</systemitem> 用戶端或 <systemitem>krbd</systemitem> 用戶端在執行「提交」步驟之前將無法開啟影像。
+      </para>
+     </note>
+    </step>
+    <step>
+     <para>
+      讓用戶端存取目標池中的影像。
+     </para>
+    </step>
+    <step>
+     <para>
+      將資料移轉至目標池：
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd migration execute <replaceable>SRC_POOL</replaceable>/<replaceable>IMAGE</replaceable>
+</screen>
+    </step>
+    <step>
+     <para>
+      移除舊影像：
+     </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd migration commit <replaceable>SRC_POOL</replaceable>/<replaceable>IMAGE</replaceable>
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-snapshots-pool">
+  <title>池快照</title>
+
+  <para>
+   池快照是整個 Ceph 池的狀態快照。透過池快照，您可以保留池狀態的歷程。建立池快照會佔用與池大小成正比的儲存空間。在建立池快照之前，請務必檢查相關儲存是否有足夠的磁碟空間。
+  </para>
+
+  <sect2>
+   <title>建立池快照</title>
+   <para>
+    若要建立池快照，請執行以下指令：
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool mksnap <replaceable>POOL-NAME</replaceable> <replaceable>SNAP-NAME</replaceable>
+</screen>
+   <para>
+    例如：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool mksnap pool1 snap1
+created pool pool1 snap snap1</screen>
+  </sect2>
+
+  <sect2>
+   <title>列出池的快照</title>
+   <para>
+    若要列出池的現有快照，請執行以下指令：
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rados lssnap -p <replaceable>POOL_NAME</replaceable>
+</screen>
+   <para>
+    例如：
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rados lssnap -p pool1
+1	snap1	2018.12.13 09:36:20
+2	snap2	2018.12.13 09:46:03
+2 snaps
+</screen>
+  </sect2>
+
+  <sect2>
+   <title>移除池快照</title>
+   <para>
+    若要移除池的某個快照，請執行以下指令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool rmsnap <replaceable>POOL-NAME</replaceable> <replaceable>SNAP-NAME</replaceable></screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="sec-ceph-pool-compression">
+  <title>資料壓縮</title>
+
+  <para>
+   BlueStore (如需更多詳細資料，請參閱<xref linkend="about-bluestore"/>) 提供即時資料壓縮，以節省磁碟空間。壓縮率取決於系統中儲存的資料。請注意，壓縮/解壓縮需要額外的 CPU 資源。
+  </para>
+
+  <para>
+   您可以全域設定資料壓縮 (請參閱<xref linkend="sec-ceph-pool-bluestore-compression-options"/>)，然後覆寫每個個別池的特定壓縮設定。
+  </para>
+
+  <para>
+   無論池是否包含資料，您都可以啟用或停用池資料壓縮，或者隨時變更壓縮演算法和模式。
+  </para>
+
+  <para>
+   啟用池壓縮之後，將不會向現有資料套用壓縮。
+  </para>
+
+  <para>
+   停用某個池的壓縮之後，將會解壓縮該池的所有資料。
+  </para>
+
+  <sect2 xml:id="sec-ceph-pool-compression-enable">
+   <title>啟用壓縮</title>
+   <para>
+    若要對名為 <replaceable>POOL_NAME</replaceable> 的池啟用資料壓縮，請執行以下指令：
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> compression_algorithm <replaceable>COMPRESSION_ALGORITHM</replaceable>
+<prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> compression_mode <replaceable>COMPRESSION_MODE</replaceable>
+</screen>
+   <tip>
+    <title>停用池壓縮</title>
+    <para>
+     若要對池停用資料壓縮，請使用「none」壓縮演算法：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> compression_algorithm none
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="sec-ceph-pool-compression-options">
+   <title>池壓縮選項</title>
+   <para>
+    完整的壓縮設定清單：
+   </para>
+   <variablelist>
+    <varlistentry xml:id="compr-algorithm">
+     <term>compression_algorithm</term>
+     <listitem>
+      <para>
+       可用的值有 <literal>none</literal>、<literal>zstd</literal>、<literal>snappy</literal>。預設值為 <literal>snappy</literal>。
+      </para>
+      <para>
+       使用的壓縮演算法取決於特定使用案例。以下是一些相關的建議：
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         只要您沒有充分的理由變更預設值 <literal>snappy</literal>，就請使用該值。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>zstd</literal> 可提供較佳的壓縮率，但當壓縮少量資料時，會導致 CPU 負擔較高。
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         針對實際資料的樣本執行這些演算法的基準測試，同時觀察叢集的 CPU 和記憶體使用率。
+        </para>
+       </listitem>
+      </itemizedlist>
+     </listitem>
+    </varlistentry>
+    <varlistentry xml:id="compr-mode">
+     <term>compression_mode</term>
+     <listitem>
+      <para>
+       可用的值有 <literal>none</literal>、<literal>aggressive</literal>、<literal>passive</literal>、<literal>force</literal>。預設值為 <literal>none</literal>。
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         <literal>none</literal>：永不壓縮
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>passive</literal>：如果提示 <literal>COMPRESSIBLE</literal>，則壓縮
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>aggressive</literal>：除非提示 <literal>INCOMPRESSIBLE</literal>，才壓縮
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         <literal>force</literal>：永遠都壓縮
+        </para>
+       </listitem>
+      </itemizedlist>
+     </listitem>
+    </varlistentry>
+    <varlistentry xml:id="compr-ratio">
+     <term>compression_required_ratio</term>
+     <listitem>
+      <para>
+       值：雙精度浮點數，比率 = SIZE_COMPRESSED / SIZE_ORIGINAL。預設值為 <literal>0.875</literal>，這表示如果壓縮未將佔用空間至少減少 12.5%，將不會壓縮物件。
+      </para>
+      <para>
+       由於淨增益低，儲存高於此比率的物件時不會壓縮。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>compression_max_blob_size</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>0</literal>
+      </para>
+      <para>
+       所壓縮物件的最小大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>compression_min_blob_size</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>0</literal>
+      </para>
+      <para>
+       所壓縮物件的最大大小。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="sec-ceph-pool-bluestore-compression-options">
+   <title>全域壓縮選項</title>
+   <para>
+    可在 Ceph 組態中設定以下組態選項，並將其套用於所有 OSD 而不僅僅是單個池。<xref linkend="sec-ceph-pool-compression-options"/>中列出的池特定組態優先。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>bluestore_compression_algorithm</term>
+     <listitem>
+      <para>
+       請參閱<xref linkend="compr-algorithm"/>
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_mode</term>
+     <listitem>
+      <para>
+       請參閱<xref linkend="compr-mode"/>
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_required_ratio</term>
+     <listitem>
+      <para>
+       請參閱<xref linkend="compr-ratio"/>
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_min_blob_size</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>0</literal>
+      </para>
+      <para>
+       所壓縮物件的最大大小。系統預設會忽略該設定，並使用 <option>bluestore_compression_min_blob_size_hdd</option> 和 <option>bluestore_compression_min_blob_size_ssd</option> 的值。如果設定為非零值，則該設定優先。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_max_blob_size</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>0</literal>
+      </para>
+      <para>
+       在將物件分割為更小的區塊之前，所壓縮物件的大小上限。系統預設會忽略該設定，並使用 <option>bluestore_compression_max_blob_size_hdd</option> 和 <option>bluestore_compression_max_blob_size_ssd</option> 的值。如果設定為非零值，則該設定優先。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_min_blob_size_ssd</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>8K</literal>
+      </para>
+      <para>
+       壓縮並儲存在固態硬碟上的物件的最小大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_max_blob_size_ssd</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>64K</literal>
+      </para>
+      <para>
+       在將物件分割為更小的區塊之前，在固態硬碟上壓縮並儲存的物件的大小上限。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_min_blob_size_hdd</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>128K</literal>
+      </para>
+      <para>
+       壓縮並儲存在普通硬碟上的物件的最小大小。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bluestore_compression_max_blob_size_hdd</term>
+     <listitem>
+      <para>
+       值：不帶正負號的整數，大小以位元組計。預設值：<literal>512K</literal>
+      </para>
+      <para>
+       在將物件分割為更小的區塊之前，在硬碟上壓縮並儲存的物件的大小上限。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

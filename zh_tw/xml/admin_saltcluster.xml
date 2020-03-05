@@ -1,0 +1,1251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_saltcluster.xml" version="5.0" xml:id="storage-salt-cluster">
+ <title>Salt 叢集管理</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  部署 Ceph 叢集之後，您可能偶爾需要對其進行若干修改。這些修改包括新增或移除新的節點、磁碟或服務。本章介紹該如何完成這些管理任務。
+ </para>
+ <sect1 xml:id="salt-adding-nodes">
+  <title>新增新的叢集節點</title>
+
+  <para>
+   新增新節點至叢集的程序與<xref linkend="ceph-install-saltstack"/>中所述的初始叢集節點部署程序幾乎完全相同。
+  </para>
+
+  <tip>
+   <title>防止重新平衡</title>
+   <para>
+    將 OSD 新增至現有叢集時請注意，叢集將在此後的一段時間內進行重新平衡。為了最大限度地縮短重新平衡的時間，請一次即新增所有要新增的 OSD。
+   </para>
+   <para>
+    另一種方法是在新增 OSD 之前，在 <filename>ceph.conf</filename> 檔案中設定 <option>osd crush initial weight = 0</option> 選項：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      將 <option>osd crush initial weight = 0</option> 新增至 <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/global.conf</filename> 中。
+     </para>
+    </step>
+    <step>
+     <para>
+      在 Salt Master 節點上建立新組態：
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>SALT_MASTER_NODE</replaceable>' state.apply ceph.configuration.create
+</screen>
+    </step>
+    <step>
+     <para>
+      將新組態套用至目標 OSD Minion：
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>OSD_MINIONS</replaceable>' state.apply ceph.configuration
+</screen>
+    </step>
+    <step>
+     <para>
+      新增新 OSD 之後，視需要使用 <command>ceph osd crush reweight</command> 指令調整其權數。
+     </para>
+    </step>
+   </procedure>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     在新節點上安裝 SUSE Linux Enterprise Server 15 SP1，並組態其網路設定，以使其能夠正確解析 Salt Master 主機名稱。確認其正確連接至公用網路和叢集網路，並且為其正確設定了時間同步。然後安裝 <systemitem>salt-minion</systemitem> 套件：
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+    <para>
+     如果 Salt Master 的主機名稱不是 <literal>salt</literal>，請編輯 <filename>/etc/salt/minion</filename> 並新增下面一行：
+    </para>
+<screen>master: <replaceable>DNS_name_of_your_salt_master</replaceable></screen>
+    <para>
+     如果您對上面提到的組態檔案進行了任何變更，請重新啟動 <systemitem>salt.minion</systemitem> 服務：
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     在 Salt Master 上接受新節點的 Salt 金鑰：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept <replaceable>NEW_NODE_KEY</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     確認 <filename>/srv/pillar/ceph/deepsea_minions.sls</filename> 針對的是新 Salt Minion，以及/或者設定了正確的 DeepSea 粒紋。如需更多詳細資料，請參閱<xref linkend="ds-minion-targeting-name"/>或<xref linkend="ds-depl-stages"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     執行準備階段。該階段會同步模組和粒紋，以使新 Minion 可以提供 DeepSea 所需的所有資訊。
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    <important>
+     <title>可能需要重新啟動 DeepSea 階段 0</title>
+     <para>
+      如果 Salt Master 在其核心更新之後進行了重新開機，則您需要重新啟動 DeepSea 階段 0。
+     </para>
+    </important>
+   </step>
+   <step>
+    <para>
+     執行探查階段。該階段將在 <filename>/srv/pillar/ceph/proposals</filename> 目錄中寫入新的檔案項目，您可在其中編輯相關的 .yml 檔案：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.1</screen>
+   </step>
+   <step>
+    <para>
+     (選擇性) 如果新增的主機與現有命名規劃不符，請變更 <filename>/srv/pillar/ceph/proposals/policy.cfg</filename>。如需詳細資訊，請參閱<xref linkend="policy-configuration"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     執行組態階段。該階段會讀取 <filename>/srv/pillar/ceph</filename> 下的所有內容，並相應地更新 Pillar：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+    <para>
+     Pillar 用於儲存可以使用以下指令存取的資料：
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+    <tip>
+     <title>修改 OSD 的配置</title>
+     <para>
+      如果您要修改預設的 OSD 配置並變更 DriveGroups 組態，請執行<xref linkend="ds-drive-groups"/>所述的程序。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     組態和部署階段包含新增的節點：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-adding-services">
+  <title>新增新的角色至節點</title>
+
+  <para>
+   您可透過 DeepSea 部署所有受支援的角色類型。如需受支援角色類型的詳細資訊以及相符範例，請參閱<xref linkend="policy-role-assignment"/>。
+  </para>
+
+  <para>
+   若要將新服務新增至現有節點，請執行下列步驟：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     修改 <filename>/srv/pillar/ceph/proposals/policy.cfg</filename>，以使現有主機與新角色相符。如需詳細資料，請參閱<xref linkend="policy-configuration"/>。例如，如果您需要在 MON 節點上執行物件閘道，指令行類似下方所示：
+    </para>
+<screen>role-rgw/xx/x/example.mon-1.sls</screen>
+   </step>
+   <step>
+    <para>
+     執行階段 2 以更新 Pillar：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+   </step>
+   <step>
+    <para>
+     執行階段 3 以部署核心服務，或者執行階段 4 以部署選擇性服務。同時執行這兩個階段也沒有問題。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-node-removing">
+  <title>移除和重新安裝叢集節點</title>
+
+  <tip>
+   <title>暫時移除叢集節點</title>
+   <para>
+    Salt Master 預期叢集中的所有 Minion 都已啟用且能夠回應。如果某個 Minion 由於中斷而不再能夠回應，將會導致 Salt 基礎架構 (主要是 DeepSea 和 Ceph Dashboard) 產生問題。
+   </para>
+   <para>
+    修復該 Minion 之前，請暫時從 Salt Master 中刪除其金鑰：
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-key -d <replaceable>MINION_HOST_NAME</replaceable>
+</screen>
+   <para>
+    修復 Minion 之後，請再次將其金鑰新增至 Salt Master 中：
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-key -a <replaceable>MINION_HOST_NAME</replaceable>
+</screen>
+  </tip>
+
+  <para>
+   若要從叢集中移除角色，請編輯 <filename>/srv/pillar/ceph/proposals/policy.cfg</filename>，移除相應的行。然後依<xref linkend="ceph-install-stack"/>所述執行階段 2 和 5。
+  </para>
+
+  <note>
+   <title>從叢集中移除 OSD</title>
+   <para>
+    如果您需要從叢集中移除特定 OSD 節點，請確定叢集的可用磁碟空間大於要移除的磁碟空間。切記，移除 OSD 會導致整個叢集進行重新平衡。
+   </para>
+   <para>
+    執行階段 5 以進行實際移除之前，一律要檢查 DeepSea 將要移除的是哪些 OSD：
+   </para>
+<screen><prompt>root@master # </prompt>salt-run rescinded.ids</screen>
+  </note>
+
+  <para>
+   從 Minion 中移除角色時，其目的是復原與該角色相關的所有變更。對於大部分角色，要實現該任務都很簡單，但可能會存在套件相依項問題。如果解除安裝某個套件，並不會解除安裝其相依項。
+  </para>
+
+  <para>
+   移除的 OSD 會顯示為空白磁碟機。相關任務除了會抹除分割區表外，還會覆寫檔案系統的開頭並移除備份分割區。
+  </para>
+
+  <note>
+   <title>保留透過其他方法建立的分割區</title>
+   <para>
+    先前透過其他方法 (例如 <command>ceph-deploy</command>) 設定的磁碟機可能仍然包含分割區。DeepSea 不會自動摧毀這些分割區。管理員必須手動收回這些磁碟機。
+   </para>
+  </note>
+
+  <example xml:id="ex-ds-rmnode">
+   <title>從叢集中移除 Salt Minion</title>
+   <para>
+    舉例來說，如果您的儲存 Minion 名為「data1.ceph」、「data2.ceph」...「data6.ceph」，則 <filename>policy.cfg</filename> 中的相關行類似下方所示：
+   </para>
+<screen>[...]
+# Hardware Profile
+role-storage/cluster/data*.sls
+[...]</screen>
+   <para>
+    若要移除 Salt Minion「data2.ceph」，請將這些行變更為：
+   </para>
+<screen>
+[...]
+# Hardware Profile
+role-storage/cluster/data[1,3-6]*.sls
+[...]</screen>
+   <para>
+    此外，請記得調整 drive_groups.yml 檔案以與新目標相符。
+   </para>
+<screen>
+    [...]
+    drive_group_name:
+      target: 'data[1,3-6]*'
+    [...]</screen>
+   <para>
+    然後執行階段 2，檢查將要移除的是哪些 OSD，最後執行階段 5 以完成該程序：
+   </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run rescinded.ids
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.5</screen>
+  </example>
+
+  <example xml:id="ex-ds-mignode">
+   <title>移轉節點</title>
+   <para>
+    假設出現下面的情況：在全新安裝叢集期間，您 (管理員) 在等待閘道硬體就緒時，將其中一個儲存節點配置為獨立的物件閘道。現在，當閘道的永久硬體就緒時，您就可以將所需角色最終指定給備用儲存節點，並移除閘道角色。
+   </para>
+   <para>
+    在針對新硬體執行階段 0 和 1 (請參閱<xref linkend="ds-depl-stages"/>) 之後，您將新閘道命名為 <literal>rgw1</literal>。如果節點 <literal>data8</literal> 需要移除物件閘道角色並新增儲存角色，且目前的 <filename>policy.cfg</filename> 類似下方所示：
+   </para>
+<screen># Hardware Profile
+role-storage/cluster/data[1-7]*.sls
+
+# Roles
+role-rgw/cluster/data8*.sls</screen>
+   <para>
+    則將它變更為：
+   </para>
+<screen># Hardware Profile
+role-storage/cluster/data[1-8]*.sls
+
+# Roles
+role-rgw/cluster/rgw1*.sls</screen>
+   <para>
+    執行階段 2 到 4，檢查可能要移除的是哪些 OSD，然後執行階段 5 以完成該程序。階段 3 會將 <literal>data8</literal> 新增為儲存節點。稍候片刻，<literal>data8</literal> 將同時具有兩個角色。階段 4 將會新增物件閘道角色至 <literal>rgw1</literal>，而階段 5 將會從 <literal>data8</literal> 中移除物件閘道角色：
+   </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4
+<prompt>root@master # </prompt>salt-run rescinded.ids
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.5</screen>
+  </example>
+ </sect1>
+ <sect1 xml:id="ds-mon">
+  <title>重新部署監控程式節點</title>
+
+  <para>
+   當一或多個監控程式節點發生故障且不回應時，您需要將發生故障的監控程式從叢集中移除，然後再新增回叢集 (如有需要)。
+  </para>
+
+  <important>
+   <title>至少須有三個監控程式節點</title>
+   <para>
+    監控程式節點的數量不能少於 3。如果某個監控程式節點發生故障，導致您的叢集中只有兩個監控程式節點，在重新部署發生故障的監控程式節點之前，您需要暫時將其監控程式角色指定給其他叢集節點。重新部署發生故障的監控程式節點後，便可以解除安裝臨時監控程式角色。
+   </para>
+   <para>
+    如需有關將新節點/角色新增至 Ceph 叢集的詳細資訊，請參閱<xref linkend="salt-adding-nodes"/>和<xref linkend="salt-adding-services"/>。
+   </para>
+   <para>
+    如需有關移除叢集節點的詳細資訊，請參閱<xref linkend="salt-node-removing"/>。
+   </para>
+  </important>
+
+  <para>
+   Ceph 節點故障基本分為以下兩種程度：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Salt Minion 主機發生實體或 OS 層級損毀，無法回應 <command>salt '<replaceable>minion_name</replaceable>' test.ping</command> 呼叫。在此情況下，您需要依照<xref linkend="ceph-install-stack"/>中的相關說明，對伺服器進行徹底的重新部署。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     監控程式相關服務失敗並拒絕復原，但主機會回應 <command>salt '<replaceable>minion_name</replaceable>' test.ping</command> 呼叫。在此情況下，請執行以下步驟：
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <procedure>
+   <step>
+    <para>
+     編輯 Salt Master 上的 <filename>/srv/pillar/ceph/proposals/policy.cfg</filename>，移除或更新發生故障的監控程式節點對應的行，使它們現在指向正常運作的監控程式節點。例如：
+    </para>
+<screen>
+[...]
+# MON
+#role-mon/cluster/ses-example-failed1.sls
+#role-mon/cluster/ses-example-failed2.sls
+role-mon/cluster/ses-example-new1.sls
+role-mon/cluster/ses-example-new2.sls
+[...]
+</screen>
+   </step>
+   <step>
+    <para>
+     執行 DeepSea 階段 2 到 5 以套用這些變更：
+    </para>
+<screen>
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.2
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.3
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.4
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.5
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-node-add-disk">
+  <title>新增 OSD 磁碟至節點</title>
+
+  <para>
+   若要新增磁碟至現有 OSD 節點，請驗證是否已移除並抹除磁碟上的所有分割區。如需詳細資料，請參閱<xref linkend="ceph-install-stack"/>中的<xref linkend="deploy-wiping-disk"/>。相應地調整 <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename> (如需詳細資料，請參閱<xref linkend="ds-drive-groups"/>)。儲存檔案後，執行 DeepSea 的階段 3：
+  </para>
+
+<screen><prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.3</screen>
+ </sect1>
+ <sect1 xml:id="salt-removing-osd">
+  <title>移除 OSD</title>
+
+  <para>
+   您可以透過執行以下指令從叢集中移除 Ceph OSD：
+  </para>
+
+<screen><prompt>root@master # </prompt>salt-run osd.remove <replaceable>OSD_ID</replaceable></screen>
+
+  <para>
+   <replaceable>OSD_ID</replaceable> 必須是 OSD 的編號，不含 <literal>osd.</literal> 字首。例如，對於 <literal>osd.3</literal>，僅使用數字 <literal>3</literal>。
+  </para>
+
+  <sect2 xml:id="osd-removal-multiple">
+   <title>移除多個 OSD</title>
+   <para>
+    使用<xref linkend="salt-removing-osd"/>所述的相同程序，但只需提供多個 OSD ID：
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-run osd.remove 2 6 11 15
+Removing osd 2 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.2 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+Removing osd 6 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.6 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+Removing osd 11 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.11 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+Removing osd 15 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.15 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+2:
+True
+6:
+True
+11:
+True
+15:
+True
+
+</screen>
+  </sect2>
+
+  <sect2 xml:id="remove-all-osds-per-host">
+   <title>移除主機上的所有 OSD</title>
+   <para>
+    若要移除特定主機上的所有 OSD，請執行以下指令：
+   </para>
+<screen><prompt>root@master # </prompt>salt-run osd.remove <replaceable>OSD_HOST_NAME</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="osd-forced-removal">
+   <title>強制移除已中止的 OSD</title>
+   <para>
+    有時會出現無法正常移除 OSD 的情況 (請參閱<xref linkend="salt-removing-osd"/>)。例如，如果 OSD 或其記錄、WAL 或 DB 損毀、I/O 操作擱置或 OSD 磁碟無法卸載，可能就會發生這種情況。
+   </para>
+<screen><prompt>root@master # </prompt>salt-run osd.remove <replaceable>OSD_ID</replaceable> force=True</screen>
+   <tip>
+    <title>擱置的掛接</title>
+    <para>
+     如果正在移除的磁碟上仍掛接著分割區，指令將結束，並顯示「卸載失敗 - 請檢查 <replaceable>DEVICE</replaceable> 上的程序」訊息。然後，您可以使用 <command>fuser -m <replaceable>DEVICE</replaceable></command> 列出存取檔案系統的所有程序。如果 <command>fuser</command> 未傳回任何內容，請嘗試手動執行 <command>unmount <replaceable>DEVICE</replaceable></command>，然後監看 <command>dmesg</command> 或 <command>journalctl</command> 指令的輸出。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="validate-osd-lvm">
+   <title>驗證 OSD LVM 中繼資料</title>
+   <para>
+    使用 <command>salt-run osd.remove <replaceable>ID</replaceable></command> 或透過其他 ceph 指令移除 OSD 之後，可能無法完全移除 LVM 中繼資料。這表示如果您想要重新部署一個新 OSD，系統卻會使用舊 LVM 中繼資料。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      首先檢查是否已移除 OSD：
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume lvm list</screen>
+     <para>
+      即使已成功移除某個 OSD，它也可能仍會列出。例如，如果您移除了 <literal>osd.2</literal>，輸出內容將如下所示：
+     </para>
+<screen>
+  ====== osd.2 =======
+
+  [block] /dev/ceph-a2189611-4380-46f7-b9a2-8b0080a1f9fd/osd-data-ddc508bc-6cee-4890-9a42-250e30a72380
+
+  block device /dev/ceph-a2189611-4380-46f7-b9a2-8b0080a1f9fd/osd-data-ddc508bc-6cee-4890-9a42-250e30a72380
+  block uuid kH9aNy-vnCT-ExmQ-cAsI-H7Gw-LupE-cvSJO9
+  cephx lockbox secret
+  cluster fsid 6b6bbac4-eb11-45cc-b325-637e3ff9fa0c
+  cluster name ceph
+  crush device class None
+  encrypted 0
+  osd fsid aac51485-131c-442b-a243-47c9186067db
+  osd id 2
+  type block
+  vdo 0
+  devices /dev/sda
+</screen>
+     <para>
+      在此範例中，您可以看到 <literal>osd.2</literal> 仍然位於 <filename>/dev/sda</filename> 中。
+     </para>
+    </step>
+    <step>
+     <para>
+      驗證 OSD 節點上的 LVM 中繼資料：
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume inventory</screen>
+     <para>
+      執行 <command>ceph-volume inventory</command> 指令產生的輸出中將 <filename>/dev/sda</filename> 可用性標示為 <literal>False</literal>。例如：
+     </para>
+<screen>
+  Device Path Size rotates available Model name
+  /dev/sda 40.00 GB True False QEMU HARDDISK
+  /dev/sdb 40.00 GB True False QEMU HARDDISK
+  /dev/sdc 40.00 GB True False QEMU HARDDISK
+  /dev/sdd 40.00 GB True False QEMU HARDDISK
+  /dev/sde 40.00 GB True False QEMU HARDDISK
+  /dev/sdf 40.00 GB True False QEMU HARDDISK
+  /dev/vda 25.00 GB True False
+</screen>
+    </step>
+    <step>
+     <para>
+      在 OSD 節點上執行以下指令，以完全移除 LVM 中繼資料：
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume lvm zap --osd-id <replaceable>ID</replaceable> --destroy </screen>
+    </step>
+    <step>
+     <para>
+      再次執行 <command>inventory</command> 指令，以確認 <filename>/dev/sda</filename> 可用性是否傳回 <literal>True</literal>。例如：
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume inventory
+Device Path Size rotates available Model name
+/dev/sda 40.00 GB True True QEMU HARDDISK
+/dev/sdb 40.00 GB True False QEMU HARDDISK
+/dev/sdc 40.00 GB True False QEMU HARDDISK
+/dev/sdd 40.00 GB True False QEMU HARDDISK
+/dev/sde 40.00 GB True False QEMU HARDDISK
+/dev/sdf 40.00 GB True False QEMU HARDDISK
+/dev/vda 25.00 GB True False</screen>
+     <para>
+      現已將 LVM 中繼資料移除。現在，您可以安全地對裝置執行 <command>dd</command> 指令。
+     </para>
+    </step>
+    <step>
+     <para>
+      現在可以重新部署 OSD，而無需將 OSD 節點重新開機：
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ds-osd-replace">
+  <title>更換 OSD 磁碟</title>
+
+  <para>
+   有多種原因會導致您可能需要更換 OSD 磁碟，例如：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     依據 SMART 資訊，OSD 磁碟已發生故障或很快將發生故障，並且將不再能用來安全地儲存資料。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     您需要升級 OSD 磁碟，例如增加其大小。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   這兩種情況的更換程序相同，對於預設 CRUSH 地圖和自訂 CRUSH 地圖也同樣適用。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     例如，假設其磁碟需要更換的 OSD 的 ID 為「5」。以下指令會在 CRUSH 地圖中將其標示為 <emphasis role="bold">destroyed</emphasis>，但會保留其原始 ID：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run osd.replace 5
+</screen>
+    <tip>
+     <title><command>osd.replace</command> 和 <command>osd.remove</command></title>
+     <para>
+      Salt 的 <command>osd.replace</command> 和 <command>osd.remove</command> (請參閱<xref linkend="salt-removing-osd"/>) 指令作用相同，只不過 <command>osd.replace</command> 會在 CRUSH 地圖中將 OSD 保留為「destroyed」狀態，而 <command>osd.remove</command> 會從 CRUSH 地圖中移除所有痕跡。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     手動更換發生故障/升級的 OSD 磁碟機。
+    </para>
+   </step>
+   <step>
+    <para>
+     如果您要修改預設的 OSD 配置並變更 DriveGroups 組態，請執行<xref linkend="ds-drive-groups"/>所述的程序。
+    </para>
+   </step>
+   <step>
+    <para>
+     執行部署階段 3，以部署更換的 OSD 磁碟：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="ds-osd-recover">
+  <title>復原重新安裝的 OSD 節點</title>
+
+  <para>
+   如果您的某個 OSD 節點上的作業系統損毀且無法恢復，請執行以下步驟復原該節點，並在叢集資料保持不變的情況下，重新部署該節點的 OSD 角色：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     在其作業系統已損毀的節點上重新安裝基礎 SUSE Linux Enterprise 作業系統。在 OSD 節點上安裝 <package>salt-minion</package> 套件，刪除 Salt Master 上的舊 Salt Minion 金鑰，並在 Salt Master 中註冊新 Salt Minion 的金鑰。如需初始部署的詳細資訊，請參閱<xref linkend="ceph-install-stack"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     不要執行整個階段 0，而是執行以下部分：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.sync
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.packages.common
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.mines
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.updates
+</screen>
+   </step>
+   <step>
+    <para>
+     執行 DeepSea 階段 1 到 5：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.1
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.5
+</screen>
+   </step>
+   <step>
+    <para>
+     執行 DeepSea 階段 0：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.0
+</screen>
+   </step>
+   <step>
+    <para>
+     將相關的 OSD 節點重新開機。系統將重新探查並重新使用所有 OSD 磁碟。
+    </para>
+   </step>
+   <step>
+    <para>
+     安裝/執行 Prometheus 的節點輸出程式：
+    </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>RECOVERED_MINION</replaceable>' \
+ state.apply ceph.monitoring.prometheus.exporters.node_exporter</screen>
+   </step>
+   <step>
+    <para>
+     更新 Salt 粒紋：
+    </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>RECOVERED_MINION</replaceable>' osd.retain</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="moving-saltmaster">
+  <title>將管理節點移至新伺服器</title>
+
+  <para>
+   如果您需要以新主機取代管理節點主機，則需要移動 Salt Master 和 DeepSea 檔案。使用您偏好的同步工具傳輸檔案。在此程序中，我們使用的是 <command>rsync</command>，因為它是 SUSE Linux Enterprise Server 15 SP1 軟體儲存庫中提供的標準工具。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     停止舊管理節點上的 <systemitem class="daemon">salt-master</systemitem> 和 <systemitem class="daemon">salt-minion</systemitem> 服務：
+    </para>
+<screen>
+<prompt>root@master # </prompt>systemctl stop salt-master.service
+<prompt>root@master # </prompt>systemctl stop salt-minion.service
+</screen>
+   </step>
+   <step>
+    <para>
+     在新管理節點上設定 Salt，以使 Salt Master 與 Salt Minions 可以通訊。如需更多詳細資料，請參閱<xref linkend="ceph-install-stack"/>。
+    </para>
+    <tip>
+     <title>轉換 Salt Minion</title>
+     <para>
+      為便於將 Salt Minion 轉換到新管理節點，請從每個 Salt Minion 中移除原始 Salt Master 的公用金鑰：
+     </para>
+<screen>
+<prompt>root@minion &gt; </prompt>rm /etc/salt/pki/minion/minion_master.pub
+<prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     確認是否已安裝 <package>deepsea</package> 套件，如果沒有，則予以安裝。
+    </para>
+<screen><prompt>root@master # </prompt>zypper install deepsea</screen>
+   </step>
+   <step>
+    <para>
+     變更 <literal>role-master</literal> 一行以自訂 <filename>policy.cfg</filename> 檔案。如需更多詳細資料，請參閱<xref linkend="policy-configuration"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     將舊管理節點上的 <filename>/srv/pillar</filename> 和 <filename>/srv/salt</filename> 目錄同步到新管理節點。
+    </para>
+    <tip>
+     <title><command>rsync</command> 試執行和符號連結</title>
+     <para>
+      如果可能，請先透過試執行試驗檔案同步，以確定將傳輸的是哪些檔案 (<command>rsync</command> 的選項 <option>-n</option>)。此外，請包含符號連結 (<command>rsync</command> 的選項 <option>-a</option>)。使用 <command>rsync</command> 的同步指令將如下所示：
+     </para>
+<screen><prompt>root@master # </prompt>rsync -avn /srv/pillar/ <replaceable>NEW-ADMIN-HOSTNAME:</replaceable>/srv/pillar</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     如果您對 <filename>/srv/pillar</filename> 和 <filename>/srv/salt</filename> 外部的檔案 (例如 <filename>/etc/salt/master</filename> 或 <filename>/etc/salt/master.d</filename>) 進行過自訂變更，請一併同步這些檔案。
+    </para>
+   </step>
+   <step>
+    <para>
+     現在，您便可從新管理節點上執行 DeepSea 階段。如需其詳細說明，請參閱<xref linkend="deepsea-description"/>。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-automated-installation">
+  <title>透過 Salt 實現自動安裝</title>
+
+  <para>
+   透過使用 Salt 反應器可讓安裝自動進行。對於虛擬環境或一致的硬體環境，此組態將允許建立具有指定行為的 Ceph 叢集。
+  </para>
+
+  <warning>
+   <para>
+    Salt 無法根據反應器事件執行相依項檢查。存在使 Salt Master 過載而無法回應的風險。
+   </para>
+  </warning>
+
+  <para>
+   自動安裝需要：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     正確建立的 <filename>/srv/pillar/ceph/proposals/policy.cfg</filename>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     準備好並已放入 <filename>/srv/pillar/ceph/stack</filename> 目錄中的自訂組態。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   預設反應器組態只會執行階段 0 和 1。如此不必等待後續階段完成即可測試反應器。
+  </para>
+
+  <para>
+   第一個 salt-minion 啟動時，階段 0 即會開始。使用鎖定可阻止多個例項。所有 Minion 都完成階段 0 後，階段 1 將會開始。
+  </para>
+
+  <para>
+   如果正確執行了該操作，請編輯檔案
+  </para>
+
+<screen>/etc/salt/master.d/reactor.conf</screen>
+
+  <para>
+   並將下面一行
+  </para>
+
+<screen>- /srv/salt/ceph/reactor/discovery.sls</screen>
+
+  <para>
+   取代為
+  </para>
+
+<screen>- /srv/salt/ceph/reactor/all_stages.sls</screen>
+
+  <para>
+   確認未將該行設為備註。
+  </para>
+ </sect1>
+ <sect1 xml:id="deepsea-rolling-updates">
+  <title>更新叢集節點</title>
+
+  <para>
+   定期套用滾存更新，以使 Ceph 叢集節點保持最新。
+  </para>
+
+  <sect2 xml:id="rolling-updates-repos">
+   <title>軟體儲存庫</title>
+   <para>
+    使用最新的套裝軟體修補叢集之前，請確認叢集的所有節點均可存取相關的儲存庫。如需所需儲存庫的完整清單，請參閱<xref linkend="upgrade-one-node-manual"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="rolling-upgrades-staging">
+   <title>儲存庫分段</title>
+   <para>
+    如果您使用向叢集節點提供軟體儲存庫的暫存工具 (例如 SUSE Manager、訂閱管理工具或儲存庫鏡像工具)，請確認 SUSE Linux Enterprise Server 和 SUSE Enterprise Storage 的「更新」儲存庫的階段都是在同一時刻建立的。
+   </para>
+   <para>
+    我們強烈建議使用分段工具來套用<emphasis role="bold">修補程式層級為凍結/暫存</emphasis>的修補程式。這樣可確保加入叢集的新節點具有與已在叢集中執行的節點相同的修補程式層級。透過這種方法，您無需向叢集的所有節點都套用最新修補程式，新節點也能加入叢集。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="rolling-updates-patch-or-dup">
+   <title><command>zypper patch</command> 或 <command>zypper dup</command></title>
+   <para>
+    預設透過 <command>zypper dup</command> 指令來升級叢集節點。如果您更喜歡使用 <command>zypper patch</command> 指令來更新系統，請編輯 <filename>/srv/pillar/ceph/stack/global.yml</filename>，並新增下面一行：
+   </para>
+<screen>update_method_init: zypper-patch</screen>
+  </sect2>
+
+  <sect2 xml:id="rolling-updates-reboots">
+   <title>叢集節點重新開機</title>
+   <para>
+    如果更新程序在更新期間升級了叢集節點的核心，則您可以選擇將節點重新開機。如果您要避免強制將節點 (可能是所有節點) 重新開機的可能性，請確認 Ceph 節點上已安裝且正在執行最新的核心，或者如<xref linkend="ds-disable-reboots"/>所述停用節點自動重新開機。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Ceph 服務停機時間</title>
+   <para>
+    如<xref linkend="rolling-updates-reboots"/>所述，叢集節點可能會在更新期間重新開機，具體視組態而定。如果物件閘道、Samba 閘道、NFS Ganesha 或 iSCSI 等服務存在單一故障點，用戶端機器可能會暫時解除與相應節點正在重新開機的服務的連接。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="rolling-updates-running">
+   <title>執行更新</title>
+   <para>
+    若要將叢集的所有節點上的軟體套裝更新至最新版本，請執行以下步驟：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      在 Salt Master 上更新 <package>deepsea</package>、 <package>salt-master</package>和 <package>salt-minion</package> 套件，並重新啟動相關服務：
+     </para>
+<screen><prompt>root@master # </prompt>salt -I 'roles:master' state.apply ceph.updates.master</screen>
+    </step>
+    <step>
+     <para>
+      在叢集的所有節點上更新並重新啟動 <package>salt-minion</package> 套件：
+     </para>
+<screen><prompt>root@master # </prompt>salt -I 'cluster:ceph' state.apply ceph.updates.salt</screen>
+    </step>
+    <step>
+     <para>
+      在叢集上更新所有其他軟體套裝：
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.maintenance.upgrade</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="sec-salt-cluster-reboot">
+  <title>將叢集停止或重新開機</title>
+
+  <para>
+   在某些情況下，可能需要將整個叢集停止或重新開機。建議您仔細檢查執行中服務的相依項。下列步驟簡要說明如何停止和啟動叢集：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     告知 Ceph 叢集不要將 OSD 標示為 out：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd set noout</screen>
+   </step>
+   <step>
+    <para>
+     依下面的順序停止精靈和節點：
+    </para>
+    <orderedlist>
+     <listitem>
+      <para>
+       儲存用戶端
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       閘道，例如 NFS Ganesha 或物件閘道
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       中繼資料伺服器
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph OSD
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph 管理員
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph 監控程式
+      </para>
+     </listitem>
+    </orderedlist>
+   </step>
+   <step>
+    <para>
+     視需要執行維護任務。
+    </para>
+   </step>
+   <step>
+    <para>
+     依與關閉過程相反的順序啟動節點和伺服器：
+    </para>
+    <orderedlist>
+     <listitem>
+      <para>
+       Ceph 監控程式
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph 管理員
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph OSD
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       中繼資料伺服器
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       閘道，例如 NFS Ganesha 或物件閘道
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       儲存用戶端
+      </para>
+     </listitem>
+    </orderedlist>
+   </step>
+   <step>
+    <para>
+     移除 noout 旗標：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd unset noout</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="ds-custom-cephconf">
+  <title>使用自訂設定調整 <filename>ceph.conf</filename></title>
+
+  <para>
+   如果您需要將自訂設定放入 <filename>ceph.conf</filename> 檔案中，可透過修改 <filename>/srv/salt/ceph/configuration/files/ceph.conf.d</filename> 目錄中的組態檔案來實現：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     global.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     mon.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     mgr.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     mds.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     osd.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     client.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     rgw.conf
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>獨特的 <filename>rgw.conf</filename></title>
+   <para>
+    物件閘道提供了很大的靈活性，並且具有 <filename>ceph.conf</filename> 的其他區段所沒有的獨特之處。所有其他 Ceph 元件都包含靜態標頭，例如 <literal>[mon]</literal> 或 <literal>[osd]</literal>。物件閘道具有獨特的標頭，例如 <literal>[client.rgw.rgw1]</literal>。也就是說，<filename>rgw.conf</filename> 檔案需要有標頭項目。如需範例，請參閱
+   </para>
+<screen>
+<filename>/srv/salt/ceph/configuration/files/rgw.conf</filename>
+</screen>
+   <para>
+    或
+   </para>
+<screen>
+<filename>/srv/salt/ceph/configuration/files/rgw-ssl.conf</filename>
+</screen>
+  </note>
+
+  <important>
+   <title>執行階段 3</title>
+   <para>
+    對上述組態檔案進行自訂變更後，執行階段 3 和 4 以將這些變更套用至叢集節點：
+   </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+  </important>
+
+  <para>
+   這些檔案透過 <filename>/srv/salt/ceph/configuration/files/ceph.conf.j2</filename> 範本檔案加入，與 Ceph 組態檔案接受的不同區段相對應。將組態片段放入正確的檔案，可讓 DeepSea 將其放入正確的區段中。您不需要新增任何區段標頭。
+  </para>
+
+  <tip>
+   <para>
+    若要將任何組態選項僅套用於精靈的特定例項，請新增一個標頭，例如 <literal>[osd.1]</literal>。以下組態選項將只套用於 ID 為 1 的 OSD 精靈。
+   </para>
+  </tip>
+
+  <sect2>
+   <title>覆寫預設值</title>
+   <para>
+    區段中位於後面的陳述式會覆寫前面的陳述式。因此，可以依 <filename>/srv/salt/ceph/configuration/files/ceph.conf.j2</filename> 範本中指定的內容來覆寫預設組態。例如，若要關閉 cephx 驗證，可將下面三行新增至 <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/global.conf</filename> 檔案：
+   </para>
+<screen>auth cluster required = none
+auth service required = none
+auth client required = none</screen>
+   <para>
+    重新定義預設值時，與 Ceph 相關的工具 (例如 <command>rados</command>) 可能會發出警告，指出已在 <filename>global.conf</filename> 中重新定義 <filename>ceph.conf.j2</filename> 中的特定值。這些警告之所以出現，是因為在最終的 <filename>ceph.conf</filename> 中將一個參數指定了兩次。
+   </para>
+   <para>
+    若要解決這種特定情況，請執行以下步驟：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      將目前的目錄切換到 <filename>/srv/salt/ceph/configuration/create</filename>：
+     </para>
+<screen>
+<prompt>root@master # </prompt>cd /srv/salt/ceph/configuration/create
+</screen>
+    </step>
+    <step>
+     <para>
+      將 <filename>default.sls</filename> 複製到 <filename>custom.sls</filename>：
+     </para>
+<screen>
+<prompt>root@master # </prompt>cp default.sls custom.sls
+</screen>
+    </step>
+    <step>
+     <para>
+      編輯 <filename>custom.sls</filename>，並將 <option>ceph.conf.j2</option> 變更為 <option>custom-ceph.conf.j2</option>。
+     </para>
+    </step>
+    <step>
+     <para>
+      將目前的目錄切換到 <filename>/srv/salt/ceph/configuration/files</filename>：
+     </para>
+<screen>
+<prompt>root@master # </prompt>cd /srv/salt/ceph/configuration/files
+</screen>
+    </step>
+    <step>
+     <para>
+      將 <filename>ceph.conf.j2</filename> 複製到 <filename>custom-ceph.conf.j2</filename>：
+     </para>
+<screen>
+<prompt>root@master # </prompt>cp ceph.conf.j2 custom-ceph.conf.j2
+</screen>
+    </step>
+    <step>
+     <para>
+      編輯 <filename>custom-ceph.conf.j2</filename>，並刪除下面一行：
+     </para>
+<screen>
+{% include "ceph/configuration/files/rbd.conf" %}
+</screen>
+     <para>
+      編輯 <filename>global.yml</filename>，並新增下面一行：
+     </para>
+<screen>
+configuration_create: custom
+</screen>
+    </step>
+    <step>
+     <para>
+      重新整理 Pillar：
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+</screen>
+    </step>
+    <step>
+     <para>
+      執行階段 3：
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+    </step>
+   </procedure>
+   <para>
+    現在，每個值定義便應該只有一個項目。若要重新建立組態，請執行以下指令：
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.configuration.create
+</screen>
+   <para>
+    然後確認 <filename>/srv/salt/ceph/configuration/cache/ceph.conf</filename> 的內容。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>加入組態檔案</title>
+   <para>
+    如果您需要套用大量自訂組態，請在自訂組態檔案中使用以下 include 陳述式來讓檔案管理工作更輕鬆。下面是 <filename>osd.conf</filename> 檔案的範例：
+   </para>
+<screen>[osd.1]
+{% include "ceph/configuration/files/ceph.conf.d/osd1.conf" ignore missing %}
+[osd.2]
+{% include "ceph/configuration/files/ceph.conf.d/osd2.conf" ignore missing %}
+[osd.3]
+{% include "ceph/configuration/files/ceph.conf.d/osd3.conf" ignore missing %}
+[osd.4]
+{% include "ceph/configuration/files/ceph.conf.d/osd4.conf" ignore missing %}</screen>
+   <para>
+    在前面的範例中，<filename>osd1.conf</filename>、<filename>osd2.conf</filename>、<filename>osd3.conf</filename> 和 <filename>osd4.conf</filename> 檔案包含相關 OSD 特定的組態選項。
+   </para>
+   <tip>
+    <title>執行時期組態</title>
+    <para>
+     對 Ceph 組態檔案所做的變更會在相關 Ceph 精靈重新啟動之後生效。如需變更 Ceph 執行時期組態的詳細資訊，請參閱<xref linkend="ceph-config-runtime"/>。
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="admin-apparmor">
+  <title>啟用 AppArmor 設定檔</title>
+
+  <para>
+   AppArmor 是一套透過特定設定檔對程式設限的安全性解決方案。如需詳細資訊，請參閱<link xlink:href="https://www.suse.com/documentation/sles-15/book_security/data/part_apparmor.html"/>。
+  </para>
+
+  <para>
+   DeepSea 針對 AppArmor 設定檔提供了以下三種狀態：「強制」、「申訴」和「停用」。若要啟用某種 AppArmor 狀態，請執行以下指令：
+  </para>
+
+<screen>
+salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-<replaceable>STATE</replaceable>
+</screen>
+
+  <para>
+   若要將 AppArmor 設定檔置於「強制」狀態，請執行以下指令：
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-enforce
+</screen>
+
+  <para>
+   若要將 AppArmor 設定檔置於「申訴」狀態，請執行以下指令：
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-complain
+</screen>
+
+  <para>
+   若要停用 AppArmor 設定檔，請執行以下指令：
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-disable
+</screen>
+
+  <tip>
+   <title>啟用 AppArmor 服務</title>
+   <para>
+    上面呼叫的三個指令都會確認是否已安裝 AppArmor，如果未安裝，將會安裝該軟體，然後啟動並啟用相關的 <systemitem class="daemon">systemd</systemitem> 服務。如果是透過另一種方式安裝並啟動/啟用 AppArmor 的，會導致其在沒有 DeepSea 設定檔的情況下執行，對此 DeepSea 將會向您發出警告。
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="deactivate-tuned-profiles">
+  <title>停用調整後的設定檔</title>
+
+  <para>
+   依預設，DeepSea 會使用 Ceph 監控程式、Ceph 管理員和 Ceph OSD 節點上調整後的使用中設定檔來部署 Ceph 叢集。在某些情況下，您可能需要永久停用調整後的設定檔。若要完成此操作，請在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 中新增下面幾行，然後重新執行階段 3：
+  </para>
+
+<screen>
+alternative_defaults:
+ tuned_mgr_init: default-off
+ tuned_mon_init: default-off
+ tuned_osd_init: default-off
+</screen>
+
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+ </sect1>
+ <sect1 xml:id="deepsea-ceph-purge">
+  <title>移除整個 Ceph 叢集</title>
+
+  <para>
+   <command>ceph.purge</command> 執行程式會移除整個 Ceph 叢集。這樣，您便可以在測試不同的設定時清理叢集環境。<command>ceph.purge</command> 完成之後，Salt 叢集將回復至 DeepSea 階段 1 結束時的狀態。然後，您便可以變更 <filename>policy.cfg</filename> (請參閱<xref linkend="policy-configuration"/>)，或對該設定繼續執行 DeepSea 階段 2。
+  </para>
+
+  <para>
+   為防止意外刪除，協調程序會檢查是否解除了安全措施。您可以透過執行以下指令來解除安全措施並移除 Ceph 叢集：
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt-run disengage.safety
+<prompt>root@master # </prompt>salt-run state.orch ceph.purge
+</screen>
+
+  <tip>
+   <title>禁止移除 Ceph 叢集</title>
+   <para>
+    如果您要阻止任何人執行 <command>ceph.purge</command> 執行程式，請在 <filename>/srv/salt/ceph/purge</filename> 目錄中建立名為 <filename>disabled.sls</filename> 的檔案，然後在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 檔案中插入下面一行：
+   </para>
+<screen>purge_init: disabled</screen>
+  </tip>
+
+  <important>
+   <title>撤銷自訂角色</title>
+   <para>
+    如果您之前為 Ceph Dashboard 建立了自訂角色 (如需詳細資訊，請參閱<xref linkend="dashboard-adding-roles"/>和<xref linkend="dashboard-permissions"/>)，在執行 <command>ceph.purge</command> 執行程式之前，您需要執行一些手動步驟將這些角色清除。例如，如果物件閘道的自訂角色名為「us-east-1」，請執行以下步驟：
+   </para>
+<screen>
+<prompt>root@master # </prompt>cd /srv/salt/ceph/rescind
+<prompt>root@master # </prompt>rsync -a rgw/ us-east-1
+<prompt>root@master # </prompt>sed -i 's!rgw!us-east-1!' us-east-1/*.sls
+</screen>
+  </important>
+ </sect1>
+</chapter>

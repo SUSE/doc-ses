@@ -1,0 +1,885 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tips.xml" version="5.0" xml:id="storage-tips">
+ <title>技巧與提示</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  本章提供可協助您增強 Ceph 叢集效能的資訊，以及有關如何設定叢集的提示。
+ </para>
+ <sect1 xml:id="tips-orphaned-partitions">
+  <title>識別未同步分割區</title>
+
+  <para>
+   若要識別可能處於未同步狀態的記錄/WAL/DB 裝置，請執行以下步驟：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     選取可能存在孤立分割區的裝置，並將其分割區清單儲存到檔案中：
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ls /dev/sdd?* &gt; /tmp/partitions
+</screen>
+   </step>
+   <step>
+    <para>
+     針對所有 block.wal、block.db 和記錄裝置執行 <command>readlink</command>，並將輸出與先前儲存的分割區清單進行比較：
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>readlink -f /var/lib/ceph/osd/ceph-*/{block.wal,block.db,journal} \
+ | sort | comm -23 /tmp/partitions -
+</screen>
+    <para>
+     輸出內容為 Ceph <emphasis>未</emphasis>使用的分割區清單。
+    </para>
+   </step>
+   <step>
+    <para>
+     使用您偏好的指令 (例如 <command>fdisk</command>、<command>parted</command> 或 <command>sgdisk</command>) 移除不屬於 Ceph 的未同步分割區。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="tips-scrubbing">
+  <title>調整整理</title>
+
+  <para>
+   依預設，Ceph 每天會執行一次淺層整理 (請參閱<xref linkend="scrubbing"/>以瞭解詳細資料)，每週會執行一次深層整理。<emphasis>淺層</emphasis>整理會檢查物件大小與檢查總數，以確定放置群組儲存的是相同的物件資料。<emphasis>深層</emphasis>整理會檢查物件的內容及其複本，以確定實際內容相同。在整理期間檢查資料完整性會增加叢集上的 I/O 負載。
+  </para>
+
+  <para>
+   預設設定允許 Ceph OSD 在不合適的時間 (如負載較重時) 啟動整理。當整理操作與客戶操作發生衝突時，可能會出現延遲和效能不佳情況。Ceph 提供了數個整理設定，可將整理限制在低負載或非峰值時段執行。
+  </para>
+
+  <para>
+   如果叢集在日間負載高而在夜間負載低，請考慮將整理限制在夜間執行，例如在晚上 11 點到早上 6 點期間執行。
+  </para>
+
+<screen>
+[osd]
+osd_scrub_begin_hour = 23
+osd_scrub_end_hour = 6
+</screen>
+
+  <para>
+   如果使用時間限制無法有效決定整理排程，請考慮使用 <option>osd_scrub_load_threshold</option> 選項。其預設值為 0.5，但也可針對低負載情況進行相應調整：
+  </para>
+
+<screen>
+[osd]
+osd_scrub_load_threshold = 0.25
+</screen>
+ </sect1>
+ <sect1 xml:id="tips-stopping-osd-without-rebalancing">
+  <title>在不重新平衡的情況下停止 OSD</title>
+
+  <para>
+   進行定期維護時，您可能需要停止 OSD。如果您不希望 CRUSH 自動重新平衡叢集，以免出現大量資料傳輸，請先將叢集設為 <literal>noout</literal>：
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd set noout
+</screen>
+
+  <para>
+   當叢集設為 <literal>noout</literal> 時，您便可開始在需要執行維護工作的故障網域中停止 OSD：
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl stop ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   如需詳細資訊，請參閱<xref linkend="ceph-operating-services-individual"/>。
+  </para>
+
+  <para>
+   完成維護工作後，再次啟動 OSD：
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl start ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   OSD 服務啟動後，取消叢集的 <literal>noout</literal> 設定：
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd unset noout
+</screen>
+ </sect1>
+ <sect1 xml:id="Cluster-Time-Setting">
+  <title>節點時間同步</title>
+
+  <para>
+   Ceph 要求所有節點之間的時間都保持精確同步。
+  </para>
+
+  <para>
+   我們建議將所有 Ceph 叢集節點與內部網路上至少三個可靠的時間來源進行同步。內部時間來源可指向公用時間伺服器，或使用自己的時間來源。
+  </para>
+
+  <important>
+   <title>公用時間伺服器</title>
+   <para>
+    不要將所有 Ceph 叢集節點直接與遠端公用時間伺服器同步。如果採用這種組態，叢集中的每個節點都會憑藉自己的 NTP 精靈透過網際網路持續與三到四部時間伺服器通訊，而這些伺服器提供的時間可能會稍有不同。此解決方案在很大程度上帶來了延遲方面的變數，使得難以甚至無法將時鐘偏差保持在 0.05 秒以下 (Ceph 監控程式要求這種精度)。
+   </para>
+  </important>
+
+  <para>
+   如需如何設定 NTP 伺服器的詳細資料，請參閱<link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/cha_ntp.html">《SUSE Linux Enterprise Server 管理指南》</link>。
+  </para>
+
+  <para>
+   若要變更叢集上的時間，請執行以下操作：
+  </para>
+
+  <important>
+   <title>設定時間</title>
+   <para>
+    您可能會遇到需要將時間往回調的情況，例如，當時間從夏令時改成標準時間時就需要如此。不建議將時間回調的幅度超過叢集的關閉時長。將時間往前調不會造成任何問題。
+   </para>
+  </important>
+
+  <procedure>
+   <title>叢集上的時間同步</title>
+   <step>
+    <para>
+     停止正在存取 Ceph 叢集的所有用戶端，尤其是使用 iSCSI 的用戶端。
+    </para>
+   </step>
+   <step>
+    <para>
+     關閉 Ceph 叢集。在每個節點上，執行：
+    </para>
+<screen><prompt>root # </prompt>systemctl stop ceph.target</screen>
+    <note>
+     <para>
+      如果您使用了 Ceph 和 SUSE OpenStack Cloud，則還需停止 SUSE OpenStack Cloud。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     確認 NTP 伺服器的設定是否正確，即所有 <systemitem class="daemon">chronyd</systemitem> 精靈是否可從本地網路中的一或多個時間來源獲取時間。
+    </para>
+   </step>
+   <step>
+    <para>
+     在 NTP 伺服器上設定正確的時間。
+    </para>
+   </step>
+   <step>
+    <para>
+     確認 NTP 正在執行且在正常運作，然後在所有節點上執行：
+    </para>
+<screen><prompt>root # </prompt>systemctl status chronyd.service</screen>
+   </step>
+   <step>
+    <para>
+     啟動所有監控節點，並確認不存在時鐘偏差：
+    </para>
+<screen><prompt>root # </prompt>systemctl start <replaceable>target</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     啟動所有 OSD 節點。
+    </para>
+   </step>
+   <step>
+    <para>
+     啟動其他 Ceph 服務。
+    </para>
+   </step>
+   <step>
+    <para>
+     啟動 SUSE OpenStack Cloud (如果有)。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="storage-bp-cluster-mntc-unbalanced">
+  <title>檢查不均衡的資料寫入</title>
+
+  <para>
+   如果資料均衡寫入 OSD，則認為叢集是平衡的。系統會為叢集中的每個 OSD 指定一個<emphasis>權數</emphasis>。權數是一個相對數字，告知 Ceph 應寫入相關 OSD 的資料量。權數越高，要寫入的資料就越多。如果 OSD 的權數為零，則不會向其寫入任何資料。如果某個 OSD 的權數相對於其他 OSD 而言較高，則大部分資料將會寫入這個 OSD，致使叢集變得不平衡。
+  </para>
+
+  <para>
+   不平衡叢集的效能較差。如果某個權數較高的 OSD 突然當機，則大量的資料就需要轉移到其他 OSD，這也會導致叢集速度變慢。
+  </para>
+
+  <para>
+   為避免此問題，您應該定期檢查 OSD 中的資料寫入量。如果寫入量介於給定規則集所指定 OSD 群組容量的 30% 到 50% 之間，則您需要重新設定 OSD 的權數。檢查各個磁碟，找出其中哪些磁碟的填滿速度比其他磁碟更快 (或者一般情況下速度更慢)，並降低其權數。對於資料寫入量不足的 OSD，可以採用相同的思路：可以提高其權數，讓 Ceph 將更多的資料寫入其中。在下面的範例中，您將確定 ID 為 13 的 OSD 的權數，並將權數從 3 重新設定為 3.05：
+  </para>
+
+<screen>$ ceph osd tree | grep osd.13
+ 13  3                   osd.13  up  1
+
+ $ ceph osd crush reweight osd.13 3.05
+ reweighted item id 13 name 'osd.13' to 3.05 in crush map
+
+ $ ceph osd tree | grep osd.13
+ 13  3.05                osd.13  up  1</screen>
+
+  <para/>
+
+  <tip>
+   <title>依使用率重新設定 OSD 的權數</title>
+   <para>
+    <command>ceph osd reweight-by-utilization</command>
+    <replaceable>threshold</replaceable> 指令可自動完成降低嚴重過度使用的 OSD 權數的過程。依預設，此指令將對達到平均使用率的 120% 的 OSD 降低權數，但是，如果您指定了閾值，則指令會使用該百分比。
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage-tips-ceph-btrfs-subvol">
+  <title>Ceph 監控程式節點上 <filename>/var/lib/ceph</filename> 的 Btrfs 子磁碟區</title>
+
+  <para>
+   SUSE Linux Enterprise 預設安裝在 Btrfs 分割區中。Ceph 監控程式將其狀態和資料庫儲存在 <filename>/var/lib/ceph</filename> 目錄下。為防止 Ceph 監控程式因基於之前某個快照進行的系統復原而損毀，請為 <filename>/var/lib/ceph</filename> 建立 Btrfs 子磁碟區。專屬子磁碟區會從根子磁碟區的快照中排除監控程式資料。
+  </para>
+
+  <tip>
+   <para>
+    請在執行 DeepSea 階段 0 之前建立 <filename>/var/lib/ceph</filename> 子磁碟區，因為階段 0 會安裝與 Ceph 相關的套件，並建立 <filename>/var/lib/ceph</filename> 目錄。
+   </para>
+  </tip>
+
+  <para>
+   隨後，DeepSea 階段 3 會驗證 <filename>@/var/lib/ceph</filename> 是否為 Btrfs 子磁碟區，如果它是普通目錄，則驗證將失敗。
+  </para>
+
+  <sect2 xml:id="btrfs-subvol-requirements">
+   <title>要求</title>
+   <sect3 xml:id="tips-ceph-btrfs-subvol-new">
+    <title>新部署</title>
+    <para>
+     需正確安裝 Salt 和 DeepSea，並確定它們正常運作。
+    </para>
+   </sect3>
+   <sect3 xml:id="storage-tips-ceph-btrfs-subvol-req-existing">
+    <title>現有部署</title>
+    <para>
+     如果您已安裝好叢集，則必須符合以下要求：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       已將節點升級至 SUSE Enterprise Storage 6，並且叢集受 DeepSea 的控制。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph 叢集已啟動且正常執行。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       升級程序已將 Salt 和 DeepSea 模組同步到所有 Minion 節點。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage-tips-ceph-btrfs-subvol-automatic">
+   <title>部署新叢集時所需執行的步驟</title>
+   <sect3 xml:id="var-lib-ceph-stage0">
+    <title>執行 DeepSea 階段 0 之前</title>
+    <para>
+     在執行 DeepSea 階段 0 之前，請對將充當 Ceph 監控程式的每個 Salt Minion 套用以下指令：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' saltutil.sync_all
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' state.apply ceph.subvolume
+</screen>
+    <para>
+     <command>ceph.subvolume</command> 指令會執行以下操作：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       建立 <filename>/var/lib ceph</filename>，以做為 <literal>@/var/lib/ceph</literal> Btrfs 子磁碟區。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       掛接該新子磁碟區，並相應地更新 <filename>/etc/fstab</filename>。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>DeepSea 階段 3 驗證失敗</title>
+    <para>
+     如果您忘記在執行階段 0 之前執行<xref linkend="var-lib-ceph-stage0"/>所述的指令，而 <filename>/var/lib/ceph</filename> 子目錄已存在，則 DeepSea stage 3 驗證會失敗。若要將該子目錄轉換為子磁碟區，請執行以下操作：
+    </para>
+    <procedure>
+     <step>
+      <para>
+       切換到 <filename>/var/lib</filename> 目錄：
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib</screen>
+     </step>
+     <step>
+      <para>
+       備份 <filename>ceph</filename> 子目錄的目前內容：
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>sudo mv ceph ceph-</screen>
+     </step>
+     <step>
+      <para>
+       建立並掛接子磁碟區，然後更新 <filename>/etc/fstab</filename>：
+      </para>
+<screen><prompt>root@master # </prompt>salt 'MONITOR_NODES' state.apply ceph.subvolume</screen>
+     </step>
+     <step>
+      <para>
+       切換到備份子目錄，將其內容與新子磁碟區進行同步，然後將其移除：
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="btrfs-subvol-upgrades">
+   <title>升級叢集時所需執行的步驟</title>
+   <para>
+    在 SUSE Enterprise Storage 5.5 上，<filename>/var</filename> 目錄不在 Btrfs 子磁碟區上，但其子資料夾 (例如 <filename>/var/log</filename> 或 <filename>/var/cache</filename>) 是「@」下的 Btrfs 子磁碟區。建立 <filename>@/var/lib/ceph</filename> 子磁碟區需要先掛接「@」子磁碟區 (預設未掛接)，然後在其下建立 <filename>@/var/lib/ceph</filename> 子磁碟區。
+   </para>
+   <para>
+    下面的範例指令闡述了該過程：
+   </para>
+<screen>
+<prompt>root # </prompt>mkdir -p /mnt/btrfs
+<prompt>root # </prompt>mount -o subvol=@ <replaceable>ROOT_DEVICE</replaceable> /mnt/btrfs
+<prompt>root # </prompt>btrfs subvolume create /mnt/btrfs/var/lib/ceph
+<prompt>root # </prompt>umount /mnt/btrfs
+</screen>
+   <para>
+    此時，即已建立 <filename>@/var/lib/ceph</filename> 子磁碟區，您可以依<xref linkend="storage-tips-ceph-btrfs-subvol-automatic"/>中所述繼續操作。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-manual">
+   <title>手動安裝</title>
+   <para>
+    在 Ceph 監控程式節點上自動設定 <filename>@/var/lib/ceph</filename> Btrfs 子磁碟區可能並不適用於所有情境。您可以執行以下步驟將您的 <filename>/var/lib/ceph</filename> 目錄移轉至 <filename>@/var/lib/ceph</filename> 子磁碟區：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      終止執行中 Ceph 程序。
+     </para>
+    </step>
+    <step>
+     <para>
+      卸載節點上的 OSD。
+     </para>
+    </step>
+    <step>
+     <para>
+      切換到備份子目錄，將其內容與新子磁碟區進行同步，然後將其移除：
+     </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+    </step>
+    <step>
+     <para>
+      重新掛接 OSD。
+     </para>
+    </step>
+    <step>
+     <para>
+      重新啟動 Ceph 精靈。
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-moreinfo">
+   <title>更多資訊</title>
+   <para>
+    如需手動設定的詳細資訊，請參閱 Salt Master 節點上的 <filename>/srv/salt/ceph/subvolume/README.md</filename> 檔案。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-srv-maint-fds-inc">
+  <title>增加檔案描述子</title>
+
+  <para>
+   對於 OSD 精靈而言，讀取/寫入操作對保持 Ceph 叢集平衡至關重要。這些精靈往往需要同時開啟許多檔案以進行讀取和寫入。在 OS 層級，同時開啟的檔案的最大數量稱為「檔案描述子的最大數量」。
+  </para>
+
+  <para>
+   為防止 OSD 用盡檔案描述子，您可以覆寫 OS 預設值，並在 <filename>/etc/ceph/ceph.conf</filename> 中指定該數量，例如：
+  </para>
+
+<screen>max_open_files = 131072</screen>
+
+  <para>
+   變更 <option>max_open_files</option> 之後，您需要在相關的 Ceph 節點上重新啟動 OSD 服務。
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-admin-integration">
+  <title>與虛擬化軟體整合</title>
+
+  <sect2 xml:id="storage-bp-integration-kvm">
+   <title>在 Ceph 叢集中儲存 KVM 磁碟</title>
+   <para>
+    您可為 KVM 驅動的虛擬機器建立磁碟影像，將該影像儲存在 Ceph 池中，選擇性地將某個現有影像的內容轉換到該影像，然後使用 <command>qemu-kvm</command> 執行虛擬機器，以利用叢集中儲存的磁碟影像。如需詳細資訊，請參閱<xref linkend="cha-ceph-kvm"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-libvirt">
+   <title>在 Ceph 叢集中儲存 <systemitem class="library">libvirt</systemitem> 磁碟</title>
+   <para>
+    與 KVM (請參閱<xref linkend="storage-bp-integration-kvm"/>) 類似，您可以使用 Ceph 來儲存 <systemitem class="library">libvirt</systemitem> 驅動的虛擬機器。這樣做的好處是可以執行任何支援 <systemitem class="library">libvirt</systemitem> 的虛擬化解決方案，例如 KVM、Xen 或 LXC。如需詳細資訊，請參閱<xref linkend="cha-ceph-libvirt"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-xen">
+   <title>在 Ceph 叢集中儲存 Xen 磁碟</title>
+   <para>
+    使用 Ceph 儲存 Xen 磁碟的方法之一是依<xref linkend="cha-ceph-libvirt"/>所述利用 <systemitem class="library">libvirt</systemitem>。
+   </para>
+   <para>
+    另一種方法是讓 Xen 直接與 <systemitem>rbd</systemitem> 區塊裝置驅動程式通訊：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      如果您尚未為 Xen 準備磁碟影像，請建立一個新影像：
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd create myimage --size 8000 --pool mypool</screen>
+    </step>
+    <step>
+     <para>
+      列出 <literal>mypool</literal> 池中的影像，並檢查您的新影像是否在該池中：
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd list mypool</screen>
+    </step>
+    <step>
+     <para>
+      透過將 <literal>myimage</literal> 影像對應至 <systemitem>rbd</systemitem> 核心模組來建立一個新區塊裝置：
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool mypool myimage</screen>
+     <tip>
+      <title>使用者名稱和驗證</title>
+      <para>
+       若要指定使用者名稱，請使用 <option>--id <replaceable>user-name</replaceable></option>。此外，如果您使用了 <systemitem>cephx</systemitem> 驗證，則還必須指定機密。該機密可能來自金鑰圈，或某個包含機密的檔案：
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+      <para>
+       或
+      </para>
+<screen><systemitem class="username">cephadm</systemitem>rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      列出所有對應的裝置：
+     </para>
+<screen><command>rbd showmapped</command>
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    </step>
+    <step>
+     <para>
+      現在，您可以將 Xen 設定為使用此裝置做為執行虛擬機器所用的磁碟。例如，可將下行新增至 <command>xl</command> 樣式的網域組態檔案：
+     </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-net-firewall">
+  <title>Ceph 的防火牆設定</title>
+
+  <warning>
+   <title>使用防火牆時，DeepSea 階段失敗</title>
+   <para>
+    當防火牆處於使用中狀態 (甚至只是設定了防火牆) 時，DeepSea 部署階段會失敗。若要正確完成該階段，需要執行以下指令關閉防火牆
+   </para>
+<screen>
+<prompt>root # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+   <para>
+    或在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 中將 <option>FAIL_ON_WARNING</option> 選項設為「False」：
+   </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+  </warning>
+
+  <para>
+   建議使用 SUSE 防火牆來保護網路叢集通訊。您可以透過選取 <menuchoice><guimenu>YaST</guimenu><guimenu>安全性和使用者</guimenu><guimenu>防火牆</guimenu><guimenu>允許的服務</guimenu></menuchoice>，來編輯防火牆的組態。
+  </para>
+
+  <para>
+   下面列出了 Ceph 相關服務以及這些服務通常使用的連接埠號碼：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>Ceph 監控程式</term>
+    <listitem>
+     <para>
+      啟用 <guimenu>Ceph MON</guimenu> 服務或連接埠 6789 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Ceph OSD 或中繼資料伺服器</term>
+    <listitem>
+     <para>
+      啟用 <guimenu>Ceph OSD/MDS</guimenu> 服務或連接埠 6800-7300 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>iSCSI 閘道</term>
+    <listitem>
+     <para>
+      開啟連接埠 3260 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>物件閘道</term>
+    <listitem>
+     <para>
+      開啟物件閘道通訊所用的連接埠。可在 <filename>/etc/ceph.conf</filename> 內以 <literal>rgw frontends =</literal> 開頭的行中設定此連接埠。HTTP 的預設連接埠為 80，HTTPS (TCP) 的預設連接埠為 443。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NFS Ganesha</term>
+    <listitem>
+     <para>
+      依預設，NFS Ganesha 使用連接埠 2049 (NFS 服務、TCP) 和 875 (rquota 支援、TCP)。如需變更預設 NFS Ganesha 連接埠的詳細資訊，請參閱<xref linkend="ganesha-nfsport"/>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>以 Apache 為基礎的服務 (例如 SMT) 或 SUSE Manager</term>
+    <listitem>
+     <para>
+      開啟用於 HTTP 的連接埠 80，用於 HTTPS (TCP) 的連接埠 443。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>SSH</term>
+    <listitem>
+     <para>
+      開啟連接埠 22 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NTP</term>
+    <listitem>
+     <para>
+      開啟連接埠 123 (UDP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Salt</term>
+    <listitem>
+     <para>
+      開啟連接埠 4505 和 4506 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Grafana</term>
+    <listitem>
+     <para>
+      開啟連接埠 3000 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Prometheus</term>
+    <listitem>
+     <para>
+      開啟連接埠 9100 (TCP)。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="storage-bp-network-test">
+  <title>測試網路效能</title>
+
+  <para>
+   為方便測試網路效能，DeepSea 的 <literal>net</literal> 執行程式提供了以下指令：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     向所有節點發出簡單的 ping：
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.ping
+Succeeded: 9 addresses from 9 minions average rtt 1.35 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     向所有節點發出大規模的 ping：
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.jumbo_ping
+Succeeded: 9 addresses from 9 minions average rtt 2.13 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     頻寬測試：
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.iperf
+Fastest 2 hosts:
+    |_
+      - 192.168.58.106
+      - 2981 Mbits/sec
+    |_
+      - 192.168.58.107
+      - 2967 Mbits/sec
+Slowest 2 hosts:
+    |_
+      - 192.168.58.102
+      - 2857 Mbits/sec
+    |_
+      - 192.168.58.103
+      - 2842 Mbits/sec</screen>
+    <tip>
+     <title>手動停止「iperf3」程序</title>
+     <para>
+      使用 <command>net.iperf</command> 執行程式執行測試時，所啟動的「iperf3」伺服器程序不會在測試完成時自動停止。若要停止這些程序，請使用以下執行程式：
+     </para>
+<screen><prompt>root@master # </prompt>salt '*' multi.kill_iperf_cmd</screen>
+    </tip>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="bp-flash-led-lights">
+  <title>如何尋找使用 LED 燈的實體磁碟</title>
+
+  <para>
+   本節介紹如何使用 <systemitem>libstoragemgmt</systemitem> 和/或協力廠商工具調整實體磁碟上的 LED 燈。可能並非所有硬體平台都支援此功能。
+  </para>
+
+  <para>
+   將 OSD 磁碟與實體磁碟保持相符是項困難的工作，對磁碟密度較高的節點來說尤為如此。在一些具有 LED 燈的硬體環境中，可使用軟體調整 LED 燈，使其以不同的色彩閃爍或發光，從而達到方便識別的目的。SUSE Enterprise Storage 透過 Salt、<systemitem>libstoragemgmt</systemitem> 和特定於所用硬體的協力廠商工具來提供此功能支援。可在 <filename>/srv/pillar/ceph/disk_led.sls</filename> Salt Pillar 中定義此功能的組態：
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+# This is the default configuration for the storage enclosure LED blinking.
+# The placeholder {device_file} will be replaced with the device file of
+# the disk when the command is executed.
+#
+# Have a look into the /srv/pillar/ceph/README file to find out how to
+# customize this configuration per minion/host.
+
+disk_led:
+  cmd:
+    ident:
+      'on': lsmcli local-disk-ident-led-on --path '{device_file}'
+      'off': lsmcli local-disk-ident-led-off --path '{device_file}'
+    fault:
+      'on': lsmcli local-disk-fault-led-on --path '{device_file}'
+      'off': lsmcli local-disk-fault-led-off --path '{device_file}'</screen>
+
+  <para>
+   <filename>disk_led.sls</filename> 的預設組態透過 <systemitem>libstoragemgmt</systemitem> 層來提供 LED 支援。但 <systemitem>libstoragemgmt</systemitem> 是透過特定於硬體的外掛程式和協力廠商工具來提供此支援的。因此，除非已安裝適用於硬體的 <systemitem>libstoragemgmt</systemitem> 外掛程式和協力廠商工具，否則 <systemitem>libstoragemgmt</systemitem> 將無法調整 LED。
+  </para>
+
+  <para>
+   不論是否安裝了 <systemitem>libstoragemgmt</systemitem>，可能都需要透過協力廠商工具來調整 LED 燈。眾多硬體廠商都提供此類協力廠商工具。下面是一些常見的廠商和工具：
+  </para>
+
+  <table>
+   <title>協力廠商儲存工具</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>廠商/磁碟控制卡</entry>
+      <entry>工具</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>HPE SmartArray</entry>
+      <entry>hpssacli</entry>
+     </row>
+     <row>
+      <entry>LSI MegaRAID</entry>
+      <entry>storcli</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   SUSE Linux Enterprise Server 還提供了 <package>ledmon</package> 套件和 <command>ledctl</command> 工具。此工具可能還適用於使用 Intel 儲存機箱的硬體環境。使用此工具的正確語法如下所示：
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'
+    fault:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'</screen>
+
+  <para>
+   如果您使用的是已安裝所有必需協力廠商工具的受支援硬體，則可以在 Salt Master 節點上使用以下指令語法來啟用或停用 LED：
+  </para>
+
+<screen>
+<prompt>root # </prompt>salt-run disk_led.device <replaceable>NODE</replaceable> <replaceable>DISK</replaceable> <replaceable>fault|ident</replaceable> <replaceable>on|off</replaceable>
+</screen>
+
+  <para>
+   例如，若要針對 OSD 節點 <filename>srv16.ceph</filename> 上的 <filename>/dev/sdd</filename> 啟用或停用 LED 識別或故障燈，請執行以下指令：
+  </para>
+
+<screen><prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident off
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault off</screen>
+
+  <note>
+   <title>裝置命名</title>
+   <para>
+    在 <command>salt-run</command> 指令中使用的裝置名稱需要與 Salt 所辨識的名稱相符。您可使用以下指令來顯示這些名稱：
+   </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>minion_name</replaceable>' grains.get disks
+</screen>
+  </note>
+
+  <para>
+   在許多環境中，為了調整 LED 燈以符合特定的硬體需求，需要對 <filename>/srv/pillar/ceph/disk_led.sls</filename> 組態進行變更。透過以其他工具取代 <command>lsmcli</command> 或調整指令行參數，可以進行簡單的變更。若要實現複雜的變更，則可能需要呼叫外部程序檔，而非使用 <filename>lsmcli</filename> 指令。對 <filename>/srv/pillar/ceph/disk_led.sls</filename> 進行任何變更時，均需執行以下步驟：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     對 Salt Master 節點上的 <filename>/srv/pillar/ceph/disk_led.sls</filename> 進行所需變更。
+    </para>
+   </step>
+   <step>
+    <para>
+     驗證 Pillar 資料中是否正確反映了這些變更：
+    </para>
+<screen><prompt>root # </prompt>salt '<replaceable>SALT MASTER</replaceable>*' pillar.get disk_led</screen>
+   </step>
+   <step>
+    <para>
+     使用以下指令重新整理所有節點上的 Pillar 資料：
+    </para>
+<screen><prompt>root # </prompt>salt '*' saltutil.pillar_refresh</screen>
+   </step>
+  </procedure>
+
+  <para>
+   您可以透過外部程序檔直接使用協力廠商工具來調整 LED 燈。下面提供了介紹如何調整 <filename>/srv/pillar/ceph/disk_led.sls</filename> 以支援外部程序檔的範例，以及分別適用於 HP 和 LSI 環境的兩個範例程序檔。
+  </para>
+
+  <para>
+   修改過的 <filename>/srv/pillar/ceph/disk_led.sls</filename>，其中呼叫了外部程序檔：
+  </para>
+
+<screen><prompt>root # </prompt>cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off
+    fault:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off</screen>
+
+  <para>
+   使用 <systemitem>hpssacli</systemitem> 公用程式在 HP 硬體上閃爍 LED 燈的範例程序檔：
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_hp.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+FOUND=0
+MAX_CTRLS=10
+MAX_DISKS=50
+
+for i in $(seq 0 $MAX_CTRLS); do
+  # Search for valid controllers
+  if hpssacli ctrl slot=$i show summary &gt;/dev/null; then
+    # Search all disks on the current controller
+    for j in $(seq 0 $MAX_DISKS); do
+      if hpssacli ctrl slot=$i ld $j show | grep -q $1; then
+        FOUND=1
+        echo "Found $1 on ctrl=$i, ld=$j. Turning LED $2."
+        hpssacli ctrl slot=$i ld $j modify led=$2
+        break;
+      fi
+    done
+    [[ "$FOUND" = "1" ]] &amp;&amp; break
+  fi
+done</screen>
+
+  <para>
+   使用 <systemitem>storcli</systemitem> 公用程式在 LSI 硬體上閃爍 LED 燈的範例程序檔：
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_lsi.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+[[ "$2" = "on" ]] &amp;&amp; ACTION="start" || ACTION="stop"
+
+# Determine serial number for the disk
+SERIAL=$(lshw -class disk | grep -A2 $1 | grep serial | awk '{print $NF}')
+if [ ! -z "$SERIAL" ]; then
+  # Search for disk serial number across all controllers and enclosures
+  DEVICE=$(/opt/MegaRAID/storcli/storcli64 /call/eall/sall show all | grep -B6 $SERIAL | grep Drive | awk '{print $2}')
+  if [ ! -z "$DEVICE" ]; then
+    echo "Found $1 on device $DEVICE. Turning LED $2."
+    /opt/MegaRAID/storcli/storcli64 $DEVICE $ACTION locate
+  else
+    echo "Device not found!"
+    exit -1
+  fi
+else
+  echo "Disk serial number not found!"
+  exit -1
+fi</screen>
+ </sect1>
+</chapter>

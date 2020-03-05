@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="lvmcache.xml" version="5.0" xml:id="lvmcache">
+
+ <title>使用 LVM 快取提升效能</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>編輯</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <warning>
+  <title>技術預覽</title>
+  <para>
+   LVM 快取目前為技術預覽功能。
+  </para>
+ </warning>
+ <para>
+  LVM 快取是一種用於提升邏輯磁碟區 (LV) 效能的快取機制。通常會使用較小較快的裝置來提升較大較慢的 LV 的 I/O 效能。請參閱其手冊頁 (<command>man 7 lvmcache</command>) 來瞭解有關 LVM 快取的更多詳細資料。
+ </para>
+ <para>
+  在 SUSE Enterprise Storage 中，LVM 快取可提升 OSD 的效能。透過 <command>ceph-volume</command> 外掛程式來提供 LVM 快取支援。您可以執行 <command>ceph-volume lvmcache</command> 來瞭解有關其用法的詳細資訊。
+ </para>
+ <sect1 xml:id="lvmcache-prerequisites">
+  <title>先決條件</title>
+
+  <para>
+   若要使用 LVM 快取功能來提升 Ceph 叢集的效能，您需要有以下資源：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     處於穩定狀態 (「HEALTH_OK」) 的執行中 Ceph 叢集。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     已部署 BlueStore 和 LVM 的 OSD。如果使用 SUSE Enterprise Storage 6 或更新版本部署 OSD，則預設會為 OSD 部署這兩項。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     用於快取的空磁碟或分割區。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-planning">
+  <title>需考量的要點</title>
+
+  <para>
+   在將 OSD 設定為使用 LVM 快取之前，請注意以下事項：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis role="bold">確認 LVM 快取適合您的使用案例。</emphasis>如果您只有幾個<emphasis role="bold">不</emphasis>用於 OSD 的快速磁碟機，一般建議將它們用做 OSD 的 WAL/DB 裝置。在此情況下，系統會在快速磁碟機上套用 WAL 和 DB 操作 (較小且很少發生的操作)，而在慢速 OSD 磁碟機上套用資料操作。
+    </para>
+    <tip>
+     <para>
+      如果對您的部署而言，降低延遲比提升 IOPS 或輸送量更重要，則您可將快速磁碟機用做 LVM 快取而非 WAL/DB 分割區。
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     如果您計劃將快速磁碟機用做多個 OSD 的 LVM 快取，請注意，<emphasis role="bold">所有 OSD 操作 (包括複製) 都將經過快取裝置</emphasis>。所有讀取的查詢操作都將從快取裝置進行，僅當在快取中未尋找到目標時才會從慢速裝置查詢。寫入一律先套用於快取裝置，稍後才會衝洗至慢速裝置 (預設的快取模式為「writeback」)。
+    </para>
+    <para>
+     在決定是否要使用 LVM 快取時，請確認快速磁碟機在充當多個 OSD 的前端的同時，是否仍能提供可接受的 IOPS 量。您可以透過下面的方法來測試：先測量快速裝置可提供的最大 IOPS 量，然後將所得結果除以快速裝置後面的 OSD 數量。如果結果低於或接近 OSD 在不使用快取的情況下可提供的最大 IOPS 量，則 LVM 快取很可能不適用於此設定。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">LVM 快取裝置與 OSD 的互動十分重要。</emphasis>系統會定期將寫入從快取裝置衝洗至慢速裝置。如果內送流量持續進入且數量很大，快取裝置會努力跟上內送要求及衝洗程序的速度，因而會導致效能下降。除非快速裝置能夠比慢速裝置提供高得多的 IOPS 且延遲更低，否則請勿對持續的大容量工作負載使用 LVM 快取。高載模式的流量更適合 LVM 快取，因為這種模式會給快取留出衝洗改動資料的時間，且不會干擾用戶端流量。對於持續的低流量工作負載，很難提前預估使用 LVM 快取是否能提升效能。最佳測試方法是對照 WAL/DB 設定確定 LVM 快取設定的基準，並將兩種設定進行比較。此外，由於 WAL 分割區上的較小寫入非常多，建議將快速裝置用於 DB 和/或 WAL，而非 LVM 快取。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果您不確定是否應使用 LVM 快取，請將快速裝置用做 WAL 和/或 DB 裝置。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-preparation">
+  <title>準備</title>
+
+  <para>
+   您需要將快速裝置分割成多個分割區。每個 OSD 需要有兩個快取分割區，一個用於快取資料，另一個用於快取中繼資料。每個分割區的最小大小為 2 GB。您可以使用單個快速裝置來快取多個 OSD。只需對其進行相應的磁碟分割即可。
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-configuring">
+  <title>設定 LVM 快取</title>
+
+  <para>
+   若要瞭解有關新增、移除和設定 LVM 快取的詳細資訊，請執行 <command>ceph-volume lvmcache</command> 指令。
+  </para>
+
+  <sect2 xml:id="lvmcache-adding">
+   <title>新增 LVM 快取</title>
+   <para>
+    若要新增 LVM 快取至現有 OSD，請使用以下指令：
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache add
+ --cachemetadata <replaceable>METADATA-PARTITION</replaceable>
+ --cachedata <replaceable>DATA-PARTITION</replaceable>
+ --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    選擇性的 <option>--data</option>、<option>--db</option> 或 <option>--wal</option> 用於指定要快取的分割區。預設為 <option>--data</option>。
+   </para>
+   <tip>
+    <title>指定邏輯磁碟區 (LV)</title>
+    <para>
+     或者，您可以使用 <option>--origin</option> 而非 <option>--osd-id</option> 選項來指定要快取的 LV：
+    </para>
+<screen>
+[...]
+--origin <replaceable>VOLUME-GROUP</replaceable>/<replaceable>LOGICAL-VOLUME</replaceable>
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-removing">
+   <title>移除 LVM 快取</title>
+   <para>
+    若要從 OSD 中移除現有 LVM 快取，請使用以下指令：
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache rm --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-mode">
+   <title>設定 LVM 快取模式</title>
+   <para>
+    若要指定快取模式，請使用以下指令：
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache mode --set <replaceable>CACHING-MODE</replaceable> --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    <replaceable>CACHING-MODE</replaceable> 為「writeback」(預設值) 或「writethrough」
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="lvmcache-failures">
+  <title>處理故障</title>
+
+  <para>
+   如果快取裝置發生故障，則需要從叢集中移除快取裝置後面的所有 OSD (請參閱<xref linkend="salt-removing-osd"/>)、將它們清除，然後重新部署。如果 OSD 磁碟機發生故障，雖然 OSD 的 LV 及其快取的 LV 將會處於使用中狀態，但卻無法運作。使用 <command>pvremove <replaceable>PARTITION</replaceable></command> 可清除用於 OSD 快取資料和中繼資料分割區的分割區 (實體磁碟區)。您可以使用 <command>pvs</command> 列出所有實體磁碟區。
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-faq">
+  <title>常見問答集</title>
+
+  <qandaset>
+   <qandaentry>
+    <question>
+     <para>
+      如果移除 OSD，會發生什麼情況？
+     </para>
+    </question>
+    <answer>
+     <para>
+      使用 <command>lvremove</command> 移除 OSD 的 LV 時，會一併移除快取 LV。不過，您仍需要在分割區上呼叫 <command>pvremove</command>，以確定已抹除所有標籤。
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      如果使用 <command>ceph-volume zap</command> 清除 OSD，會發生什麼情況？
+     </para>
+    </question>
+    <answer>
+     <para>
+      此問題的答案與<emphasis role="bold">如果移除 OSD，會發生什麼情況？</emphasis>問題的答案相同。
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      如果原始磁碟機出現故障，會發生什麼情況？
+     </para>
+    </question>
+    <answer>
+     <para>
+      快取 LV 仍存在，並且 <command>cache info</command> 仍會將它們顯示為可用狀態。您將無法取消快取，因為 LVM 會由於原始 LV 的裝置已不存在而無法衝洗快取。現在的情況是原始 LV 存在，但其後備裝置不存在。您可以透過使用 <command>pvs</command> 指令並找到與原始 LV 相關聯的裝置來修復此問題。然後，便可以使用以下指令將它們移除：
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo pvremove /dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      您可對快取分割區執行相同操作。此程序將會使原始 LV 以及快取 LV 消失。您也可以使用
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo dd if=/dev/zero of=/dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      將它們抹除，然後再使用 <command>pvremove</command>。
+     </para>
+    </answer>
+   </qandaentry>
+  </qandaset>
+ </sect1>
+</chapter>

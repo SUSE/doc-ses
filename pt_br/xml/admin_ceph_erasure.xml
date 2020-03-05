@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_erasure.xml" version="5.0" xml:id="cha-ceph-erasure">
+ <title>Pools com codificação de eliminação</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>editando</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes (sim)</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  O Ceph oferece uma alternativa à replicação normal de dados em pools conhecidos como <emphasis>de eliminação</emphasis> ou <emphasis>com codificação de eliminação</emphasis>. Os pools de eliminação não oferecem todas as funcionalidades que os pools <emphasis>replicados</emphasis> (por exemplo, eles não podem armazenar metadados para pools RBD), mas exigem menos armazenamento bruto. Um pool de eliminação padrão capaz de armazenar 1 TB de dados requer 1,5 TB de armazenamento bruto, o que permite a falha de um único disco. Isso equivale a um pool replicado que precisa de 2 TB de armazenamento bruto para a mesma finalidade.
+ </para>
+ <para>
+  Para obter informações sobre a Codificação de Eliminação, visite <link xlink:href="https://en.wikipedia.org/wiki/Erasure_code"/>.
+ </para>
+ <note>
+  <para>
+   Ao usar o FileStore, você não pode acessar pools com codificação de eliminação pela interface do RBD, a menos que você tenha uma camada de cache configurada. Consulte a <xref linkend="ceph-tier-erasure"/> para obter mais detalhes ou use o BlueStore padrão (consulte o <xref linkend="about-bluestore"/>).
+  </para>
+ </note>
+ <sect1 xml:id="ec-prerequisite">
+  <title>Pré-requisito para pools com codificação de eliminação</title>
+
+  <para>
+   Para usar a codificação de eliminação, você precisa:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Definir uma regra de eliminação no Mapa CRUSH.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Definir um perfil de codificação de eliminação que especifica o algoritmo de codificação a ser usado.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Criar um pool usando a regra e o perfil mencionados anteriormente.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Lembre-se de que a modificação do perfil e dos detalhes no perfil não será possível depois que o pool for criado e tiver dados.
+  </para>
+
+  <para>
+   Verifique se as regras CRUSH para os <emphasis>pools de eliminação</emphasis> usam <literal>indep</literal> para <literal>step</literal>. Para saber os detalhes, consulte a <xref linkend="datamgm-rules-step-mode"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-default-profile">
+  <title>Criando um pool com codificação de eliminação de exemplo</title>
+
+  <para>
+   O pool com codificação de eliminação mais simples é equivalente ao RAID5 e requer pelo menos três hosts. Este procedimento descreve como criar um pool para fins de teste.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     O comando <command>ceph osd pool create</command> é usado para criar um pool do tipo de <emphasis>eliminação</emphasis>. <literal>12</literal> representa o número de grupos de posicionamento. Com os parâmetros padrão, o pool é capaz de resolver a falha de um OSD.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure
+pool 'ecpool' created</screen>
+   </step>
+   <step>
+    <para>
+     A string <literal>ABCDEFGHI</literal> é gravada em um objeto denominado <literal>NYAN</literal>.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -</screen>
+   </step>
+   <step>
+    <para>
+     Para fins de teste, os OSDs agora podem ser desabilitados. Por exemplo, desconecte-os da rede.
+    </para>
+   </step>
+   <step>
+    <para>
+     Para testar se o pool é capaz de resolver a falha de dispositivos, o conteúdo do arquivo pode ser acessado com o comando <command>rados</command>.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-erasure-profiles">
+  <title>Perfis de codificação de eliminação</title>
+
+  <para>
+   Quando o comando <command>ceph osd pool create</command> é invocado para criar um <emphasis>pool de eliminação</emphasis>, o perfil padrão é usado, a menos que outro perfil seja especificado. Os perfis definem a redundância dos dados. Para fazer isso, defina dois parâmetros denominados aleatoriamente <literal>k</literal> e <literal>m</literal>. k e m definem em quantos <literal>pacotes</literal> os dados são divididos e quantos pacotes de codificação são criados. Em seguida, os pacotes redundantes são armazenados em OSDs diferentes.
+  </para>
+
+  <para>
+   Definições necessárias para perfis de pool de eliminação:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>chunk</term>
+    <listitem>
+     <para>
+      quando a função de codificação é chamada, ela retorna pacotes do mesmo tamanho: pacotes de dados que podem ser concatenados para reconstruir o objeto original e pacotes de codificação que podem ser usados para reconstruir um pacote perdido.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>k</term>
+    <listitem>
+     <para>
+      o número de pacotes de dados, que é o número de pacotes em que objeto original é dividido. Por exemplo, se <literal>k = 2</literal>, um objeto de 10 kB será dividido em <literal>k</literal> objetos de 5 kB cada um. O <literal>min_size</literal> padrão nos pools com codificação de eliminação é <literal>k + 1</literal>. No entanto, recomendamos que o <literal>min_size</literal> seja no mínimo <literal>k + 2</literal> para evitar perda de gravações e dados.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>m</term>
+    <listitem>
+     <para>
+      o número de pacotes de codificação, que é o número de pacotes adicionais calculado pelas funções de codificação. Se houver 2 pacotes de codificação, isso significa que 2 OSDs poderão ser eliminados sem perda de dados.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>crush-failure-domain</term>
+    <listitem>
+     <para>
+      define para quais dispositivos os pacotes são distribuídos. Um tipo de compartimento de memória precisa ser definido como valor. Para todos os tipos de compartimento de memória, consulte a <xref linkend="datamgm-buckets"/>. Se o domínio de falha for <literal>rack</literal>, os pacotes serão armazenados em racks diferentes para aumentar a resiliência em caso de falhas no rack. Observe que isso exige k+m racks.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   Com o perfil de codificação de eliminação padrão usado na <xref linkend="cha-ceph-erasure-default-profile"/>, você não perderá os dados do cluster se houver falha em um único OSD ou host. Dessa forma, para armazenar 1 TB de dados, ele precisa de mais 0,5 TB de armazenamento bruto. Isso significa que 1,5 TB de armazenamento bruto é necessário para 1 TB de dados (porque k=2, m=1). Isso equivale a uma configuração RAID 5 comum. Para comparação, um pool replicado precisa de 2 TB de armazenamento bruto para armazenar 1 TB de dados.
+  </para>
+
+  <para>
+   As configurações do perfil padrão podem ser exibidas com:
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd erasure-code-profile get default
+directory=.libs
+k=2
+m=1
+plugin=jerasure
+crush-failure-domain=host
+technique=reed_sol_van</screen>
+
+  <para>
+   A escolha do perfil correto é importante, porque ele não poderá ser modificado após a criação do pool. Um novo pool com um perfil diferente precisa ser criado, e todos os objetos do pool anterior precisam ser movidos para o novo (consulte a <xref linkend="pools-migration"/>).
+  </para>
+
+  <para>
+   Os parâmetros mais importantes do perfil são <literal>k</literal>, <literal>m</literal> e <literal>crush-failure-domain</literal> porque definem o overhead de armazenamento e a durabilidade dos dados. Por exemplo, se a arquitetura desejada tiver que sustentar a perda de dois racks com um overhead de armazenamento de 66%, o seguinte perfil poderá ser definido. Observe que isso é válido apenas com um Mapa CRUSH que tenha compartimentos de memória do tipo “rack”:
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
+   k=3 \
+   m=2 \
+   crush-failure-domain=rack</screen>
+
+  <para>
+   O exemplo na <xref linkend="cha-ceph-erasure-default-profile"/> pode ser repetido com este novo perfil:
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
+<prompt>cephadm@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
+<prompt>cephadm@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+
+  <para>
+   O objeto NYAN será dividido em três (<literal>k=3</literal>), e dois pacotes adicionais serão criados (<literal>m=2</literal>). O valor de <literal>m</literal> define quantos OSDs podem ser perdidos simultaneamente sem nenhuma perda de dados. O <literal>crush-failure-domain=rack</literal> criará um conjunto de regras CRUSH para garantir que dois pacotes não sejam armazenados no mesmo rack.
+  </para>
+
+  <informalfigure>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="ceph_erasure_obj.png" width="80%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="ceph_erasure_obj.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </informalfigure>
+
+  <sect2 xml:id="ec-create">
+   <title>Criando um novo perfil de codificação de eliminação</title>
+   <para>
+    O comando a seguir cria um novo perfil de codificação de eliminação:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile set <replaceable>NAME</replaceable> \
+ directory=<replaceable>DIRECTORY</replaceable> \
+ plugin=<replaceable>PLUGIN</replaceable> \
+ stripe_unit=<replaceable>STRIPE_UNIT</replaceable> \
+ <replaceable>KEY</replaceable>=<replaceable>VALUE</replaceable> ... \
+ --force
+</screen>
+   <variablelist>
+    <varlistentry>
+     <term>DIRECTORY</term>
+     <listitem>
+      <para>
+       Opcional. Defina o nome do diretório do qual o plug-in de codificação de eliminação é carregado. O padrão é <filename>/usr/lib/ceph/erasure-code</filename>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>PLUGIN</term>
+     <listitem>
+      <para>
+       Opcional. Use o plug-in de codificação de eliminação para calcular blocos de codificação e recuperar blocos ausentes. Os plug-ins disponíveis são “jerasure”, “isa”, “lrc” e “shes”. O padrão é “jerasure”.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>STRIPE_UNIT</term>
+     <listitem>
+      <para>
+       Opcional. A quantidade de dados em um pacote, por distribuição. Por exemplo, um perfil com 2 pacotes de dados e stripe_unit=4K coloca a faixa 0-4K no pacote 0, 4K-8K no pacote 1 e 8K-12K no pacote 0 novamente. Esse valor deve ser um múltiplo de 4K para obter o melhor desempenho. O valor padrão é extraído da opção de configuração do monitor <option>osd_pool_erasure_code_stripe_unit</option> quando um pool é criado. O "stripe_width" de um pool que usa este perfil será o número de pacotes de dados multiplicado por esta "stripe_unit".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>KEY=VALUE</term>
+     <listitem>
+      <para>
+       Os pares de chave/valor das opções específicas ao plug-in de codificação de eliminação selecionado.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>--force</term>
+     <listitem>
+      <para>
+       Opcional. Substitua um perfil existente pelo mesmo nome e permita definir uma stripe_unit sem alinhamento de 4K.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ec-rm">
+   <title>Removendo um perfil de codificação de eliminação</title>
+   <para>
+    O comando a seguir remove um perfil de codificação de eliminação conforme identificado por seu <replaceable>NAME</replaceable>:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile rm <replaceable>NAME</replaceable>
+</screen>
+   <important>
+    <para>
+     Se o perfil for referenciado por um pool, haverá falha na exclusão.
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="ec-get">
+   <title>Exibindo detalhes do perfil de codificação de eliminação</title>
+   <para>
+    O comando a seguir exibe os detalhes de um perfil de codificação de eliminação conforme identificado por seu <replaceable>NAME</replaceable>:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile get <replaceable>NAME</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="ec-ls">
+   <title>Listando perfis de codificação de eliminação</title>
+   <para>
+    O comando a seguir lista os nomes de todos os perfis de codificação de eliminação:
+   </para>
+<screen>
+<prompt>root # </prompt>ceph osd erasure-code-profile ls
+</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ec-rbd">
+  <title>Pools com codificação de eliminação com dispositivo de blocos RADOS</title>
+
+  <para>
+   Para marcar um pool EC como pool RBD, sinalize-o de acordo:
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool application enable rbd <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   O RBD pode armazenar <emphasis>dados</emphasis> da imagem em pools EC. No entanto, o cabeçalho e os metadados da imagem ainda precisam ser armazenados em um pool replicado. Considerando que você tem um pool chamado “rbd” para esta finalidade:
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd create rbd/<replaceable>image_name</replaceable> --size 1T --data-pool <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   Você pode usar a imagem normalmente, como qualquer outra, com exceção de que todos os dados serão armazenados no pool <replaceable>ec_pool_name</replaceable> em vez do “rbd”.
+  </para>
+ </sect1>
+</chapter>

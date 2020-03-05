@@ -1,0 +1,1843 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_install_salt.xml" version="5.0" xml:id="ceph-install-saltstack">
+ <title>使用 DeepSea/Salt 部署</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Salt 连同 DeepSea 是一个组件<emphasis>堆栈</emphasis>，可帮助您部署和管理服务器基础架构。Salt 具有很高的可缩放性，速度快，且相对容易运行。在开始使用 Salt 部署集群之前，请阅读以下注意事项：
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    <emphasis>Salt Minion</emphasis> 是由一个称为 Salt Master 的专用节点控制的节点。Salt Minion 具有角色，例如 Ceph OSD、Ceph Monitor、Ceph Manager、对象网关、iSCSI 网关或 NFS Ganesha。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Salt Master 运行自己的 Salt Minion。运行特权任务（例如，创建、授权密钥以及将密钥复制到 Minion）需要 Salt Master，这样，远程 Minion 就永远不需要运行特权任务。
+   </para>
+   <tip>
+    <title>每台服务器共享多个角色</title>
+    <para>
+     如果将每个角色都部署在一个独立节点上，则 Ceph 集群的性能是最佳的。但实际部署有时会要求多个角色共享一个节点。为避免性能欠佳以及升级过程出现问题，请勿向管理节点部署 Ceph OSD、元数据服务器或 Ceph Monitor 角色。
+    </para>
+   </tip>
+  </listitem>
+  <listitem>
+   <para>
+    Salt Minion 需要能通过网络正确解析 Salt Master 的主机名。默认情况下，Minion 会查找 <systemitem>salt</systemitem> 主机名，但您可以在 <filename>/etc/salt/minion</filename> 文件中指定可通过网络访问的其他任何主机名，具体请参见<xref linkend="ceph-install-stack"/>。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="cha-ceph-install-relnotes">
+  <title>阅读发行说明</title>
+
+  <para>
+   在发行说明中，可以找到有关自 SUSE Enterprise Storage 的上一个版本发行后所进行的更改的其他信息。检查发行说明以了解：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     您的硬件是否有特殊的注意事项。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     所用的任何软件包是否已发生重大更改。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     是否需要对您的安装实施特殊预防措施。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   发行说明还提供未能及时编入手册中的信息。它们还包含有关已知问题的说明。
+  </para>
+
+  <para>
+   安装包 <package>release-notes-ses</package>之后，可在本地的 <filename>/usr/share/doc/release-notes</filename> 目录中或 <link xlink:href="https://www.suse.com/releasenotes/"/> 网页上找到发行说明。
+  </para>
+ </sect1>
+ <sect1 xml:id="deepsea-description">
+  <title>DeepSea 简介</title>
+
+  <para>
+   DeepSea 旨在节省管理员的时间，让他们自信地对 Ceph 集群执行复杂操作。
+  </para>
+
+  <para>
+   Ceph 是一款高度可配置的软件解决方案。它提高了系统管理员的自由度和职责履行能力。
+  </para>
+
+  <para>
+   最低的 Ceph 设置能够很好地满足演示目的，但无法展示 Ceph 在处理大量节点时可体现的卓越功能。
+  </para>
+
+  <para>
+   DeepSea 会收集并存储有关单台服务器的相关数据，例如地址和设备名称。对于诸如 Ceph 的分布式存储系统，可能需要收集并存储数百个这样的项目。收集信息并手动将数据输入到配置管理工具的过程非常耗费精力，并且容易出错。
+  </para>
+
+  <para>
+   准备服务器、收集配置信息以及配置和部署 Ceph 所需执行的步骤大致相同。但是，这种做法无法解决管理独立功能的需求。在日常操作中，必须做到不厌其烦地将硬件添加到给定的功能，以及适当地删除硬件。
+  </para>
+
+  <para>
+   DeepSea 通过以下策略解决了这些需求：DeepSea 可将管理员的多项决策合并到单个文件中。这些决策包括集群指定、角色指定和配置指定。此外，DeepSea 还会收集各组任务以组成一个简单的目标。每个目标就是一个<emphasis>阶段</emphasis>：
+  </para>
+
+  <itemizedlist xml:id="deepsea-stage-description">
+   <title>DeepSea 阶段说明</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 0</emphasis> — <emphasis role="bold">准备</emphasis>：在此阶段，将应用全部所需的更新，并且可能会重引导您的系统。
+    </para>
+    <important>
+     <title>管理节点重引导后重新运行阶段 0</title>
+     <para>
+      如果在阶段 0 运行期间，管理节点进行了重引导以加载新内核版本，则您需要再次运行阶段 0，否则将无法定位 Minion。
+     </para>
+    </important>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 1</emphasis> 即<emphasis role="bold">发现</emphasis>阶段，在此阶段会检测您集群中的所有硬件，并会收集 Ceph 配置的必要信息。有关配置的详细信息，请参见<xref linkend="deepsea-pillar-salt-configuration"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 2</emphasis> — <emphasis role="bold">配置</emphasis>：您需要以特定的格式准备配置数据。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 3</emphasis> — <emphasis role="bold">部署</emphasis>：创建包含必要 Ceph 服务的基本 Ceph 集群。有关必要服务的列表，请参见<xref linkend="storage-intro-core-nodes"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 4</emphasis> — <emphasis role="bold">服务</emphasis>：可在此阶段安装 Ceph 的其他功能，例如 iSCSI、对象网关和 CephFS。其中每个功能都是可选的。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">阶段 5</emphasis> — 删除阶段：此阶段不是必需的，在初始设置期间，通常不需要此阶段。在此阶段，将会删除 Minion 的角色以及集群配置。如果您需要从集群中删除某个存储节点，则需要运行此阶段。有关细节，请参见<xref linkend="salt-node-removing"/>。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+
+
+  <sect2 xml:id="deepsea-organisation-locations">
+   <title>组织和重要位置</title>
+   <para>
+    Salt 在 Master 节点上使用多个标准位置和多个命名约定：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><filename>/srv/pillar</filename></term>
+     <listitem>
+      <para>
+       该目录存储集群 Minion 的配置数据。<emphasis>Pillar</emphasis> 是向所有集群 Minion 提供全局配置值的接口。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/</filename></term>
+     <listitem>
+      <para>
+       该目录存储 Salt 状态文件（也称为 <emphasis>sls</emphasis> 文件）。状态文件是集群应该所处的状态的带格式说明。
+
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/module/runners</filename></term>
+     <listitem>
+      <para>
+       该目录存储称作运行程序的 Python 脚本。运行程序在 Master 节点上执行。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/_modules</filename></term>
+     <listitem>
+      <para>
+       该目录存储称作扩展模块的 Python 脚本。这些扩展模块将应用到集群中的所有 Minion。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/pillar/ceph</filename></term>
+     <listitem>
+      <para>
+       该目录由 DeepSea 使用。收集的配置数据存储在此处。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><filename>/srv/salt/ceph</filename></term>
+     <listitem>
+      <para>
+       DeepSea 使用的目录。其中存储了可采用不同格式的 sls 文件，但 sls 文件包含在各子目录中。每个子目录仅包含一种类型的 sls 文件。例如，<filename>/srv/salt/ceph/stage</filename> 包含 <command>salt-run state.orchestrate</command> 执行的编制文件。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ds-minion-targeting">
+   <title>定位 Minion</title>
+   <para>
+    DeepSea 命令通过 Salt 基础架构执行。使用 <command>salt</command> 命令时，您需要指定一组将受到该命令影响的 Salt Minion。我们将该组 Minion 描述为 <command>salt</command> 命令的<emphasis>目标</emphasis>。以下各节说明定位 Minion 的可行方法。
+   </para>
+   <sect3 xml:id="ds-minion-targeting-name">
+    <title>匹配 Minion 名称</title>
+    <para>
+     您可以通过名称匹配来定位一个或一组 Minion。Minion 的名称通常为运行该 Minion 的节点的短主机名。这是一种常规的 Salt 定位方法，与 DeepSea 无关。您可以使用通配、正则表达式或列表来限制 Minion 名称的范围。遵循的一般语法如下：
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> example.module</screen>
+    <tip>
+     <title>仅 Ceph 集群</title>
+     <para>
+      如果您环境中的所有 Salt Minion 均属于 Ceph 集群，则可以安全地使用 <literal>'*'</literal> 替换 <replaceable>target</replaceable>，以包含<emphasis>所有</emphasis>注册 Minion。
+     </para>
+    </tip>
+    <para>
+     匹配 example.net 域中的所有 Minion（假设 Minion 名称与其“完整”的主机名相同）：
+    </para>
+<screen><prompt>root@master # </prompt>salt '*.example.net' test.ping</screen>
+    <para>
+     将“web1”Minion 与“web5”Minion 匹配：
+    </para>
+<screen><prompt>root@master # </prompt>salt 'web[1-5]' test.ping</screen>
+    <para>
+     使用正则表达式匹配“web1-prod”和“web1-devel”Minion：
+    </para>
+<screen><prompt>root@master # </prompt>salt -E 'web1-(prod|devel)' test.ping</screen>
+    <para>
+     匹配简单的 Minion 列表：
+    </para>
+<screen><prompt>root@master # </prompt>salt -L 'web1,web2,web3' test.ping</screen>
+    <para>
+     匹配集群中的所有 Minion：
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds-minion-targeting-grain">
+    <title>使用 DeepSea 粒度进行定位</title>
+    <para>
+     在受 Salt 管理的异构环境中（SUSE Enterprise Storage 6 与其他集群解决方案一起部署在一部分节点上），运行 DeepSea 阶段 0 之前，您需要通过对相关 Minion 应用“deepsea”粒度来标记它们。这样您便可以在无法通过 Minion 名称匹配的环境中轻松定位 DeepSea Minion。
+    </para>
+    <para>
+     要将“deepse”Grain 应用到一组 Minion，请运行以下命令：
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> grains.append deepsea default</screen>
+    <para>
+     要从一组 Minion 删除“deepse”Grain，请运行以下命令：
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> grains.delval deepsea destructive=True</screen>
+    <para>
+     将“deepsea”Grain 应用到相关 Minion 后，您可以执行以下命令来进行定位：
+    </para>
+<screen><prompt>root@master # </prompt>salt -G 'deepsea:*' test.ping</screen>
+    <para>
+     或执行以下等效命令：
+    </para>
+<screen><prompt>root@master # </prompt>salt -C 'G@deepsea:*' test.ping</screen>
+   </sect3>
+   <sect3 xml:id="ds-minion-targeting-dsminions">
+    <title>设置 <option>deepsea_minions</option> 选项</title>
+    <para>
+     设置 <option>deepsea_minions</option> 选项的目标是 DeepSea 部署所需。在阶段执行期间，DeepSea 会使用该选项指示 Minion（有关详细信息，请参见 <xref linkend="deepsea-stage-description"/>）。
+    </para>
+    <para>
+     要设置或更改 <option>deepsea_minions</option> 选项，请编辑 Salt Master 上的 <filename>/srv/pillar/ceph/deepsea_minions.sls</filename> 文件，添加或替换下行：
+    </para>
+<screen>deepsea_minions: <replaceable>target</replaceable></screen>
+    <tip>
+     <title><option>deepsea_minions</option> 目标</title>
+     <para>
+      对于 <option>deepsea_minions</option> 选项的 <replaceable>target</replaceable>，您可以使用以下任何定位方法：<xref linkend="ds-minion-targeting-name" xrefstyle="select: title"/>和<xref linkend="ds-minion-targeting-grain" xrefstyle="select: title"/>。
+     </para>
+     <para>
+      匹配集群中的所有 Salt Minion：
+     </para>
+<screen>deepsea_minions: '*'</screen>
+     <para>
+      使用“deepsea”Grain 匹配所有 Minion：
+     </para>
+<screen>deepsea_minions: 'G@deepsea:*'</screen>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>更多信息</title>
+    <para>
+     您可以使用 Salt 基础架构以更高级的方式来定位 Minion。您可以通过“deepsea-minions”手册页了解有关 DeepSea 定位的更多详细信息 (<command>man 7 deepsea_minions</command>)。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-install-stack">
+  <title>集群部署</title>
+
+  <para>
+   集群部署过程包括多个阶段。首先，需要通过配置 Salt 来准备集群的所有节点，然后部署并配置 Ceph。
+  </para>
+
+  <tip xml:id="dev-env">
+   <title>在未定义 OSD 配置的情况下部署 Monitor 节点</title>
+   <para>
+    如果您需要跳过定义 OSD 的存储角色（如<xref linkend="policy-role-assignment"/>中所述），先部署 Ceph Monitor 节点，则可以通过设置 <option>DEV_ENV</option> 变量来实现。
+   </para>
+   <para>
+    此设置允许您在 <filename>role-storage/</filename> 目录不存在的情况下部署 Monitor，以及部署至少包含<emphasis>一个</emphasis>存储、Monitor 和 Manager 角色的 Ceph 集群。
+   </para>
+   <para>
+    要设置环境变量，请将其全局启用，方法是在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 文件中进行设置，或者仅针对当前的外壳会话设置：
+   </para>
+<screen><prompt>root@master # </prompt>export DEV_ENV=true</screen>
+   <para>
+    例如，可创建包含以下内容的 <filename>/srv/pillar/ceph/stack/global.yml</filename>：
+   </para>
+<screen>DEV_ENV: <replaceable>True</replaceable></screen>
+  </tip>
+
+  <para>
+   下面详细说明了集群准备过程。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     在集群的每个节点上安装并注册 SUSE Linux Enterprise Server 15 SP1 以及 SUSE Enterprise Storage 6 扩展。
+    </para>
+   </step>
+   <step>
+    <para>
+     列出现有的软件储存库，确认是否已安装并注册正确的产品。运行 <command>zypper lr -E</command> 并将输出与以下列表进行比较：
+    </para>
+<screen>
+ SLE-Product-SLES15-SP1-Pool
+ SLE-Product-SLES15-SP1-Updates
+ SLE-Module-Server-Applications15-SP1-Pool
+ SLE-Module-Server-Applications15-SP1-Updates
+ SLE-Module-Basesystem15-SP1-Pool
+ SLE-Module-Basesystem15-SP1-Updates
+ SUSE-Enterprise-Storage-6-Pool
+ SUSE-Enterprise-Storage-6-Updates
+</screen>
+   </step>
+   <step>
+    <para>
+     在每个节点上配置网络设置，包括正确的 DNS 名称解析。Salt Master 和所有 Salt Minion 需要根据各自的主机名相互解析。有关配置网络的详细信息，请参见 <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/sec_network_yast.html"/>。有关配置 DNS 服务器的详细信息，请参见 <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/cha_dns.html"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     选择一个或多个时间服务器/存储池，并将其与本地时间同步。确认每次系统启动时都会启用时间同步服务。您可以使用 <command>yast ntp-client</command> 命令（在 <package>yast2-ntp-client</package> 包中提供）来配置时间同步。
+    </para>
+    <tip>
+     <para>
+      虚拟机并非可靠的 NTP 源。
+     </para>
+    </tip>
+    <para>
+     在 <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/sec_ntp_yast.html"/> 中可以找到有关设置 NTP 的详细信息。
+    </para>
+   </step>
+   <step>
+    <para>
+     在 Salt Master 节点上安装 <literal>salt-master</literal> 和 <literal>salt-minion</literal> 包：
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master salt-minion</screen>
+    <para>
+     检查 <systemitem>salt-master</systemitem> 服务是否已启用并启动，并根据需要将它启用并启动：
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     如果要使用防火墙，请确认 Salt Master 节点是否为所有 Salt Minion 节点打开了端口 4505 和 4506。如果这些端口处于关闭状态，可以使用 <command>yast2 firewall</command> 命令并通过允许 <guimenu>SaltStack</guimenu> 服务来打开这些端口。
+    </para>
+    <warning>
+     <title>使用防火墙时 DeepSea 阶段失败</title>
+     <para>
+      当防火墙处于工作状态（甚至只是配置了防火墙）时，DeepSea 部署阶段会失败。要正确通过该阶段，需要运行以下命令关闭防火墙
+     </para>
+<screen>
+    <prompt>root # </prompt>systemctl stop firewalld.service
+</screen>
+     <para>
+      或在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 中将 <option>FAIL_ON_WARNING</option> 选项设为“False”：
+     </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+    </warning>
+   </step>
+   <step>
+    <para>
+     在所有 Minion 节点上安装 <literal>salt-minion</literal> 包。
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+    <para>
+     请确保所有其他节点都可将每个节点的<emphasis>完全限定的域名</emphasis>解析为公共网络 IP 地址。
+    </para>
+   </step>
+   <step>
+    <para>
+     将所有 Minion（包括 Master Minion）配置为连接到 Master。如果无法通过主机名 <literal>salt</literal> 访问 Salt Master，请编辑文件 <filename>/etc/salt/minion</filename>，或创建包含以下内容的新文件 <filename>/etc/salt/minion.d/master.conf</filename>：
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     如果对上述配置文件执行了任何更改，请在所有 Salt Minion 上重启动 Salt 服务：
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     检查所有节点上是否已启用并启动 <systemitem>salt-minion</systemitem> 服务。根据需要启用并启动该服务：
+    </para>
+<screen><prompt>root # </prompt>systemctl enable salt-minion.service
+<prompt>root # </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     校验每个 Salt Minion 的指纹，如果指纹匹配，则接受 Salt Master 上的所有 Salt 密钥。
+    </para>
+    <note>
+     <para>
+      如果 Salt Minion 指纹返回空白，请确保 Salt Minion 具有 Salt Master 配置且可与 Salt Master 通讯。
+     </para>
+    </note>
+    <para>
+     查看每个 Minion 的指纹：
+    </para>
+<screen><prompt>root@master # </prompt>salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     收集到所有 Salt Minion 的指纹后，将列出 Salt Master 上所有未接受 Minion 密钥的指纹：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     如果 Minion 的指纹匹配，则接受这些密钥：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     校验是否已接受密钥：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step xml:id="deploy-wiping-disk">
+    <para>
+     在部署 SUSE Enterprise Storage 6 前，手动清除所有磁盘。请记得将“X”替换为正确的盘符：
+    </para>
+    <substeps>
+     <step>
+      <para>
+       停止使用特定磁盘的所有进程。
+      </para>
+     </step>
+     <step>
+      <para>
+       确认磁盘上是否装入任何分区，并视需要进行卸载。
+      </para>
+     </step>
+     <step>
+      <para>
+       如果磁盘由 LVM 管理，请停用整个 LVM 基础架构并将其删除。有关更多详细信息，请参见<link xlink:href="https://www.suse.com/documentation/sles-15/book_storage/data/cha_lvm.html"/>。
+      </para>
+     </step>
+     <step>
+      <para>
+       如果磁盘是 MD RAID 的一部分，请停用 RAID。有关更多详细信息，请参见<link xlink:href="https://www.suse.com/documentation/sles-15/book_storage/data/part_software_raid.html"/>。
+      </para>
+     </step>
+     <step>
+      <tip>
+       <title>重引导服务器</title>
+       <para>
+        如果您在执行以下步骤时收到诸如“分区正在使用”或“无法使用新的分区表更新内核”之类的错误讯息，请重引导服务器。
+       </para>
+      </tip>
+      <para>
+       擦除每个分区的开头部分（以 <systemitem class="username">root</systemitem> 身份）：
+      </para>
+<screen>for partition in /dev/sdX[0-9]*
+do
+  dd if=/dev/zero of=$partition bs=4096 count=1 oflag=direct
+done</screen>
+     </step>
+     <step>
+      <para>
+       擦除驱动器的开头部分：
+      </para>
+<screen>
+<prompt>root # </prompt>dd if=/dev/zero of=/dev/sdX bs=512 count=34 oflag=direct
+</screen>
+     </step>
+     <step>
+      <para>
+       擦除驱动器的结尾部分：
+      </para>
+<screen>
+<prompt>root # </prompt>dd if=/dev/zero of=/dev/sdX bs=512 count=33 \
+  seek=$((`blockdev --getsz /dev/sdX` - 33)) oflag=direct
+</screen>
+     </step>
+     <step>
+      <para>
+       使用以下命令确认驱动器为空（不含 GPT 结构）：
+      </para>
+<screen>
+<prompt>root # </prompt>parted -s /dev/sdX print free
+</screen>
+      <para>
+       或者
+      </para>
+<screen>
+<prompt>root # </prompt>dd if=/dev/sdX bs=512 count=34 | hexdump -C
+<prompt>root # </prompt>dd if=/dev/sdX bs=512 count=33 \
+  skip=$((`blockdev --getsz /dev/sdX` - 33)) | hexdump -C
+</screen>
+     </step>
+    </substeps>
+   </step>
+   <step>
+    <para>
+     （可选）如果您需要在安装 <package>deepsea </package> 包之前预配置集群的网络设置，请手动创建 <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>，并设置 <option>cluster_network:</option> 和 <option>public_network:</option> 选项。请注意，在您安装 <package>deepsea </package>之后，系统将不会重写该文件。
+    </para>
+    <tip>
+     <title>启用 IPv6</title>
+     <para>
+      如果您需要启用 IPv6 网络寻址，请参见<xref linkend="ds-modify-ipv6"/>。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     在 Salt Master 节点上安装 DeepSea：
+    </para>
+<screen><prompt>root@master # </prompt>zypper in deepsea</screen>
+   </step>
+   <step>
+    <para>
+     <option>master_minion</option> 参数的值是根据 Salt Master 上的 <filename>/etc/salt/minion_id</filename> 文件动态派生的。如果您需要覆盖发现的值，请编辑 <filename>/srv/pillar/ceph/stack/global.yml</filename> 文件并设置相关值：
+    </para>
+<screen>
+master_minion: <replaceable>MASTER_MINION_NAME</replaceable>
+</screen>
+    <para>
+     如果您的 Salt Master 可通过更多主机名称访问，请使用 <command>salt-key -L</command> 命令返回的名称作为存储集群的 Salt Minion 名称。如果在 <emphasis>ses</emphasis> 域中使用了 Salt Master 的默认主机名 <emphasis>salt</emphasis>，则该文件如下所示：
+    </para>
+<screen>master_minion: salt.ses</screen>
+   </step>
+  </procedure>
+
+  <para>
+   现在部署并配置 Ceph。除非另有说明，否则必须执行所有步骤。
+  </para>
+
+  <note>
+   <title>Salt 命令约定</title>
+   <para>
+    可通过两种方式运行 <command>salt-run state.orch</command>，一种方式是使用“stage.<replaceable>STAGE_NUMBER</replaceable>”，另一种方式是使用阶段的名称。这两种表示法会产生相同的效果，至于使用哪个命令，完全取决于您的偏好。
+   </para>
+  </note>
+
+  <procedure xml:id="ds-depl-stages">
+   <title>运行部署阶段</title>
+   <step>
+    <para>
+     确保可通过 <filename>/srv/pillar/ceph/deepsea_minions.sls</filename> 中的 <option>deepsea_minions</option> 选项正确定位到属于 Ceph 集群的 Salt Minion。有关更多信息，请参考<xref linkend="ds-minion-targeting-dsminions"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     默认情况下，DeepSea 会使用 Ceph Monitor、Ceph Manager 和 Ceph OSD 上工作的经调整配置来部署 Ceph 集群。在某些情形中，您可能需要在没有已调整配置的情况下进行部署。要完成此操作，请在运行 DeepSea 阶段前在 <filename>/srv/pillar/ceph/stack/global.yml</filename> 中添加下面几行。
+    </para>
+<screen>
+alternative_defaults:
+ tuned_mgr_init: default-off
+ tuned_mon_init: default-off
+ tuned_osd_init: default-off
+</screen>
+   </step>
+   <step>
+    <para>
+     <emphasis>可选</emphasis>：为 <filename>/var/lib/ceph/</filename> 创建 Btrfs 子卷。需要在运行 DeepSea stage.0 之前执行此步骤。要迁移现有目录或了解更多详细信息，请参见<xref linkend="storage-tips-ceph-btrfs-subvol"/>。
+    </para>
+    <para>
+     对每个 Salt Minion 应用以下命令：
+    </para>
+<screen><prompt>root@master # </prompt>salt 'MONITOR_NODES' saltutil.sync_all
+<prompt>root@master # </prompt>salt 'MONITOR_NODES' state.apply ceph.subvolume
+</screen>
+    <note>
+     <para>
+      Ceph.subvolume 命令会创建 <filename>/var/lib/ceph</filename> 作为 <filename>@/var/lib/ceph</filename> Btrfs 子卷。
+     </para>
+    </note>
+    <para>
+     新子卷现已装入，且更新了 <literal>/etc/fstab</literal>。
+    </para>
+   </step>
+   <step>
+    <para>
+     准备集群。有关更多详细信息，请参见<xref linkend="deepsea-stage-description"/>。
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.prep</screen>
+    <note>
+     <title>使用 DeepSea CLI 运行或监视阶段</title>
+     <para>
+      使用 DeepSea CLI，可通过在监视模式下运行 DeepSea CLI，或者直接通过 DeepSea CLI 运行阶段，来实时跟踪阶段执行进度。有关详细信息，请参见<xref linkend="deepsea-cli"/>。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     发现阶段会从所有 Minion 收集数据并创建配置分段，这些分段存储在 <filename>/srv/pillar/ceph/proposals</filename> 目录中。数据以 YAML 格式存储在 *.sls 或 *.yml 文件中。
+    </para>
+    <para>
+     运行以下命令以触发发现阶段：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.1</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.discovery</screen>
+   </step>
+   <step>
+    <para>
+     成功完成上述命令后，请在 <filename>/srv/pillar/ceph/proposals</filename> 中创建 <filename>policy.cfg</filename> 文件。有关详细信息，请参见<xref linkend="policy-configuration"/>。
+    </para>
+    <tip>
+     <para>
+      如果需要更改集群的网络设置，请编辑 <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>，调整以 <literal>cluster_network:</literal> 和 <literal>public_network:</literal> 开头的行。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     配置阶段将会分析 <filename>policy.cfg</filename> 文件，并将包含的文件合并成其最终形式。集群和角色相关的内容放置在 <filename>/srv/pillar/ceph/cluster</filename> 中，而 Ceph 特定的内容放置在 <filename>/srv/pillar/ceph/stack/default</filename> 中。
+    </para>
+    <para>
+     运行以下命令以触发配置阶段：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.configure</screen>
+    <para>
+     配置步骤可能需要花几秒时间。命令完成后，您可以通过运行以下命令，查看指定 Minion（例如，名为 <literal>ceph_minion1</literal>、<literal>ceph_minion2</literal> 等的 Minion）的pillar 数据：
+    </para>
+<screen><prompt>root@master # </prompt>salt 'ceph_minion*' pillar.items</screen>
+    <tip>
+     <title>修改 OSD 的布局</title>
+     <para>
+      如果您要修改默认的 OSD 布局并更改 DriveGroups 配置，请执行<xref linkend="ds-drive-groups"/>中所述的过程。
+     </para>
+    </tip>
+    <note>
+     <title>重写默认值</title>
+     <para>
+      一旦命令完成，您便可查看默认配置并根据需要进行更改。有关详细信息，请参见<xref linkend="ceph-deploy-ds-custom"/>。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     现在运行部署阶段。在此阶段，将验证 Pillar 并会启动 Ceph Monitor 和 Ceph OSD 守护进程：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.deploy</screen>
+    <para>
+     该命令可能需要花几分钟时间。如果该命令失败，则您需要解决问题，然后再次运行前面的阶段。该命令成功后，请运行以下命令来检查状态：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph -s</screen>
+   </step>
+   <step>
+    <para>
+     Ceph 集群部署过程的最后一个步骤是<emphasis>服务</emphasis>阶段。在此阶段，您要实例化当前支持的所有服务：iSCSI 网关、CephFS、对象网关、 和 NFS Ganesha。此阶段将创建所需的存储池、授权密钥环和启动服务。要启动该阶段，请运行以下命令：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+    <para>
+     或者
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.services</screen>
+    <para>
+     根据具体的设置，该命令可能会运行几分钟时间。
+    </para>
+   </step>
+   <step>
+    <para>
+     继续之前，我们强烈建议先启用 Ceph 遥测扩展模块。有关详细信息和说明，请参见<xref linkend="mgr-modules-telemetry"/>。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deepsea-cli">
+  <title>DeepSea CLI</title>
+
+  <para>
+   DeepSea 还提供了一个命令行界面 (CLI) 工具，供用户监视或运行阶段，同时实时直观呈现执行进度。确认是否已安装  <package>deepsea-cli</package> 包（在您运行 <command>deepsea</command> 可执行文件之前）。
+  </para>
+
+  <para>
+   支持使用以下两种模式来可视化阶段的执行进度：
+  </para>
+
+  <itemizedlist xml:id="deepsea-cli-modes">
+   <title>DeepSea CLI 模式</title>
+   <listitem>
+    <para>
+     <emphasis role="bold">监视模式</emphasis>：可视化另一个终端会话中发出的 <command>salt-run</command> 命令所触发 DeepSea 阶段的执行进度。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">独立模式</emphasis>：运行 DeepSea 阶段，并在该阶段的构成步骤执行时提供相应的实时可视化效果。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <important>
+   <title>DeepSea CLI 命令</title>
+   <para>
+    在 Salt Master 节点上，必须使用 <systemitem class="username">root</systemitem> 权限才能运行 DeepSea CLI 命令。
+   </para>
+  </important>
+
+  <sect2 xml:id="deepsea-cli-monitor">
+   <title>DeepSea CLI：监视模式</title>
+   <para>
+    进度 Monitor 提供详细的实时可视化效果，显示在其他终端会话中使用 <command>salt-run state.orch</command> 命令执行阶段期间发生的情况。
+   </para>
+   <tip>
+    <title>在新终端会话中启动 Monitor</title>
+    <para>
+     在运行任何 <command>salt-run state.orch</command> 命令<emphasis>之前</emphasis>，您都需要在新终端窗口中启动 Monitor，如此，当阶段开始执行时，Monitor 便可以检测到。
+    </para>
+   </tip>
+   <para>
+    如果在发出 <command>salt-run state.orch</command> 命令之后再启动 Monitor，将不会显示执行进度。
+   </para>
+   <para>
+    可运行以下命令来启动监视模式：
+   </para>
+<screen><prompt>root@master # </prompt>deepsea monitor</screen>
+   <para>
+    有关 <command>deepsea monitor</command> 命令的可用命令行选项的详细信息，请查看该命令的手册页：
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-monitor</screen>
+  </sect2>
+
+  <sect2 xml:id="deepsea-cli-standalone">
+   <title>DeepSea CLI：独立模式</title>
+   <para>
+    在独立模式下，可以使用 DeepSea CLI 来运行 DeepSea 阶段，并实时显示其执行进度。
+   </para>
+   <para>
+    从 DeepSea CLI 中运行 DeepSea 阶段的命令的格式如下：
+   </para>
+<screen><prompt>root@master # </prompt>deepsea stage run <replaceable>stage-name</replaceable></screen>
+   <para>
+    其中，<replaceable>stage-name</replaceable> 对应于 Salt 编制状态文件的引用方式。例如，对应于 <emphasis role="bold">/srv/salt/ceph/stage/deploy</emphasis> 中目录的<filename>部署</filename>阶段以 <emphasis role="bold">ceph.stage.deploy</emphasis> 的形式引用。
+   </para>
+   <para>
+    此命令可代替用于运行 DeepSea 阶段（或任何 DeepSea 编制状态文件）的基于 Salt 的命令。
+   </para>
+   <para>
+    命令 <command>deepsea stage run ceph.stage.0</command> 与 <command>salt-run state.orch ceph.stage.0</command> 的效果相同。
+   </para>
+   <para>
+    有关 <command>deepsea stage run</command> 命令接受的可用命令行选项的详细信息，请查看该命令的手册页：
+   </para>
+<screen><prompt>root@master # </prompt>man deepsea-stage run</screen>
+   <para>
+    下图显示了运行<emphasis role="underline">阶段 2</emphasis> 时，DeepSea CLI 的输出示例：
+   </para>
+   <figure>
+    <title>DeepSea CLI 阶段执行进度输出</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="deepsea-cli-stage2-screenshot.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <sect3 xml:id="deepsea-cli-run-alias">
+    <title>DeepSea CLI <command>stage run</command> 别名</title>
+    <para>
+     针对 Salt 的高级用户，我们还支持使用别名来运行 DeepSea 阶段，采用运行阶段所用的 Salt 命令（例如 <command>salt-run state.orch <replaceable>stage-name</replaceable></command>）作为 DeepSea CLI 的命令。
+    </para>
+    <para>
+     示例：
+    </para>
+<screen><prompt>root@master # </prompt>deepsea salt-run state.orch <replaceable>stage-name</replaceable></screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deepsea-pillar-salt-configuration">
+  <title>配置和自定义</title>
+
+  <sect2 xml:id="policy-configuration">
+   <title><filename>policy.cfg</filename> 文件</title>
+   <para>
+    <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> 配置文件用于确定单个集群节点的角色。例如，哪些节点充当着 Ceph OSD 或 Ceph Monitor。请编辑 <filename>policy.cfg</filename>，以反映所需的集群设置。段落采用任意顺序，但所包含行的内容将重写前面行的内容中匹配的密钥。
+   </para>
+   <tip>
+    <title><filename>policy.cfg</filename> 的示例</title>
+    <para>
+     可以在 <filename>/usr/share/doc/packages/deepsea/examples/</filename> 目录中找到完整策略文件的多个示例。
+    </para>
+   </tip>
+   <sect3 xml:id="policy-cluster-assignment">
+    <title>集群指定</title>
+    <para>
+     在 <emphasis role="bold">cluster</emphasis> 段落选择集群的 Minion。可以选择所有 Minion，或者将 Minion 加入黑名单或白名单。下面显示了名为 <emphasis role="bold">ceph</emphasis> 的集群的示例。
+    </para>
+    <para>
+     要包含<emphasis role="bold">所有</emphasis> Minion，请添加以下几行：
+    </para>
+<screen>cluster-ceph/cluster/*.sls</screen>
+    <para>
+     要将特定的 Minion 加入<emphasis role="bold">白名单</emphasis>，请运行以下命令：
+    </para>
+<screen>cluster-ceph/cluster/abc.domain.sls</screen>
+    <para>
+     要将一组 Minion 加入白名单，可以使用外壳通配符：
+    </para>
+<screen>cluster-ceph/cluster/mon*.sls</screen>
+    <para>
+     要将 Minion 加入<emphasis role="bold">黑名单</emphasis>，可将其设置为 <literal>unassigned</literal>：
+    </para>
+<screen>cluster-unassigned/cluster/client*.sls</screen>
+   </sect3>
+   <sect3 xml:id="policy-role-assignment">
+    <title>角色指定</title>
+    <para>
+     本节详细介绍了如何为您的集群节点指定“角色”。在此上下文中，“角色”是指您需要在节点上运行的服务，例如 Ceph Monitor、对象网关或 iSCSI 网关。不会自动指定任何角色，只会部署已添加到 <command>policy.cfg</command> 中的角色。
+    </para>
+    <para>
+     指定遵循以下模式：
+    </para>
+<screen>role-<replaceable>ROLE_NAME</replaceable>/<replaceable>PATH</replaceable>/<replaceable>FILES_TO_INCLUDE</replaceable></screen>
+    <para>
+     其中的项目具有以下含义和值：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>ROLE_NAME</replaceable> 为下列任何一项：“master”、“admin”、“mon”、“mgr”、“storage”、“mds”、“igw”、“rgw”、“ganesha”、 “grafana”或“prometheus”。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>PATH</replaceable> 是 .sls 或 .yml 文件的相对目录路径。对于 .sls 文件，该路径通常是 <filename>cluster</filename>；而 .yml 文件则位于 <filename>stack/default/ceph/minions</filename>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>FILES_TO_INCLUDE</replaceable> 是 Salt 状态文件或 YAML 配置文件。这些文件通常包含 Salt Minion 的主机名，例如 <filename>ses5min2.yml</filename>。可以使用外壳通配进行更具体的匹配。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     每个角色的示例如下：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <emphasis>master</emphasis> - 该节点具有所有 Ceph 集群的管理密钥环。目前仅支持一个 Ceph 集群。由于 <emphasis>master</emphasis> 角色是必需的，因此，请始终添加类似下方所示的行：
+      </para>
+<screen>role-master/cluster/master*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>admin</emphasis> - 该 Minion 将获得管理密钥环。可按如下方式定义角色：
+      </para>
+<screen>role-admin/cluster/abc*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mon</emphasis> - 该 Minion 将向 Ceph 集群提供 Monitor 服务。此角色需要已指定 Minion 的地址。从 SUSE Enterprise Storage 5 开始，将以动态方式计算公用地址，并且 Salt Pillar 中不再需要该地址。
+      </para>
+<screen>role-mon/cluster/mon*.sls</screen>
+      <para>
+       该示例将 Monitor 角色指定给一组 Minion。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mgr</emphasis> - 从整个集群收集所有状态信息的 Ceph Manager 守护进程。请将它部署在您打算在其上部署 Ceph Monitor 角色的所有 Minion 上。
+      </para>
+<screen>role-mgr/cluster/mgr*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>storage</emphasis> - 使用此角色可指定存储节点。
+      </para>
+<screen>role-storage/cluster/data*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>mds</emphasis> - 该 Minion 将提供元数据服务来支持 CephFS。
+      </para>
+<screen>role-mds/cluster/mds*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>igw</emphasis> - 该 Minion 将充当 iSCSI 网关。此角色需要所指定 Minion 的地址，因此，您还需要包含 <filename>stack</filename> 目录中的文件：
+      </para>
+<screen>role-igw/cluster/*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>rgw</emphasis> - 该 Minion 将充当对象网关：
+      </para>
+<screen>role-rgw/cluster/rgw*.sls</screen>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>ganesha</emphasis> - 该 Minion 将充当 NFS Ganesha 服务器。“ganesha”角色需要集群中的“rgw”或“mds”角色，否则，验证将于阶段 3 中失败。
+      </para>
+<screen>role-ganesha/cluster/ganesha*.sls</screen>
+      <para>
+       要成功安装 NFS Ganesha，需要进行额外的配置。如果您要使用 NFS Ganesha，请在执行阶段 2 和 4 之前阅读<xref linkend="cha-as-ganesha"/>。但是，可以稍后再安装 NFS Ganesha。
+      </para>
+      <para>
+       在某些情况下，为 NFS Ganesha 节点定义自定义角色可能很有用。有关详细信息，请参见<xref linkend="ceph-nfsganesha-customrole"/>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>grafana</emphasis>、<emphasis>prometheus</emphasis> - 此节点会将基于 Prometheus 警告的 Grafana 图表添加到 Ceph Dashboard。有关详细说明，请参见<xref linkend="ceph-dashboard"/>。
+      </para>
+<screen>role-grafana/cluster/grafana*.sls</screen>
+<screen>role-prometheus/cluster/prometheus*.sls</screen>
+     </listitem>
+    </itemizedlist>
+    <note>
+     <title>集群节点的多个角色</title>
+     <para>
+      可将多个角色指定到一个节点。例如，可将“mds”角色指定给 Monitor 节点：
+     </para>
+<screen>role-mds/cluster/mon[1,2]*.sls</screen>
+    </note>
+   </sect3>
+   <sect3 xml:id="policy-common-configuration">
+    <title>通用配置</title>
+    <para>
+     通用配置部分包括<emphasis>发现（阶段 1）</emphasis>期间生成的配置文件。这些配置文件存储 <literal>fsid</literal> 或 <literal>public_network</literal> 等参数。要包含所需的 Ceph 通用配置，请添加以下几行：
+    </para>
+<screen>config/stack/default/global.yml
+config/stack/default/ceph/cluster.yml</screen>
+   </sect3>
+   <sect3 xml:id="deepsea-policy-filtering">
+    <title>项目过滤</title>
+    <para>
+     有时，使用 *.sls 通配法无法包含给定目录中的所有文件。<filename>policy.cfg</filename> 文件分析器可识别以下过滤器：
+    </para>
+    <warning>
+     <title>高级方法</title>
+     <para>
+      本节介绍供高级用户使用的过滤方法。如果使用不当，过滤可能会导致问题发生，例如，节点编号改变。
+     </para>
+    </warning>
+    <variablelist>
+     <varlistentry>
+      <term>slice=[start:end]</term>
+      <listitem>
+       <para>
+        使用 slice 过滤器可以仅包含从 <emphasis>start</emphasis> 到 <emphasis>end-1</emphasis> 的项目。请注意，给定目录中的项目将按字母数字顺序排序。下行包含 <filename>role-mon/cluster/</filename> 子目录中的第三到第五个文件：
+       </para>
+<screen>role-mon/cluster/*.sls slice[3:6]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>re=regexp</term>
+      <listitem>
+       <para>
+        使用正则表达式过滤器可以仅包含与给定表达式匹配的项目。例如：
+       </para>
+<screen>role-mon/cluster/mon*.sls re=.*1[135]\.subdomainX\.sls$</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="deepsea-example-policy-cfg">
+    <title><filename>policy.cfg</filename> 文件示例</title>
+    <para>
+     下面是一个基本 <filename>policy.cfg</filename> 文件的示例：
+    </para>
+<screen>## Cluster Assignment
+cluster-ceph/cluster/*.sls <co xml:id="co-policy-1"/>
+
+## Roles
+# ADMIN
+role-master/cluster/examplesesadmin.sls <co xml:id="co-policy-2"/>
+role-admin/cluster/sesclient*.sls <co xml:id="co-policy-3"/>
+
+# MON
+role-mon/cluster/ses-example-[123].sls <co xml:id="co-policy-5"/>
+
+# MGR
+role-mgr/cluster/ses-example-[123].sls <co xml:id="co-policy-mgr"/>
+
+# STORAGE
+role-storage/cluster/ses-example-[5,6,7,8].sls <co xml:id="co-policy-storage"/>
+
+# MDS
+role-mds/cluster/ses-example-4.sls <co xml:id="co-policy-6"/>
+
+# IGW
+role-igw/cluster/ses-example-4.sls <co xml:id="co-policy-10"/>
+
+# RGW
+role-rgw/cluster/ses-example-4.sls <co xml:id="co-policy-11"/>
+
+# COMMON
+config/stack/default/global.yml <co xml:id="co-policy-8"/>
+config/stack/default/ceph/cluster.yml <co xml:id="co-policy-13"/>
+</screen>
+    <calloutlist>
+     <callout arearefs="co-policy-1">
+      <para>
+       指示在 Ceph 集群中包含所有 Minion。如果您不想在 Ceph 集群中包含某些 Minion，请使用：
+      </para>
+<screen>cluster-unassigned/cluster/*.sls
+cluster-ceph/cluster/ses-example-*.sls</screen>
+      <para>
+       第一行将所有 Minion 标记为未指定。第二行覆盖与“ses-example-*.sls”匹配的 Minion，并将其指定到 Ceph 集群。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-2">
+      <para>
+       名为“examplesesadmin”的 Minion 具有“master”角色。顺便指出，这表示该 Minion 将获得集群的管理密钥。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-3">
+      <para>
+       与“sesclient*”匹配的所有 Minion 也将获得管理密钥。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-5">
+      <para>
+       与“ses-example-[123]”匹配的所有 Minion（应该是 ses-example-1、ses-example-2 和 ses-example-3 这三个 Minion）将设置为 MON 节点。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-mgr">
+      <para>
+       与“ses-example-[123]”匹配的所有 Minion（示例中的所有 MON 节点）将设置为 MGR 节点。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-storage">
+      <para>
+       所有与“ses-example-[5,6,7,8]”匹配的 Minion 都将被设置为存储节点。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-6">
+      <para>
+       Minion“ses-example-4”将具有 MDS 角色。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-10">
+      <para>
+       Minion“ses-example-4”将具有 IGW 角色。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-11">
+      <para>
+       Minion“ses-example-4”将具有 RGW 角色。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-8">
+      <para>
+       表示我们接受 <option>fsid</option> 和 <option>public_network</option> 等通用配置参数的默认值。
+      </para>
+     </callout>
+     <callout arearefs="co-policy-13">
+      <para>
+       表示我们接受 <option>fsid</option> 和 <option>public_network</option> 等通用配置参数的默认值。
+      </para>
+     </callout>
+    </calloutlist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ds-drive-groups">
+   <title>DriveGroups</title>
+   <para>
+    <emphasis>DriveGroups</emphasis> 用于指定 Ceph 集群中 OSD 的布局。DriveGroups 在单个文件 <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename> 中定义。
+   </para>
+   <para>
+    管理员应手动指定一组相关的 OSD（部署在固态硬盘和旋转硬盘上的混合 OSD）或一组使用相同部署选项的 OSD（例如，对象存储、加密选项完全相同的各独立 OSD）。为了避免明确列出设备，DriveGroups 会使用与 <command>ceph-volume</command> 库存报告中的几个所选字段对应的过滤项列表。在最简单的情形中，过滤项可能就是“rotational”标志（所有固态硬盘为“db_devices”，所有旋转硬盘为“data devices”），或者是相关性更高的项目（例如“model”字符串或大小）。DeepSea 将提供一些代码，用于将这些 DriveGroups 转换为供用户检查的实际设备列表。
+   </para>
+   <para>
+    下面是一个简单的过程，演示了配置 DriveGroups 时的基本工作流程：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      检查磁盘属性是否与 <command>ceph-volume</command> 命令的输出一致。DriveGroups 仅可接受这些属性：
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt-run disks.details
+</screen>
+    </step>
+    <step>
+     <para>
+      打开 <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename> YAML 文件，并根据您的需要进行调整。请参考 <xref linkend="ds-drive-groups-specs"/>. 请记得使用空格而不是制表符。有关更多高级示例，请参见<xref linkend="ds-drive-groups-examples"/>。下面的示例包括 Ceph 可用作 OSD 的所有驱动器：
+     </para>
+<screen>
+default_drive_group_name:
+  target: '*'
+  data_devices:
+    all: true
+</screen>
+    </step>
+    <step>
+     <para>
+      确认新布局：
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt-run disks.list
+</screen>
+     <para>
+      此运行程序会根据您的 DriveGroups 返回由匹配磁盘组成的结构。如果您对结果不满意，请重复上一步。
+     </para>
+     <tip>
+      <title>详细报告</title>
+      <para>
+       除了 <command>disks.list</command> 运行程序外，您还可以使用 <command>disks.report</command> 运行程序输出接下来的 DeepSea 阶段 3 调用中将会发生的情况的详细报告。
+      </para>
+<screen>
+<prompt>root@master # </prompt>salt-run disks.report
+</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      部署 OSD。在接下来的 DeepSea 阶段 3 调用中，将根据您的驱动器组规格部署 OSD 磁盘。
+     </para>
+    </step>
+   </procedure>
+   <sect3 xml:id="ds-drive-groups-specs">
+    <title>明细单</title>
+    <para>
+     <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename> 接受以下选项：
+    </para>
+<screen>
+drive_group_default_name:
+  target: *
+  data_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  db_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  wal_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  block_wal_size: '5G'  # (optional, unit suffixes permitted)
+  block_db_size: '5G'   # (optional, unit suffixes permitted)
+  osds_per_device: 1   # number of osd daemons per device
+  format:              # 'bluestore' or 'filestore' (defaults to 'bluestore')
+  encryption:           # 'True' or 'False' (defaults to 'False')
+</screen>
+    <para>
+     对于 FileStore 设置，<filename>drive_groups.yml</filename> 可能如下所示：
+    </para>
+<screen>
+drive_group_default_name:
+  target: *
+  data_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  journal_devices:
+    drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+  format: filestore
+  encryption: True
+</screen>
+   </sect3>
+   <sect3>
+    <title>匹配磁盘设备</title>
+    <para>
+     您可以使用以下过滤器描述规格：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       按磁盘型号：
+      </para>
+<screen>
+model: <replaceable>DISK_MODEL_STRING</replaceable>
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       按磁盘供应商：
+      </para>
+<screen>
+vendor: <replaceable>DISK_VENDOR_STRING</replaceable>
+</screen>
+      <tip>
+       <title>小写的供应商字符串</title>
+       <para>
+        <replaceable>DISK_VENDOR_STRING</replaceable> 始终采用小写。
+       </para>
+      </tip>
+     </listitem>
+     <listitem>
+      <para>
+       磁盘是否为旋转硬盘。SSD 和 NVME 驱动器不属于旋转硬盘。
+      </para>
+<screen>
+rotational: 0
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       部署将<emphasis>所有</emphasis>可用驱动器都用于 OSD 的节点：
+      </para>
+<screen>
+data_devices:
+  all: true
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       还可通过限制匹配磁盘的数量来过滤：
+      </para>
+<screen>
+limit: 10
+</screen>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>按大小过滤设备</title>
+    <para>
+     您可以按磁盘设备大小对其过滤，可以按确切大小也可以按大小范围来过滤。<option>size:</option> 参数接受使用下列格式的自变量：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       '10G' - 包括大小为该值的磁盘。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       '10G:40G' - 包括大小在该范围内的磁盘。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       ':10G' - 包括大小小于或等于 10 GB 的磁盘。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       '40G:' - 包括大小等于或大于 40 GB 的磁盘。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <example>
+     <title>按磁盘大小匹配</title>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    size: '40TB:'
+  db_devices:
+    size: ':2TB'
+</screen>
+    </example>
+    <note>
+     <title>需要引号</title>
+     <para>
+      如果使用“:”分隔符，您需要用引号括住大小，否则“:”符号将被解释为新的配置哈希。
+     </para>
+    </note>
+    <tip>
+     <title>单位缩写</title>
+     <para>
+      除了 G（千兆字节），您还可以使用 M（兆字节）或 T（太字节）来指定大小。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="ds-drive-groups-examples">
+    <title>示例</title>
+    <para>
+     本节包含其他 OSD 设置的示例。
+    </para>
+    <example>
+     <title>简单设置</title>
+     <para>
+      下面的示例说明了使用相同设置的两个节点：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 个 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：4 TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 个 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：512 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      对应的 <filename>drive_groups.yml</filename> 文件如下所示：
+     </para>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    model: SSD-123-foo
+  db_devices:
+    model: MC-55-44-XZ
+   </screen>
+     <para>
+      这样的配置简单有效。但问题是管理员将来可能要添加来自不同供应商的磁盘，而这样的磁盘不在可添加范围内。您可以通过减少针对驱动器核心属性的过滤器来予以改进。
+     </para>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    rotational: 1
+  db_devices:
+    rotational: 0
+   </screen>
+     <para>
+      在上面的示例中，我们强制将所有旋转设备声明为“data devices”，所有非旋转设备将被用作“shared devices”（wal、db）。
+     </para>
+     <para>
+      如果您知道大小超过 2 TB 的驱动器将始终充当较慢的数据设备，则可以按大小过滤：
+     </para>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    size: '2TB:'
+  db_devices:
+    size: ':2TB'
+</screen>
+    </example>
+    <example>
+     <title>高级设置</title>
+     <para>
+      下面的示例说明了两种不同的设置：20 个 HDD 将共享 2 个 SSD，而 10 个 SSD 将共享 2 个 NVMe。
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 个 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：4 TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        12 个 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：512 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 个 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：NVME-QQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：256 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      这样的设置可使用如下两个布局定义：
+     </para>
+<screen>
+drive_group:
+  target: '*'
+  data_devices:
+    rotational: 0
+  db_devices:
+    model: MC-55-44-XZ
+</screen>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    model: MC-55-44-XZ
+  db_devices:
+    vendor: samsung
+    size: 256GB
+</screen>
+    </example>
+    <example>
+     <title>包含非一致节点的高级设置</title>
+     <para>
+      上述示例假设所有节点的驱动器都相同，但情况并非总是如此：
+     </para>
+     <para>
+      节点 1-5：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 个 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：4 TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 个 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：512 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      节点 6-10：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        5 个 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：4 TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        20 个 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：512 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      您可以在布局中使用“target”键来定位特定节点。Salt 定位标记可让事情变得简单：
+     </para>
+<screen>
+drive_group_node_one_to_five:
+  target: 'node[1-5]'
+  data_devices:
+    rotational: 1
+  db_devices:
+    rotational: 0
+</screen>
+     <para>
+      后接
+     </para>
+<screen>
+drive_group_the_rest:
+  target: 'node[6-10]'
+  data_devices:
+    model: MC-55-44-XZ
+  db_devices:
+    model: SSD-123-foo
+</screen>
+    </example>
+    <example>
+     <title>专家设置</title>
+     <para>
+      上述所有案例都假设 WAL 和 DB 使用相同设备，但也有可能会在专用设备上部署 WAL：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 个 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：4 TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 个 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：512 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 个 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：NVME-QQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：256 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+<screen>
+drive_group_default:
+  target: '*'
+  data_devices:
+    model: MC-55-44-XZ
+  db_devices:
+    model: SSD-123-foo
+  wal_devices:
+    model: NVME-QQQQ-987
+</screen>
+    </example>
+    <example>
+     <title>复杂（和不太可能的）设置</title>
+     <para>
+      在以下设置中，我们尝试定义：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        由 1 个 NVMe 支持 20 个 HDD
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        由 1 个 SSD (db) 和 1 个 NVMe (wal) 支持 2 个 HDD
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        由 1 个 NVMe 支持 8 个 SSD
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        2 个独立 SSD（加密）
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        1 个 HDD 作为备用，不应部署
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      共使用如下数量的驱动器：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        23 个 HDD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：4 TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        10 个 SSD
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：512 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        1 个 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          供应商：Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          型号：NVME-QQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          大小：256 GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      DriveGroups 定义如下所示：
+     </para>
+<screen>
+drive_group_hdd_nvme:
+  target: '*'
+  data_devices:
+    rotational: 0
+  db_devices:
+    model: NVME-QQQQ-987
+ </screen>
+<screen>
+drive_group_hdd_ssd_nvme:
+  target: '*'
+  data_devices:
+    rotational: 0
+  db_devices:
+    model: MC-55-44-XZ
+  wal_devices:
+    model: NVME-QQQQ-987
+ </screen>
+<screen>
+drive_group_ssd_nvme:
+  target: '*'
+  data_devices:
+    model: SSD-123-foo
+  db_devices:
+    model: NVME-QQQQ-987
+ </screen>
+<screen>
+drive_group_ssd_standalone_encrypted:
+  target: '*'
+  data_devices:
+    model: SSD-123-foo
+  encryption: True
+ </screen>
+     <para>
+      在文件的整个分析过程中，将始终保留一个 HDD。
+     </para>
+    </example>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>使用自定义设置调整 <filename>ceph.conf</filename></title>
+   <para>
+    如果需要将自定义设置放入 <filename>ceph.conf</filename> 配置文件，请参见<xref linkend="ds-custom-cephconf"/>了解更多详细信息。
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

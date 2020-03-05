@@ -1,0 +1,499 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_ds_custom.xml" version="5.0" xml:id="ceph-deploy-ds-custom">
+ <title>Personalizzazione della configurazione di default</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>sì</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  È possibile modificare la configurazione di default del cluster generata nella Fase 2 (consultare <xref linkend="deepsea-stage-description"/>). Ad esempio, può essere necessario modificare le impostazioni di rete o il software installato sul nodo admin di default. È possibile eseguire la prima operazione modificando il Pillar aggiornato dopo la Fase 2, mentre la seconda viene ottenuta creando un file <literal>sls</literal> personalizzato e aggiungendolo al Pillar. I dettagli sono descritti nelle sezioni seguenti.
+ </para>
+ <sect1 xml:id="using-customized-files">
+  <title>Uso dei file di configurazione personalizzati</title>
+
+  <para>
+   In questa sezione vengono elencati diversi task che richiedono aggiunta/modifica dei propri file <literal>sls</literal>. Tale procedura viene utilizzata in genere quando occorre modificare il processo di distribuzione di default.
+  </para>
+
+  <tip>
+   <title>aggiungere un prefisso ai file personalizzati .sls</title>
+   <para>
+    I file .sls personalizzati appartengono alla stessa sottodirectory dei file .sls di DeepSea. Per evitare di sovrascrivere i file .sls con quelli nuovi aggiunti dal pacchetto DeepSea, apporre un prefisso al nome con la stringa <filename>custom-</filename>.
+   </para>
+  </tip>
+
+  <sect2>
+   <title>Disabilitazione di una fase di installazione</title>
+   <para>
+    Se si indirizza un task specifico esterno al processo di installazione di DeepSea ed è quindi necessario ignorarlo, creare un file "no-operation" seguendo questo esempio:
+   </para>
+   <procedure>
+    <title>Disabilitazione della sincronizzazione dell'orario</title>
+    <step>
+     <para>
+      Creare <filename>/srv/salt/ceph/time/disabled.sls</filename> con il seguente contenuto e salvarlo:
+     </para>
+<screen>disable time setting:
+test.nop</screen>
+    </step>
+    <step>
+     <para>
+      Modificare <filename>/srv/pillar/ceph/stack/global.yml</filename>, aggiungere la riga seguente e salvarlo:
+     </para>
+<screen>time_init: disabled</screen>
+    </step>
+    <step>
+     <para>
+      Verificare aggiornando il Pillar ed eseguendo la fase:
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.time
+admin.ceph:
+  Name: disable time setting - Function: test.nop - Result: Clean
+
+Summary for admin.ceph
+------------
+Succeeded: 1
+Failed:    0
+------------
+Total states run:     1</screen>
+     <note>
+      <title>ID univoco</title>
+      <para>
+       L'ID del task "disable time setting" può essere qualsiasi messaggio univoco in un file <literal>sls</literal>. Impedire le collisioni ID specificando descrizioni univoche.
+      </para>
+     </note>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="deepsea-replacing-step">
+   <title>Sostituzione di una fase di installazione</title>
+   <para>
+    Se occorre sostituire il comportamento di default di una fase specifica con uno personalizzato, creare un file <literal>sls</literal> personalizzato con contenuto sostitutivo.
+   </para>
+   <para>
+    Per default, <filename>/srv/salt/ceph/pool/default.sls</filename> crea un'immagine rbd denominata "demo". Nel nostro esempio, non si desidera creare tale immagine, ma sono richieste due immagini: "archive1" e "archive2".
+   </para>
+   <procedure>
+    <title>Sostituendo l'immagine rbd <emphasis>demo</emphasis> con due immagini rbd personalizzate</title>
+    <step>
+     <para>
+      Creare <filename>/srv/salt/ceph/pool/custom.sls</filename> con il seguente contenuto e salvarlo:
+     </para>
+<screen>wait:
+  module.run:
+    - name: wait.out
+    - kwargs:
+        'status': "HEALTH_ERR"<co xml:id="co-deepsea-replace-wait"/>
+    - fire_event: True
+
+archive1:
+  cmd.run:
+    - name: "rbd -p rbd create archive1 --size=1024"<co xml:id="co-deepsea-replace-rbd"/>
+    - unless: "rbd -p rbd ls | grep -q archive1$"
+    - fire_event: True
+
+archive2:
+  cmd.run:
+    - name: "rbd -p rbd create archive2 --size=768"
+    - unless: "rbd -p rbd ls | grep -q archive2$"
+    - fire_event: True</screen>
+     <calloutlist>
+      <callout arearefs="co-deepsea-replace-wait">
+       <para>
+        Il modulo <emphasis role="bold">wait</emphasis> va in pausa finché il cluster Ceph non ha lo stato <literal>HEALTH_ERR</literal>. Nelle nuove installazioni, un cluster Ceph può avere questo stato finché si rende disponibile un numero sufficiente di OSD e viene completata la creazione dei pool.
+       </para>
+      </callout>
+      <callout arearefs="co-deepsea-replace-rbd">
+       <para>
+        Il comando <command>rbd</command> non è idempotente. Se si riesegue lo stesso comando di creazione quando esiste l'immagine, lo stato Salt va in errore. La dichiarazione <emphasis role="bold">unless</emphasis> lo impedisce.
+       </para>
+      </callout>
+     </calloutlist>
+    </step>
+    <step>
+     <para>
+      Per richiamare il nuovo file personalizzato creato invece di quello di default, occorre modificare <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>, aggiungere la riga seguente e salvarlo:
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      Verificare aggiornando il Pillar ed eseguendo la fase:
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+   <note>
+    <title>autorizzazione</title>
+    <para>
+     La creazione di pool o immagini richiede autorizzazioni sufficienti. Il minion <literal>admin.ceph</literal> ha un portachiavi admin.
+    </para>
+   </note>
+   <tip>
+    <title>modo alternativo</title>
+    <para>
+     Un'altra opzione è invece modificare la variabile in <filename>/srv/pillar/ceph/stack/ceph/roles/master.yml</filename>. Con questo file si riduce l'ingombro dei dati del Pillar per altri minion.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2>
+   <title>Modifica di una fase di installazione</title>
+   <para>
+    A volte può essere necessaria una fase specifica per eseguire task aggiuntivi. Si sconsiglia di modificare il file di stato correlato, in quanto potrebbe complicare un futuro upgrade. Creare invece un file separato per eseguire i task aggiuntivi identico a quello descritto in <xref linkend="deepsea-replacing-step"/>.
+   </para>
+   <para>
+    Assegnare al nuovo file <literal>sls</literal> un nome descrittivo. Ad esempio, se occorre creare due immagini rbd oltre all'immagine demo, assegnare al file il nome <filename>archive.sls</filename>.
+   </para>
+   <procedure>
+    <title>Creazione di due ulteriori immagini rbd</title>
+    <step>
+     <para>
+      Creare <filename>/srv/salt/ceph/pool/custom.sls</filename> con il seguente contenuto e salvarlo:
+     </para>
+<screen>include:
+ - .archive
+ - .default</screen>
+     <tip>
+      <title>includere la precedenza</title>
+      <para>
+       In questo esempio, Salt crea le immagini <emphasis>archive</emphasis> quindi l'immagine <emphasis>demo</emphasis>. In questo esempio, l'ordine è ininfluente. Per cambiare l'ordine, invertire le righe dopo la direttiva <literal>include:</literal>.
+      </para>
+      <para>
+       È possibile aggiungere la riga include direttamente ad <filename>archive.sls</filename> e verranno così create anche tutte le immagini. Tuttavia, a prescindere dalla posizione della riga include, Salt elabora prima le fasi nel file incluso. Sebbene sia possibile ignorare questo comportamento con dichiarazioni <emphasis>requires</emphasis> e <emphasis>order</emphasis>, un file separato comprendente le altre garantisce l'ordine e riduce le possibilità di confusione.
+      </para>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Modificare <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>, aggiungere la riga seguente e salvarlo:
+     </para>
+<screen>pool_init: custom</screen>
+    </step>
+    <step>
+     <para>
+      Verificare aggiornando il Pillar ed eseguendo la fase:
+     </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+<prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.pool</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2>
+   <title>Modifica di una fase di installazione</title>
+   <para>
+    Se occorre aggiungere una fase di installazione completamente separata, creare tre nuovi file, un file <literal>sls</literal> che esegue il comando, un file di orchestrazione e un file personalizzato che allinea la nuova fase alle fasi di distribuzione originali.
+   </para>
+   <para>
+    Ad esempio, se occorre eseguire <command>logrotate</command> su tutti i minion nell'ambito della fase di preparazione:
+   </para>
+   <para>
+    Creare prima un file <literal>sls</literal> e includere il comando <command>logrotate</command>.
+   </para>
+   <procedure>
+    <title>Esecuzione di <command>logrotate</command> su tutti i Salt minion</title>
+    <step>
+     <para>
+      Creare una directory come <filename>/srv/salt/ceph/logrotate</filename>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Creare <filename>/srv/salt/ceph/logrotate/init.sls</filename> con il seguente contenuto e salvarlo:
+     </para>
+<screen>rotate logs:
+  cmd.run:
+    - name: "/usr/sbin/logrotate /etc/logrotate.conf"</screen>
+    </step>
+    <step>
+     <para>
+      Verificare che il comando funzioni su un minion:
+     </para>
+<screen><prompt>root@master # </prompt>salt 'admin.ceph' state.apply ceph.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    Poiché il file di orchestrazione deve essere eseguito prima di tutte le fasi di preparazione, aggiungerlo alla fase 0 <emphasis>Prep</emphasis>:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Creare <filename>/srv/salt/ceph/stage/prep/logrotate.sls</filename> con il seguente contenuto e salvarlo:
+     </para>
+<screen>logrotate:
+  salt.state:
+    - tgt: '*'
+    - sls: ceph.logrotate</screen>
+    </step>
+    <step>
+     <para>
+      Verificare che il file di orchestrazione funzioni:
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.prep.logrotate</screen>
+    </step>
+   </procedure>
+   <para>
+    L'ultimo file è quello personalizzato che comprende la fase aggiuntiva con le fasi originali:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Creare <filename>/srv/salt/ceph/stage/prep/custom.sls</filename> con il seguente contenuto e salvarlo:
+     </para>
+<screen>include:
+  - .logrotate
+  - .master
+  - .minion</screen>
+    </step>
+    <step>
+     <para>
+      Ignorare il comportamento di default. Modificare <filename>/srv/pillar/ceph/stack/global.yml</filename>, aggiungere la riga seguente e salvare il file:
+     </para>
+<screen>stage_prep: custom</screen>
+    </step>
+    <step>
+     <para>
+      Verificare che la Fase 0 sia funzionale:
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    </step>
+   </procedure>
+   <note>
+    <title>perché <filename>global.yml</filename>?</title>
+    <para>
+     Il file <filename>global.yml</filename> viene scelto rispetto a <filename>cluster.yml</filename> perché durante la fase <emphasis>prep</emphasis>, nessun minion appartiene al cluster Ceph e non ha accesso ad alcuna impostazione in <filename>cluster.yml</filename>.
+    </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="ds-disable-reboots">
+   <title>Aggiornamenti e riavvii durante la fase 0</title>
+   <para>
+    Durante la fase 0 (fare riferimento al <xref linkend="deepsea-stage-description"/> per ulteriori informazioni sulle fasi di DeepSea) il Salt master e i Salt minion potrebbero riavviarsi perché i pacchetti appena aggiornati, ad esempio
+    <package>kernel</package>, richiedono il riavvio del sistema.
+   </para>
+   <para>
+    Il comportamento di default consiste nell'installare i nuovi aggiornamenti disponibili <emphasis>senza</emphasis> riavviare i nodi, anche in caso di aggiornamenti del kernel.
+   </para>
+   <para>
+    È possibile modificare il comportamento di default di aggiornamento/riavvio della fase 0 di DeepSea·aggiungendo/modificando le opzioni <option>stage_prep_master</option> e <option>stage_prep_minion</option> nel file·<filename>/srv/pillar/ceph/stack/global.yml</filename>. Con <option>_prep_master</option> si imposta il comportamento della fase del Salt master e con <option>stage_prep_minion</option> quello di tutti i minion. Tutti i parametri disponibili sono:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>default</term>
+     <listitem>
+      <para>
+       Installa gli aggiornamenti senza il riavvio.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>default-update-reboot</term>
+     <listitem>
+      <para>
+       Installa gli aggiornamenti e successivamente esegue il riavvio.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>default-no-update-reboot</term>
+     <listitem>
+      <para>
+       Riavvia senza installare gli aggiornamenti.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>default-no-update-no-reboot</term>
+     <listitem>
+      <para>
+       Non installa gli aggiornamenti né il riavvio.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    Ad esempio, per impedire ai nodi del cluster di installare gli aggiornamenti e di effettuare il riavvio, modificare <filename>/srv/pillar/ceph/stack/global.yml</filename> e aggiungere le righe seguenti:
+   </para>
+<screen>
+stage_prep_master: default-no-update-no-reboot
+stage_prep_minion: default-no-update-no-reboot
+</screen>
+   <tip>
+    <title>valori e file corrispondenti</title>
+    <para>
+     I valori di <option>stage_prep_master</option> corrispondono ai nomi di file ubicati in <filename>/srv/salt/ceph/stage/0/master</filename>, mentre i valori di <option>stage_prep_minion</option> corrispondono ai file in <filename>/srv/salt/ceph/stage/0/minio</filename>:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ls -l /srv/salt/ceph/stage/0/master
+default-no-update-no-reboot.sls
+default-no-update-reboot.sls
+default-update-reboot.sls
+[...]
+
+<prompt>root@master # </prompt>ls -l /srv/salt/ceph/stage/0/minion
+default-no-update-no-reboot.sls
+default-no-update-reboot.sls
+default-update-reboot.sls
+[...]
+</screen>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="discovered-configuration-modification">
+  <title>Modifica della configurazione rilevata</title>
+
+  <para>
+   Dopo aver completato la Fase 2, è possibile modificare la configurazione rilevata. Per visualizzare le impostazioni correnti, eseguire:
+  </para>
+
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+
+  <para>
+   Il risultato della configurazione di default per un singolo minion è di solito simile a:
+  </para>
+
+<screen>----------
+    available_roles:
+        - admin
+        - mon
+        - storage
+        - mds
+        - igw
+        - rgw
+        - client-cephfs
+        - client-radosgw
+        - client-iscsi
+        - mds-nfs
+        - rgw-nfs
+        - master
+    cluster:
+        ceph
+    cluster_network:
+        172.16.22.0/24
+    fsid:
+        e08ec63c-8268-3f04-bcdb-614921e94342
+    master_minion:
+        admin.ceph
+    mon_host:
+        - 172.16.21.13
+        - 172.16.21.11
+        - 172.16.21.12
+    mon_initial_members:
+        - mon3
+        - mon1
+        - mon2
+    public_address:
+        172.16.21.11
+    public_network:
+        172.16.21.0/24
+    roles:
+        - admin
+        - mon
+        - mds
+    time_server:
+        admin.ceph
+    time_service:
+        ntp</screen>
+
+  <para>
+   Le impostazioni menzionate sopra sono distribuite tra più file di configurazione. La struttura di directory con questi file è definita nella directory <filename>/srv/pillar/ceph/stack/stack.cfg</filename>. I file seguenti di solito descrivono il cluster:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/global.yml</filename> - il file influisce su tutti i minion nel cluster Salt.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/cluster.yml</filename> - il file influisce su tutti i minion nel cluster Ceph denominato <literal>ceph</literal>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/roles/<replaceable>role</replaceable>.yml</filename> - influisce su tutti i minion assegnati al ruolo specifico nel cluster <literal>ceph</literal>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>/srv/pillar/ceph/stack/<replaceable>ceph</replaceable>/minions/<replaceable>MINION_ID</replaceable>/yml</filename> - interessa il singolo minion.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>sovrascrittura delle directory con i valori di default</title>
+   <para>
+    Esiste una struttura di directory parallela che memorizza l'impostazione della configurazione di default in <filename>/srv/pillar/ceph/stack/default</filename>. Non modificare qui questi valori, in quanto vengono sovrascritti.
+   </para>
+  </note>
+
+  <para>
+   La procedura tipica per modificare la configurazione raccolta è la seguente:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Individuare l'ubicazione della voce di configurazione che occorre modificare. Ad esempio, se occorre modificare un'impostazione relativa al cluster come la rete cluster, modificare il file <filename>/srv/pillar/ceph/stack/ceph/cluster.yml</filename>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Salvare il file.
+    </para>
+   </step>
+   <step>
+    <para>
+     Verificare le modifiche eseguendo:
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh</screen>
+    <para>
+     quindi
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+   </step>
+  </procedure>
+
+  <sect2 xml:id="ds-modify-ipv6">
+   <title>Abilitazione di IPv6 per la distribuzione del cluster Ceph</title>
+   <para>
+    Poiché l'indirizzamento di rete IPv4 è il modello più diffuso, è necessario abilitare l'indirizzamento IPv6 come impostazione personalizzata. In DeepSea non sono presenti funzionalità di rilevazione automatica dell'indirizzamento IPv6.
+   </para>
+   <para>
+    Per configurare IPv6, impostare le variabili <option>public_network</option> e <option>cluster_network</option> nel file <filename>/srv/pillar/ceph/stack/global.yml</filename> su sottoreti IPv6 valide. Ad esempio:
+   </para>
+<screen>
+public_network: fd00:10::/64
+cluster_network: fd00:11::/64
+</screen>
+   <para>
+    Quindi, eseguire la fase 2 di DeepSea e verificare che le informazioni di rete corrispondano all'impostazione. La fase 3 genererà il file <filename>ceph.conf</filename> con i flag richiesti.
+   </para>
+   <important>
+    <title>dual stack non supportato</title>
+    <para>
+     Ceph non supporta il protocollo dual stack e quindi non è possibile eseguirlo in contemporanea su IPv4 e IPv6. Il processo di convalida di DeepSea rifiuterà la discordanza tra <option>public_network</option> e <option>cluster_network</option> o all'interno di una di queste variabili. Nell'esempio seguente è riportato un errore di convalida.
+    </para>
+<screen>
+public_network: "192.168.10.0/24 fd00:10::/64"
+</screen>
+   </important>
+   <tip>
+    <title>evitare di utilizzare gli indirizzi <literal>fe80::/10 link-local</literal></title>
+    <para>
+     Evitare di utilizzare gli indirizzi <literal>fe80::/10 link-local</literal>. Tutte le interfacce di rete dispongono di un indirizzo <literal>fe80</literal> e richiedono un qualificatore di interfaccia per effettuare l'instradamento corretto. Assegnare gli indirizzi IPv6 allocati al proprio sito o prendere in considerazione di utilizzare <literal>fd00::/8</literal>. Questi elementi sono parte di ULA e non sono instradabili a livello globale.
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+</chapter>

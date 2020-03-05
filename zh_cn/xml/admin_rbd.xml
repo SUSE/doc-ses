@@ -1,0 +1,1240 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_rbd.xml" version="5.0" xml:id="ceph-rbd">
+ <title>RADOS 块设备</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  一个块就是由若干字节组成的序列，例如 4 MB 的数据块。基于块的存储接口是使用旋转媒体（例如硬盘、CD、软盘）存储数据最常见的方式。块设备接口的普及，也使得虚拟块设备成为与大量数据存储系统（例如 Ceph）进行交互的理想选择。
+ </para>
+ <para>
+  Ceph 块设备允许共享物理资源，并且可以调整大小。它们会在 Ceph 集群中的多个 OSD 上等量存储数据。Ceph 块设备会利用 RADOS 功能，例如创建快照、复制和一致性。Ceph 的 RADOS 块设备 (RBD) 使用内核扩展模块或 <systemitem>librbd</systemitem> 库与 OSD 交互。
+ </para>
+ <figure>
+  <title>RADOS 协议</title>
+  <mediaobject>
+   <imageobject role="fo">
+    <imagedata fileref="ceph_rbd_schema.png" width="70%" format="PNG"/>
+   </imageobject>
+   <imageobject role="html">
+    <imagedata fileref="ceph_rbd_schema.png" width="70%" format="PNG"/>
+   </imageobject>
+  </mediaobject>
+ </figure>
+ <para>
+  Ceph 的块设备为内核扩展模块提供高性能及无限的可扩展性。它们支持虚拟化解决方案（例如 QEMU）或依赖于 <systemitem class="library">libvirt</systemitem> 的基于云的计算系统（例如 OpenStack）。您可以使用同一个集群来同时操作对象网关、CephFS 和 RADOS 块设备。
+ </para>
+ <sect1 xml:id="ceph-rbd-commands">
+  <title>块设备命令</title>
+
+  <para>
+   <command>rbd</command> 命令可让您创建、列出、内省和删除块设备映像。您还可以使用它来执行其他操作，例如，克隆映像、创建快照、将映像回滚到快照或查看快照。
+  </para>
+
+  <sect2 xml:id="ceph-rbd-cmds-create">
+   <title>在副本存储池中创建块设备映像</title>
+   <para>
+    将块设备添加到客户端之前，您需要在现有存储池中创建一个相关的映像（请参见<xref linkend="ceph-pools"/>）：
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd create --size <replaceable>MEGABYTES</replaceable> <replaceable>POOL-NAME</replaceable>/<replaceable>IMAGE-NAME</replaceable>
+</screen>
+   <para>
+    例如，要创建名为“myimage”的 1 GB 映像，并使其将信息存储在名为“mypool”的存储池中，请执行以下命令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd create --size 1024 mypool/myimage</screen>
+   <tip>
+    <title>映像大小单位</title>
+    <para>
+     如果您省略了大小单位缩写（“G”或“T”），映像大小将以兆字节为单位。请在大小数值之后使用“G”或“T”来指定千兆字节或太字节。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-create-ec">
+   <title>在纠删码存储池中创建块设备映像</title>
+   <para>
+    自 SUSE Enterprise Storage 5 起，可以将块设备映像的数据直接存储在纠删码 (EC) 存储池中。RADOS 块设备映像由<emphasis>数据</emphasis>和<emphasis>元数据</emphasis>两部分组成。您只能将 RADOS 块设备映像的“数据”部分存储在 EC 存储池中。要这么做，存储池的“overwrite”标志需要设置为 <emphasis>true</emphasis>，并且用于存储存储池的所有 OSD 都必须使用 BlueStore。
+   </para>
+   <para>
+    不能将映像的“元数据”部分存储在 EC 存储池中。您需要使用 <command>rbd create</command> 命令的 <option>--pool=</option> 选项来指定用于存储映像元数据的副本存储池。
+   </para>
+   <para>
+    通过以下步骤可在新创建的 EC 存储池中创建 RBD 映像：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool create <replaceable>POOL_NAME</replaceable> 12 12 erasure
+<prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> allow_ec_overwrites true
+
+#Metadata will reside in pool "<replaceable>OTHER_POOL</replaceable>", and data in pool "<replaceable>POOL_NAME</replaceable>"
+<prompt>cephadm@adm &gt; </prompt><command>rbd</command> create <replaceable>IMAGE_NAME</replaceable> --size=1G --data-pool <replaceable>POOL_NAME</replaceable> --pool=<replaceable>OTHER_POOL</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-list">
+   <title>列出块设备映像</title>
+   <para>
+    要列出名为“mypool”的存储池中的块设备，请执行以下命令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd ls mypool</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-info">
+   <title>检索映像信息</title>
+   <para>
+    要从名为“mypool”的存储池内的映像“myimage”检索信息，请运行以下命令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd info mypool/myimage</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-resize">
+   <title>调整块设备映像的大小</title>
+   <para>
+    RADOS 块设备映像是瘦配置 — 在您开始将数据保存到这些映像之前，它们实际上并不会使用任何物理存储。但是，这些映像具有您使用 <option>--size</option> 选项设置的最大容量。如果您要增大（或减小）映像的最大大小，请运行以下命令：
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd resize --size 2048 <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> # to increase
+<prompt>cephadm@adm &gt; </prompt>rbd resize --size 2048 <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> --allow-shrink # to decrease
+</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-rm">
+   <title>删除块设备映像</title>
+   <para>
+    要删除与“mypool”存储池内的映像“myimage”对应的块设备，请运行以下命令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd rm mypool/myimage</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-integration-mount-rbd">
+  <title>装入和卸载</title>
+
+  <para>
+   创建 RADOS 块设备之后，便可以像任何其他磁盘设备一样使用它：进行格式化、将其装入以便能够交换文件，以及在完成时将其卸载。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     确保您的 Ceph 集群的存储池中包含要映射的磁盘映像。假设存储池名为 <literal>mypool</literal>，映像名为 <literal>myimage</literal>。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd list mypool</screen>
+   </step>
+   <step>
+    <para>
+     将映像映射到新的块设备。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool mypool myimage</screen>
+    <tip>
+     <title>用户名和身份验证</title>
+     <para>
+      要指定用户名，请使用 <option>--id <replaceable>用户名</replaceable></option>。如果您使用 <systemitem>cephx</systemitem> 身份验证，则还需要指定密钥。该机密可能来自密钥环，或某个包含机密的文件：
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+     <para>
+      或者
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     列出所有映射的设备：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd showmapped
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    <para>
+     我们要使用的设备是 <filename>/dev/rbd0</filename>。
+    </para>
+    <tip>
+     <title>RBD 设备路径</title>
+     <para>
+      您可以使用 <filename>/dev/rbd/<replaceable>存储池名称</replaceable>/<replaceable>映像名称</replaceable></filename>作为永久设备路径来代替 <filename>/dev/rbd<replaceable>设备编号</replaceable></filename>。例如：
+     </para>
+<screen>
+/dev/rbd/mypool/myimage
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     在 <filename>/dev/rbd0</filename> 设备上创建 XFS 文件系统。
+    </para>
+<screen><prompt>root # </prompt>mkfs.xfs /dev/rbd0
+ log stripe unit (4194304 bytes) is too large (maximum is 256KiB)
+ log stripe unit adjusted to 32KiB
+ meta-data=/dev/rbd0              isize=256    agcount=9, agsize=261120 blks
+          =                       sectsz=512   attr=2, projid32bit=1
+          =                       crc=0        finobt=0
+ data     =                       bsize=4096   blocks=2097152, imaxpct=25
+          =                       sunit=1024   swidth=1024 blks
+ naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+ log      =internal log           bsize=4096   blocks=2560, version=2
+          =                       sectsz=512   sunit=8 blks, lazy-count=1
+ realtime =none                   extsz=4096   blocks=0, rtextents=0</screen>
+   </step>
+   <step>
+    <para>
+     装入设备并检查它是否已正确装入。将 <filename>/mnt</filename> 替换为您的装入点。
+    </para>
+<screen><prompt>root # </prompt>mount /dev/rbd0 /mnt
+<prompt>root # </prompt>mount | grep rbd0
+/dev/rbd0 on /mnt type xfs (rw,relatime,attr2,inode64,sunit=8192,...</screen>
+    <para>
+     现在，您便可以将数据移入/移出设备，就如同它是本地目录一样。
+    </para>
+    <tip>
+     <title>增大 RBD 设备的大小</title>
+     <para>
+      如果您发现 RBD 设备的大小不再够用，可以轻松增大大小。
+     </para>
+     <orderedlist spacing="normal">
+      <listitem>
+       <para>
+        增大 RBD 映像的大小，例如增大到 10GB。
+       </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd resize --size 10000 mypool/myimage
+ Resizing image: 100% complete...done.</screen>
+      </listitem>
+      <listitem>
+       <para>
+        扩大文件系统以填入设备的新大小。
+       </para>
+<screen><prompt>root # </prompt>xfs_growfs /mnt
+ [...]
+ data blocks changed from 2097152 to 2560000</screen>
+      </listitem>
+     </orderedlist>
+    </tip>
+   </step>
+   <step>
+    <para>
+     当您访问完设备后，可以将其取消映射并卸载。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd unmap /dev/rbd0
+<prompt>root # </prompt>unmount /mnt
+</screen>
+   </step>
+  </procedure>
+
+  <tip>
+   <title>手动装入（卸载）</title>
+   <para>
+    因为在引导之后手动映射和装入 RBD 映像以及在关机之前卸载和取消映射会非常麻烦，我们提供了 <command>rbdmap</command> 脚本和 <systemitem class="daemon">systemd</systemitem> 单元。请参考<xref linkend="ceph-rbd-rbdmap"/>。
+   </para>
+  </tip>
+
+  <sect2 xml:id="ceph-rbd-rbdmap">
+   <title>rbdmap：在引导时映射 RBD 设备</title>
+   <para>
+    <command>rbdmap</command> 是一个外壳脚本，可对一个或多个 RBD 映像自动执行 <command>rbd map</command> 和 <command>rbd unmap</command> 操作。虽然您随时都可以手动运行该脚本，但其主要优势是在引导时自动映射和装入 RBD 映像（以及在关机时卸载和取消映射），此操作由 Init 系统触发。<systemitem>ceph-common</systemitem> 包中随附了一个 <systemitem class="daemon">systemd</systemitem> 单元文件 <filename>rbdmap.service</filename> 用于执行此操作。
+   </para>
+   <para>
+    该脚本使用单个自变量，可以是 <option>map</option> 或 <option>unmap</option>。使用任一自变量时，该脚本都会分析配置文件。它默认为 <filename>/etc/ceph/rbdmap</filename>，但可通过环境变量 <literal>rbdmapFILE</literal> 覆盖。该配置文件的每一行相当于一个要映射或取消映射的 RBD 映像。
+   </para>
+   <para>
+    配置文件采用以下格式：
+   </para>
+<screen>image_specification rbd_options</screen>
+   <variablelist>
+    <varlistentry>
+     <term><option>image_specification</option></term>
+     <listitem>
+      <para>
+       存储池中映像的路径。以 <replaceable>pool_name</replaceable>/<replaceable>image_name</replaceable> 格式指定。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>rbd_options</option></term>
+     <listitem>
+      <para>
+       要传递给底层 <command>rbd map</command> 命令的参数的可选列表。这些参数及其值应该以逗号分隔的字符串形式指定，例如：
+      </para>
+<screen>PARAM1=VAL1,PARAM2=VAL2,...</screen>
+      <para>
+       该示例让 <command>rbdmap</command> 脚本运行以下命令：
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> --PARAM1 VAL1 --PARAM2 VAL2</screen>
+      <para>
+       下面的示例中介绍了如何使用相应的密钥指定用户名和密钥环：
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbdmap map mypool/myimage id=rbd_user,keyring=/etc/ceph/ceph.client.rbd.keyring
+</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    以 <command>rbdmap map</command> 形式运行时，该脚本会分析配置文件，并且对于每个指定的 RBD 映像，它会尝试先映射映像（使用 <command>rbd map</command> 命令），再装入映像。
+   </para>
+   <para>
+    以 <command>rbdmap unmap</command> 形式运行时，配置文件中列出的映像将卸载并取消映射。
+   </para>
+   <para>
+    <command>rbdmap unmap-all</command> 会尝试卸载然后取消映射所有当前已映射的 RBD 映像，而不论它们是否列在配置文件中。
+   </para>
+   <para>
+    如果成功，rbd map 操作会将映像映射到 /dev/rbdX 设备，此时会触发 udev 规则，以创建易记设备名称符号链接 <filename>/dev/rbd/<replaceable>pool_name</replaceable>/<replaceable>image_name</replaceable></filename>，该链接指向实际映射的设备。
+   </para>
+   <para>
+    为了装入和卸载成功，易记设备名称在 <filename>/etc/fstab</filename> 中需有对应项。写入 RBD 映像的 <filename>/etc/fstab</filename> 项时，指定“noauto”（或“nofail”）装入选项。这可防止 Init 系统过早（尚未出现有问题的设备时）尝试装入设备，因为 <filename>rbdmap.service</filename> 通常是在引导序列中相当靠后的时间触发。
+   </para>
+   <para>
+    有关 <command>rbd</command> 选项的完整列表，请参见 <command>rbd</command> 手册页 (<command>man 8 rbd</command>)。
+   </para>
+   <para>
+    有关 <command>rbdmap</command> 用法的示例，请参见 <command>rbdmap</command> 手册页 (<command>man 8 rbdmap</command>)。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>增大 RBD 设备的大小</title>
+   <para>
+    如果您发现 RBD 设备的大小不再够用，可以轻松增大大小。
+   </para>
+   <orderedlist spacing="normal">
+    <listitem>
+     <para>
+      增大 RBD 映像的大小，例如增大到 10GB。
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd resize --size 10000 mypool/myimage
+ Resizing image: 100% complete...done.</screen>
+    </listitem>
+    <listitem>
+     <para>
+      扩大文件系统以填入设备的新大小。
+     </para>
+<screen><prompt>root # </prompt>xfs_growfs /mnt
+ [...]
+ data blocks changed from 2097152 to 2560000</screen>
+    </listitem>
+   </orderedlist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-snapshots-rbd">
+  <title>快照</title>
+
+  <para>
+   RBD 快照是 RADOS 块设备映像的快照。通过快照，您可以保留映像状态的历史。Ceph 还支持快照分层，这可让您轻松快速地克隆 VM 映像。Ceph 使用 <command>rbd</command> 命令和许多高级接口（包括 QEMU、<systemitem>libvirt</systemitem>、OpenStack 和 CloudStack）支持块设备快照。
+  </para>
+
+  <note>
+   <para>
+    在创建映像的快照之前，请停止输入和输出操作，并刷新所有待处理写操作。如果映像包含文件系统，则在创建快照时，文件系统必须处于一致状态。
+   </para>
+  </note>
+
+  <sect2>
+   <title>Cephx 注意事项</title>
+   <para>
+    如果启用了 <systemitem>cephx</systemitem>，则必须指定用户名或 ID，以及包含用户相应密钥的密钥环的路径。有关详细信息，请参见 <xref linkend="cha-storage-cephx"/>。您还可以添加 <systemitem>CEPH_ARGS</systemitem> 环境变量，以免重新输入以下参数。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --id <replaceable>user-ID</replaceable> --keyring=/path/to/secret <replaceable>commands</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --name <replaceable>username</replaceable> --keyring=/path/to/secret <replaceable>commands</replaceable></screen>
+   <para>
+    例如：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --id admin --keyring=/etc/ceph/ceph.keyring <replaceable>commands</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --name client.admin --keyring=/etc/ceph/ceph.keyring <replaceable>commands</replaceable></screen>
+   <tip>
+    <para>
+     将用户和机密添加到 <systemitem>CEPH_ARGS</systemitem> 环境变量，如此您便无需每次都输入它们。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2>
+   <title>快照基础知识</title>
+   <para>
+    下面的过程说明如何在命令行上使用 <command>rbd</command> 命令创建、列出和删除快照。
+   </para>
+   <sect3>
+    <title>创建快照</title>
+    <para>
+     要使用 <command>rbd</command> 创建快照，请指定 <option>snap create</option> 选项、存储池名称和映像名称。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap create --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap create <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool rbd snap create --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap create rbd/image1@snapshot1</screen>
+   </sect3>
+   <sect3>
+    <title>列出快照</title>
+    <para>
+     要列出映像的快照，请指定存储池名称和映像名称。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap ls <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap ls <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool rbd snap ls image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap ls rbd/image1</screen>
+   </sect3>
+   <sect3>
+    <title>回滚快照</title>
+    <para>
+     要使用 <command>rbd</command> 回滚快照，请指定 <option>snap rollback</option> 选项、存储池名称、映像名称和快照名称。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap rollback --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap rollback <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap rollback --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap rollback pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      将映像回滚到快照意味着会使用快照中的数据重写当前版本的映像。执行回滚所需的时间将随映像大小的增加而延长。从快照<emphasis>克隆较快</emphasis>，而从映像到快照的<emphasis>回滚较慢</emphasis>，因此克隆是返回先前存在状态的首选方法。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>删除快照</title>
+    <para>
+     要使用 <command>rbd</command> 删除快照，请指定 <option>snap rm</option> 选项、存储池名称、映像名称和用户名。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap rm --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap rm <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap rm --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap rm pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      Ceph OSD 会以异步方式删除数据，因此删除快照不能立即释放磁盘空间。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>清除快照</title>
+    <para>
+     要使用 <command>rbd</command> 删除映像的所有快照，请指定 <option>snap purge</option> 选项和映像名称。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap purge <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap purge <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap purge image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap purge pool1/image1</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-snapshoti-layering">
+   <title>分层</title>
+   <para>
+    Ceph 支持为一个块设备快照创建多个写入时复制 (COW) 克隆的功能。快照分层可让 Ceph 块设备客户端能够极快地创建映像。例如，您可以创建块设备映像并将 Linux VM 写入其中，然后创建映像的快照、保护快照，并创建您所需数量的“写入时复制”克隆。快照是只读的，因此克隆快照简化了语义，如此可快速创建克隆。
+   </para>
+   <note>
+    <para>
+     下面的命令行示例中提到的“父”和“子”这两个术语是指 Ceph 块设备快照（父）和从快照克隆的相应映像（子）。
+    </para>
+   </note>
+   <para>
+    每个克隆的映像（子）都存储了对其父映像的引用，这可让克隆的映像打开父快照并读取其内容。
+   </para>
+   <para>
+    快照的 COW 克隆的行为方式与任何其他 Ceph 块设备映像完全相同。可针对克隆的映像执行读取、写入、克隆和调整大小操作。系统对克隆的映像没有特殊限制。但是，快照的写入时复制克隆会引用快照，因此您<emphasis>必须</emphasis>在克隆快照之前保护快照。
+   </para>
+   <note>
+    <title>不支持 <option>--image-format 1</option></title>
+    <para>
+     您无法为通过弃用的 <command>rbd create --image-format 1</command> 选项创建的映像创建快照。Ceph 仅支持克隆默认的 <emphasis>format 2</emphasis> 映像。
+    </para>
+   </note>
+   <sect3>
+    <title>分层入门</title>
+    <para>
+     Ceph 块设备分层是一个简单的过程。您必须有一个映像。您必须创建映像的快照。您必须保护快照。在您执行这些步骤之后，就可以开始克隆快照了。
+    </para>
+    <para>
+     克隆的映像具有对父快照的引用，并且包含存储池 ID、映像 ID 和快照 ID。包含存储池 ID 意味着您可以将快照从一个存储池克隆到另一个存储池中的映像。
+    </para>
+    <itemizedlist mark="bullet" spacing="normal">
+     <listitem>
+      <para>
+       <emphasis>映像模板</emphasis>：一种常见的块设备分层用例是创建主映像和用作克隆模板的快照。例如，用户可为 Linux 发行套件（如 SUSE Linux Enterprise Server）创建映像并为它创建快照。用户可以定期更新映像和创建新的快照（例如，先执行 <command>zypper ref &amp;&amp; zypper patch</command>，接着执行 <command>rbd snap create</command>）。随着映像日趋成熟，用户可以克隆任何一个快照。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>扩展模板</emphasis>：更高级的用例包括扩展比基本映像提供的信息更多的模板映像。例如，用户可以克隆映像（VM 模板）并安装其他软件（例如，数据库、内容管理系统或分析系统），然后创建扩展映像的快照，这个扩展映像可以如基本映像一样更新。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>模板池</emphasis>：使用块设备分层的一种方法是创建包含主映像（用作模板）的池，然后创建这些模板的快照。之后，您便可以扩大用户的只读特权，使他们可以克隆快照，却不能写入存储池或在存储池中执行。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>映像迁移/恢复</emphasis>：使用块设备分层的一种方法是将数据从一个存储池迁移或恢复到另一个存储池。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>保护快照</title>
+    <para>
+     克隆会访问父快照。如果用户意外删除了父快照，则所有克隆都会损坏。为了防止数据丢失，您需要先保护快照，然后才能克隆它。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap protect \
+ --image <replaceable>image-name</replaceable> --snap <replaceable>snapshot-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap protect <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap protect --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd snap protect pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      您无法删除受保护的快照。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>克隆快照</title>
+    <para>
+     要克隆快照，您需要指定父存储池、映像、快照、子存储池和映像名称。您需要先保护快照，然后才能克隆它。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd clone --pool <replaceable>pool-name</replaceable> --image <replaceable>parent-image</replaceable> \
+ --snap <replaceable>snap-name</replaceable> --dest-pool <replaceable>pool-name</replaceable> \
+ --dest <replaceable>child-image</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd clone <replaceable>pool-name</replaceable>/<replaceable>parent-image</replaceable>@<replaceable>snap-name</replaceable> \
+<replaceable>pool-name</replaceable>/<replaceable>child-image-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd clone pool1/image1@snapshot1 pool1/image2</screen>
+    <note>
+     <para>
+      您可以将快照从一个存储池克隆到另一个存储池中的映像。例如，可以在一个存储池中将只读映像和快照作为模板维护，而在另一个存储池中维护可写入克隆。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>取消保护快照</title>
+    <para>
+     必须先取消保护快照，然后才能删除它。另外，您<emphasis>无法</emphasis>删除克隆所引用的快照。您需要先平展快照的每个克隆，然后才能删除快照。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap unprotect --image <replaceable>image-name</replaceable> \
+ --snap <replaceable>snapshot-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap unprotect <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap unprotect --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd snap unprotect pool1/image1@snapshot1</screen>
+   </sect3>
+   <sect3>
+    <title>列出快照的子项</title>
+    <para>
+     要列出快照的子项，请执行以下命令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> children --image <replaceable>image-name</replaceable> --snap <replaceable>snap-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd children <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 children --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd children pool1/image1@snapshot1</screen>
+   </sect3>
+   <sect3 xml:id="rbd-flatten">
+    <title>平展克隆的映像</title>
+    <para>
+     克隆的映像会保留对父快照的引用。删除子克隆对父快照的引用时，可通过将信息从快照复制到克隆，高效“平展”映像。平展克隆所需的时间随着映像大小的增加而延长。要删除快照，必须先平展子映像。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> flatten --image <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd flatten <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 flatten --image image1
+<prompt>cephadm@adm &gt; </prompt>rbd flatten pool1/image1</screen>
+    <note>
+     <para>
+      由于平展的映像包含快照中的所有信息，平展的映像占用的存储空间将比分层克隆多。
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-rbd-mirror">
+  <title>镜像</title>
+
+  <para>
+   RBD 映像可以在两个 Ceph 集群之间异步镜像。此功能使用 RBD 日志映像功能来确保集群之间的复制在崩溃时保持一致。镜像在同伴集群中逐池配置，并且可以配置为自动镜像池中的所有映像或仅镜像特定的映像子集。镜像使用 <command>rbd</command> 命令进行配置。<systemitem>rbd-mirror</systemitem> 守护进程负责从远程同伴集群提取映像更新，并将它们应用于本地集群中的映像。
+  </para>
+
+  <note>
+   <title>rbd-mirror 守护进程</title>
+   <para>
+    要使用 RBD 镜像，您需要有两个 Ceph 集群，每个集群都运行 <systemitem>rbd-mirror</systemitem> 守护进程。
+   </para>
+  </note>
+
+  <important>
+   <title>通过 iSCSI 导出的 RADOS 块设备</title>
+   <para>
+    您无法使用基于内核的 iSCSI 网关镜像通过 iSCSI 导出的 RBD 设备。
+   </para>
+   <para>
+    有关 iSCSI 的更多详细信息，请参见<xref linkend="cha-ceph-iscsi"/>。
+   </para>
+  </important>
+
+  <sect2 xml:id="rbd-mirror-daemon">
+   <title>rbd-mirror 守护进程</title>
+   <para>
+    两个 <systemitem>rbd-mirror</systemitem> 守护进程负责检查远程同伴集群上的映像日记并针对本地集群重放日记事件。RBD 映像日志功能会按发生的顺序记录对映像进行的所有修改。如此可确保远程映像崩溃状态一致的镜像可在本地使用。
+   </para>
+   <para>
+    <systemitem>rbd-mirror</systemitem> 守护进程在
+    <package>rbd-mirror</package> 包中提供。您可以在 OSD 节点、网关节点甚至是专用节点上安装该包。不建议您将 <package>rbd-mirror</package> 安装在管理节点上。安装、启用和启动 <package>rbd-mirror</package>：
+   </para>
+<screen><prompt>root@minion &gt; </prompt>zypper install rbd-mirror
+<prompt>root@minion &gt; </prompt>systemctl enable ceph-rbd-mirror@<replaceable>server_name</replaceable>.service
+<prompt>root@minion &gt; </prompt>systemctl start ceph-rbd-mirror@<replaceable>server_name</replaceable>.service</screen>
+   <important>
+    <para>
+     每个 <systemitem>rbd-mirror</systemitem> 守护进程都必须能够同时连接到两个集群。
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-mirror-poolconfig">
+   <title>存储池配置</title>
+   <para>
+    以下过程说明如何使用 <command>rbd</command> 命令来执行配置镜像的基本管理任务。镜像在 Ceph 集群中逐池进行配置。
+   </para>
+   <para>
+    您需要在两个同伴集群上执行存储池配置步骤。为清楚起见，这些过程假设名为“local”和“remote”的两个集群可从单台主机访问。
+   </para>
+   <para>
+    有关如何连接到不同的 Ceph 集群的更多详细信息，请参见 <command>rbd</command> 手册页 (<command>man 8 rbd</command>)。
+   </para>
+   <tip>
+    <title>多个集群</title>
+    <para>
+     在下面的示例中，集群名称与同名的 Ceph 配置文件 <filename>/etc/ceph/remote.conf</filename> 相对应。
+    </para>
+   </tip>
+   <sect3>
+    <title>在存储池上启用镜像</title>
+    <para>
+     要针对存储池启用镜像，请指定 <command>mirror pool enable</command> 子命令、存储池名称和镜像模式。镜像模式可以是存储池或映像：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>pool</term>
+      <listitem>
+       <para>
+        将会镜像启用了日志特性的存储池中的所有映像。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>image</term>
+      <listitem>
+       <para>
+        需要针对每个映像明确启用镜像。有关详细信息，请参见<xref linkend="rbd-mirror-enable-image-mirroring"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool enable <replaceable>POOL_NAME</replaceable> pool
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool enable <replaceable>POOL_NAME</replaceable> pool</screen>
+   </sect3>
+   <sect3>
+    <title>禁用镜像</title>
+    <para>
+     要对存储池禁用镜像，请指定 <command>mirror pool disable</command> 子命令和存储池名称。使用这种方法对存储池禁用镜像时，还会对已为其明确启用镜像的所有映像（该存储池中）禁用镜像。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool disable <replaceable>POOL_NAME</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool disable <replaceable>POOL_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>添加集群同伴</title>
+    <para>
+     为了让 <systemitem>rbd-mirror</systemitem> 守护进程发现它的同伴集群，需要向存储池注册该同伴集群。要添加镜像同伴集群，请指定 <command>mirror pool peer add</command> 子命令、存储池名称和集群规格：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool peer add <replaceable>POOL_NAME</replaceable> client.remote@remote
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool peer add <replaceable>POOL_NAME</replaceable> client.local@local</screen>
+   </sect3>
+   <sect3>
+    <title>删除集群同伴</title>
+    <para>
+     要删除镜像同伴集群，请指定 <command>mirror pool peer remove</command> 子命令、存储池名称和对等 UUID（可通过 <command>rbd mirror pool info</command> 命令获得）：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool peer remove <replaceable>POOL_NAME</replaceable> \
+ 55672766-c02b-4729-8567-f13a66893445
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool peer remove <replaceable>POOL_NAME</replaceable> \
+ 60c0e299-b38f-4234-91f6-eed0a367be08</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="rbd-mirror-imageconfig">
+   <title>映像配置</title>
+   <para>
+    与存储池配置不同，映像配置只需要针对单个镜像同伴 Ceph 集群执行。
+   </para>
+   <para>
+    系统会将镜像的 RBD 映像指定为<emphasis>主要</emphasis>或<emphasis>非主要</emphasis>。这是映像的属性，而不是存储池的属性。不能修改指定为非主要的映像。
+   </para>
+   <para>
+    当首次对某个映像启用镜像时（如果存储池镜像模式是“存储池”并且映像已启用日志映像功能，则为隐式启用，或可通过 <command>rbd</command> 命令显式启用（请参见<xref linkend="rbd-mirror-enable-image-mirroring"/>）），映像会自动升级为主要映像。
+   </para>
+   <sect3>
+    <title>映像日志支持</title>
+    <para>
+     RBD 镜像使用 RBD 日志功能来确保复制的映像始终在崩溃时保持一致状态。在将映像镜像到同伴集群之前，必须启用日志功能。可以在创建映像时通过将 <option>--image-feature exclusive-lock,journaling</option> 选项提供给 <command>rbd</command> 命令来启用该功能。
+    </para>
+    <para>
+     或者，日志功能可以针对预先存在的 RBD 映像动态启用。要启用日记，请指定 <command>feature enable</command> 子命令、存储池和映像名称以及功能名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local feature enable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> journaling</screen>
+    <note>
+     <title>选项依赖性</title>
+     <para>
+      <option>journaling</option> 功能依赖于 <option>exclusive-lock</option> 功能。如果 <option>exclusive-lock</option> 功能尚未启用，则您需要先启用它，再启用 <option>journaling</option> 功能。
+     </para>
+    </note>
+    <warning>
+     <title>针对所有新映像启用日志</title>
+     <para>
+      您可以在 Ceph 配置文件中的 <option>rbd default features</option> 选项中追加 <literal>journaling</literal> 值，以便默认对所有新映像启用日志。例如：
+     </para>
+<screen>rbd default features = layering,exclusive-lock,object-map,deep-flatten,journaling</screen>
+     <para>
+      应用此更改之前，请慎重考虑对所有新映像启用日志是否适合您的部署，因为这样做可能会对性能产生负面影响。
+     </para>
+    </warning>
+   </sect3>
+   <sect3 xml:id="rbd-mirror-enable-image-mirroring">
+    <title>启用映像镜像</title>
+    <para>
+     如果镜像配置为“映像”模式，则需要为存储池中的每个映像明确启用镜像。要为特定映像启用镜像，请指定 <command>mirror image enable</command> 子命令以及存储池和映像名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image enable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>禁用映像镜像</title>
+    <para>
+     要为特定映像禁用镜像，请指定 <command>mirror image disable</command> 子命令以及存储池和映像名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image disable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>映像升级和降级</title>
+    <para>
+     在需要将主要指定移动到同伴集群中映像的故障转移情况下，您需要停止访问主要映像、降级当前主要映像、升级新的主要映像，然后继续访问替代集群上的映像。
+    </para>
+    <note>
+     <title>强制升级</title>
+     <para>
+      可以使用 <option>--force</option> 选项强制升级。降级不能传播到同伴集群时（例如，当集群发生故障或通讯中断时），就需要强制升级。这将导致两个同伴集群之间出现节点分裂情况，并且映像不再同步，直到发出了 <command>resync</command> 子命令。
+     </para>
+    </note>
+    <para>
+     要将特定映像降级为非主要映像，请指定 <command>mirror image demote</command> 子命令以及存储池和映像名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image demote <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     要将存储池中的所有主要映像都降级为非主要映像，请指定 <command>mirror pool demote</command> 子命令以及存储池名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool demote <replaceable>POOL_NAME</replaceable></screen>
+    <para>
+     要将特定映像升级为主要映像，请指定 <command>mirror image promote</command> 子命令以及存储池和映像名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror image promote <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     要将存储池中的所有非主要映像都升级为主要映像，请指定 <command>mirror pool promote</command> 子命令以及存储池名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool promote <replaceable>POOL_NAME</replaceable></screen>
+    <tip>
+     <title>拆分 I/O 负载</title>
+     <para>
+      因为主要或非主要状态是针对映像的，所以可以使用两个集群来分割 I/O 负载并进行故障转移或故障回复。
+     </para>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>强制映像重新同步</title>
+    <para>
+     如果 <systemitem>rbd-mirror</systemitem> 守护进程检测到分区事件，则在该情况解决之前，它不会尝试镜像受影响的映像。要继续镜像映像，请先降级确定过期的映像，然后请求与主要映像重新同步。要请求映像重新同步，请指定 <command>mirror image resync</command> 子命令以及存储池和映像名称：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror image resync <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="rbd-mirror-status">
+   <title>镜像状态</title>
+   <para>
+    系统会存储每个主要镜像映像的同伴集群复制状态。此状态可使用 <command>mirror image status</command> 和 <command>mirror pool status</command> 子命令检索：
+   </para>
+   <para>
+    要请求镜像映像状态，请指定 <command>mirror image status</command> 子命令以及存储池和映像名称：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror image status <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   <para>
+    要请求镜像存储池摘要状态，请指定 <command>mirror pool status</command> 子命令以及存储池名称：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror pool status <replaceable>POOL_NAME</replaceable></screen>
+   <tip>
+    <title/>
+    <para>
+     将 <option>--verbose</option> 选项添加到 <command>mirror pool status</command> 子命令会额外地输出存储池中每个镜像映像的状态详细信息。
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="rbd-cache-settings">
+  <title>缓存设置</title>
+
+  <para>
+   Ceph 块设备的用户空间实现 (<systemitem>librbd</systemitem>) 无法利用 Linux 页面缓存。因此，它具有自己的内存中缓存。RBD 缓存的行为与硬盘缓存类似。当 OS 发送屏障或刷新请求时，所有“脏”数据都会写入 OSD。这意味着只要虚拟机可以正确发送刷新请求，使用写回缓存与使用运行良好的物理硬盘一样安全。该缓存运用<emphasis>最久未使用</emphasis> (LRU) 算法，并且在写回模式下可以合并相邻请求以提高吞吐量。
+  </para>
+
+  <para>
+   Ceph 支持为 RBD 提供写回缓存。要启用该缓存，请将
+  </para>
+
+<screen>
+[client]
+...
+rbd cache = true
+</screen>
+
+  <para>
+   添加到 <filename>ceph.conf</filename> 文件的 <literal>[client]</literal> 段落。<systemitem>librbd</systemitem> 默认不会执行任何缓存。写和读都直接到达存储集群，并且只有当数据的所有副本都写入磁盘后写操作才会返回。如果启用了缓存，写操作会立即返回，除非未刷新的字节数大于 <option>rbd cache max dirty</option> 选项中设置的数值。在此情况下，写操作会触发写回机制并一直阻塞，直至有足够多的字节得到刷新。
+  </para>
+
+  <para>
+   Ceph 支持为 RBD 提供直写缓存。您可以设置缓存的大小，以及从写回缓存切换到直写缓存的目标和限值。要启用直写模式，请设置
+  </para>
+
+<screen>
+rbd cache max dirty = 0
+</screen>
+
+  <para>
+   这意味着只有当数据的所有副本都写入磁盘后写操作才会返回，但可能会从缓存中读取数据。缓存信息保存在客户端的内存中，并且每个 RBD 都有自己的缓存。由于对客户端而言缓存位于本地，因此如果有其他客户端访问映像，不会存在缓存一致性的问题。如果启用了缓存，在 RBD 上将不能运行 GFS 或 OCFS。
+  </para>
+
+  <para>
+   RBD 的设置应位于 <filename>ceph.conf</filename> 配置文件的 <literal>[client]</literal> 段落下。其设置包括：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd cache</option></term>
+    <listitem>
+     <para>
+      对 RADOS 块设备 (RBD) 启用缓存。默认值为“true”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache size</option></term>
+    <listitem>
+     <para>
+      RBD 缓存大小（以字节为单位）。默认值为 32 MB。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache max dirty</option></term>
+    <listitem>
+     <para>
+      使缓存触发写回机制的“脏”数据上限（以字节为单位）。<option>rbd cache max dirty</option> 的值必须小于 <option>rbd cache size</option> 的值。如果设置为 0，将使用直写缓存。默认值为 24 MB。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache target dirty</option></term>
+    <listitem>
+     <para>
+      达到该“脏数据目标”后，缓存即会开始向数据存储空间写入数据。该设置不会使写入缓存的操作阻塞。默认值为 16 MB。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache max dirty age</option></term>
+    <listitem>
+     <para>
+      写回开始前，脏数据在缓存中暂存的时间（以秒为单位）。默认值为 1。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache writethrough until flush</option></term>
+    <listitem>
+     <para>
+      开始进入直写模式，在收到第一条刷新请求后切换到写回模式。启用此设置虽然较为保守，但却是一种安全的做法，如此可应对在 <systemitem>rbd</systemitem> 上运行的虚拟机太旧而无法发送刷新请求的情况（例如，内核低于 2.6.32 的 Linux 中的 Virtio 驱动程序）。默认值为“true”。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-qos">
+  <title>QoS 设置</title>
+
+  <para>
+   一般而言，服务质量 (QoS) 指的是流量优先级设置和资源预留方法。它对于具有特殊要求的流量传输尤为重要。
+  </para>
+
+  <important>
+   <title>不受 iSCSI 支持</title>
+   <para>
+    下列 QoS 设置仅由用户空间 RBD 实现 <systemitem class="daemon">librbd</systemitem> 使用，<systemitem>kRBD</systemitem> 实现<emphasis>不</emphasis>使用这些设置。由于 iSCSI 使用的是 <systemitem>kRBD</systemitem>，因此不使用 QoS 设置。不过，对于 iSCSI，您可以使用标准内核工具在内核块设备层上配置 QoS。
+   </para>
+  </important>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd qos iops limit</option></term>
+    <listitem>
+     <para>
+      指定的每秒 I/O 操作次数上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos bps limit</option></term>
+    <listitem>
+     <para>
+      指定的每秒 I/O 字节数上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read iops limit</option></term>
+    <listitem>
+     <para>
+      指定的每秒读操作次数上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write iops limit</option></term>
+    <listitem>
+     <para>
+      指定的每秒写操作次数上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read bps limit</option></term>
+    <listitem>
+     <para>
+      指定的每秒内读取的字节数上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write bps limit</option></term>
+    <listitem>
+     <para>
+      指定的每秒内写入的字节数上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos iops burst</option></term>
+    <listitem>
+     <para>
+      指定的 I/O 操作次数突发上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos bps burst</option></term>
+    <listitem>
+     <para>
+      指定的 I/O 字节数突发上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read iops burst</option></term>
+    <listitem>
+     <para>
+      指定的读操作次数突发上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write iops burst</option></term>
+    <listitem>
+     <para>
+      指定的写操作次数突发上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read bps burst</option></term>
+    <listitem>
+     <para>
+      指定的读取的字节数突发上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write bps burst</option></term>
+    <listitem>
+     <para>
+      指定的写入的字节数突发上限。默认值为 0（无限制）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos schedule tick min</option></term>
+    <listitem>
+     <para>
+      QoS 的最小时间表刻度（以毫秒为单位）。默认值为 50。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-readahead-settings">
+  <title>预读设置</title>
+
+  <para>
+   RADOS 块设备支持预读/预提取功能，以优化小块的顺序读取。如果使用虚拟机，此操作通常应由 guest 操作系统处理，但引导加载程序可能不会发出有效的读请求。如果禁用缓存，则会自动禁用预读功能。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd readahead trigger requests</option></term>
+    <listitem>
+     <para>
+      触发预读所必需的顺序读取请求数。默认值为 10。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd readahead max bytes</option></term>
+    <listitem>
+     <para>
+      预读请求的最大大小。如果设置为 0，则会禁用预读功能。默认值为 512kB。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd readahead disable after bytes</option></term>
+    <listitem>
+     <para>
+      从 RBD 映像读取该数量的字节后，该映像的预读功能将会禁用，直至其关闭。使用此设置，guest 操作系统引导时便可接管预读工作。如果设置为 0，预读将始终处于启用状态。默认值为 50 MB。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-features">
+  <title>高级功能</title>
+
+  <para>
+   RADOS 块设备支持可增强 RBD 映像功能的高级特性。您可以在创建 RBD 映像时在命令行上指定这些特性，或者在 Ceph 配置文件中使用 <option>rbd_default_features</option> 选项来指定。
+  </para>
+
+  <para>
+   您可以通过以下两种方式指定 <option>rbd_default_features</option> 选项的值：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     指定为相应特性的内部值之和。每项特性都有自己的内部值，例如，“layering”的内部值为 1，“fast-diff”的内部值为 16。因此，若要默认激活这两项特性，请指定以下选项：
+    </para>
+<screen>
+rbd_default_features = 17
+</screen>
+   </listitem>
+   <listitem>
+    <para>
+     指定为各特性的逗号分隔列表。上面的示例应如下所示：
+    </para>
+<screen>
+rbd_default_features = layering,fast-diff
+</screen>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>iSCSI 不支持的特性</title>
+   <para>
+    iSCSI 不支持具有以下特性的 RBD 映像：<option>deep-flatten</option>、<option>object-map</option>、<option>journaling</option>、<option>fast-diff</option>、<option>striping</option>
+   </para>
+  </note>
+
+  <para>
+   以下是 RBD 的高级特性列表：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>layering</option></term>
+    <listitem>
+     <para>
+      分层允许您使用克隆。
+     </para>
+     <para>
+      内部值为 1，默认值为“yes”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>striping</option></term>
+    <listitem>
+     <para>
+      条带特性会将数据分布在多个对象之间，有助于提升顺序读取/写入工作负载的并行度。它可防止大型或繁忙的 RADOS 块设备出现单节点瓶颈。
+     </para>
+     <para>
+      内部值为 2，默认值为“yes”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>exclusive-lock</option></term>
+    <listitem>
+     <para>
+      如果启用，客户端需要在写入数据之前锁定对象。仅当一次只有一个客户端在访问映像时才应启用互斥锁。内部值为 4。默认值为“yes”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>object-map</option></term>
+    <listitem>
+     <para>
+      对象映射支持依赖于互斥锁支持。块设备采用的是精简供给，也就是说这些设备只存储实际存在的数据。对象映射支持有助于跟踪哪些对象实际存在（在驱动器上存储了数据）。启用对象映射支持可以加快克隆、导入和导出数据稀疏的映像以及删除所需的 I/O 操作。
+     </para>
+     <para>
+      内部值为 8，默认值为“yes”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>fast-diff</option></term>
+    <listitem>
+     <para>
+      Fast-diff 支持依赖于对象映射支持和互斥锁支持。它会向对象映射添加另一个属性，使其更快地生成映像各快照之间的差异以及快照的实际数据使用率。
+     </para>
+     <para>
+      内部值为 16，默认值为“yes”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>deep-flatten</option></term>
+    <listitem>
+     <para>
+      Deep-flatten 使 <command>rbd flatten</command>（请参见<xref linkend="rbd-flatten"/>）除了对映像本身有效外，还对映像的所有快照有效。如果没有该特性，映像的快照将仍然依赖于其父映像，因而如果未删除快照，您将无法删除父映像。Deep-flatten 使父映像可独立于其克隆，即使这些克隆有快照也不例外。
+     </para>
+     <para>
+      内部值为 32，默认值为“yes”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>journaling</option></term>
+    <listitem>
+     <para>
+      日志支持依赖于互斥锁支持。日志会按修改发生的顺序记录映像的所有修改。RBD 镜像（请参见<xref linkend="ceph-rbd-mirror"/>）会使用日志将崩溃一致性映像复制到远程集群。
+     </para>
+     <para>
+      内部值为 64，默认值为“no”。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-old-clients-map">
+  <title>使用旧内核客户端映射 RBD</title>
+
+  <para>
+   旧客户端（例如 SLE11 SP4）可能无法映射 RBD 映像，因为使用 SUSE Enterprise Storage 6 部署的集群会强制执行一些旧客户端不支持的特性（RBD 映像级特性和 RADOS 级特性）。发生此情况时，OSD 日志将显示类似如下的讯息：
+  </para>
+
+<screen>2019-05-17 16:11:33.739133 7fcb83a2e700  0 -- 192.168.122.221:0/1006830 &gt;&gt; \
+192.168.122.152:6789/0 pipe(0x65d4e0 sd=3 :57323 s=1 pgs=0 cs=0 l=1 c=0x65d770).connect \
+protocol feature mismatch, my 2fffffffffff &lt; peer 4010ff8ffacffff missing 401000000000000
+</screen>
+
+  <warning>
+   <title>更改 CRUSH 索引存储桶类型将导致大规模重新平衡</title>
+   <para>
+    如果您打算在 CRUSH 索引存储桶类型“straw”与“straw2”之间切换，请做好相应规划。这样做预计会对集群负载产生重大影响，因为更改存储桶类型将导致集群大规模重新平衡。
+   </para>
+  </warning>
+
+  <procedure>
+   <step>
+    <para>
+     禁用任何不支持的 RBD 映像特性。例如：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd feature disable pool1/image1 object-map
+<prompt>cephadm@adm &gt; </prompt>rbd feature disable pool1/image1 exclusive-lock
+</screen>
+   </step>
+   <step>
+    <para>
+     将 CRUSH 索引存储桶类型由“straw2”更改为“straw”：
+    </para>
+    <substeps>
+     <step>
+      <para>
+       保存 CRUSH 索引：
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd getcrushmap -o crushmap.original
+</screen>
+     </step>
+     <step>
+      <para>
+       反编译 CRUSH 索引：
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>crushtool -d crushmap.original -o crushmap.txt
+</screen>
+     </step>
+     <step>
+      <para>
+       编辑 CRUSH 索引，并用“straw”替换“straw2”。
+      </para>
+     </step>
+     <step>
+      <para>
+       重新编译 CRUSH 索引：
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>crushtool -c crushmap.txt -o crushmap.new
+</screen>
+     </step>
+     <step>
+      <para>
+       设置新 CRUSH 索引：
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd setcrushmap -i crushmap.new
+</screen>
+     </step>
+    </substeps>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

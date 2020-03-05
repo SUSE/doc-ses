@@ -1,0 +1,1240 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_rbd.xml" version="5.0" xml:id="ceph-rbd">
+ <title>RADOS Block Device</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  ブロックとは連続するバイトのことで、たとえば4MBブロックのデータなどです。ブロックベースのストレージインタフェースは、ハードディスク、CD、フロッピーディスクなどの回転型媒体にデータを保存する最も一般的な方法です。Block Deviceインタフェースはあらゆるところで利用されているため、仮想ブロックデバイスは、Cephのような大容量データストレージシステムを操作するための理想的な候補です。
+ </para>
+ <para>
+  Ceph Block Deviceは物理リソースを共有でき、サイズの変更が可能です。データはCephクラスタ内の複数のOSD上にストライプされて保存されます。Ceph Block Deviceは、スナップショットの作成、レプリケーション、整合性などのRADOSの機能を利用します。CephのRBD (RADOS Block Device)は、カーネルモジュールまたは<systemitem>librbd</systemitem>ライブラリを使用してOSDと対話します。
+ </para>
+ <figure>
+  <title>RADOSプロトコル</title>
+  <mediaobject>
+   <imageobject role="fo">
+    <imagedata fileref="ceph_rbd_schema.png" width="70%" format="PNG"/>
+   </imageobject>
+   <imageobject role="html">
+    <imagedata fileref="ceph_rbd_schema.png" width="70%" format="PNG"/>
+   </imageobject>
+  </mediaobject>
+ </figure>
+ <para>
+  Cephのブロックデバイスは、高いパフォーマンスと無限のスケーラビリティをカーネルモジュールに提供します。これらは、QEMUなどの仮想化ソリューションや、OpenStackなど、<systemitem class="library">libvirt</systemitem>に依存するクラウドベースのコンピューティングシステムをサポートします。同じクラスタを使用して、Object Gateway、CephFS、およびRADOS Block Deviceを同時に運用できます。
+ </para>
+ <sect1 xml:id="ceph-rbd-commands">
+  <title>Block Deviceのコマンド</title>
+
+  <para>
+   <command>rbd</command>コマンドを使用して、Block Deviceイメージを作成、一覧、イントロスペクト、および削除できます。さらに、イメージのクローン作成、スナップショットの作成、スナップショットへのイメージのロールバック、スナップショットの表示などの操作にも使用できます。
+  </para>
+
+  <sect2 xml:id="ceph-rbd-cmds-create">
+   <title>複製プールでのBlock Deviceイメージの作成</title>
+   <para>
+    Block Deviceをクライアントに追加する前に、既存のプール内に、関連するイメージを作成する必要があります(<xref linkend="ceph-pools"/>を参照)。
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd create --size <replaceable>MEGABYTES</replaceable> <replaceable>POOL-NAME</replaceable>/<replaceable>IMAGE-NAME</replaceable>
+</screen>
+   <para>
+    たとえば、「mypool」という名前のプールに情報を保存する「myimage」という名前の1GBのイメージを作成するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd create --size 1024 mypool/myimage</screen>
+   <tip>
+    <title>イメージサイズの単位</title>
+    <para>
+     サイズの単位のショートカット(「G」または「T」)を省略した場合、イメージのサイズはメガバイト単位になります。ギガバイトまたはテラバイトを指定するには、サイズの数字の後に「G」または「T」を使用します。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-create-ec">
+   <title>イレージャコーディングプールでのBlock Deviceイメージの作成</title>
+   <para>
+    SUSE Enterprise Storage 5から、Block DeviceイメージのデータをEC (イレージャコーディング)プールに保存できます。RADOS Block Deviceイメージは、<emphasis/>「データ」部分と<emphasis/>「メタデータ」部分で構成されます。ECプールには、RADOS Block Deviceイメージの「データ」部分のみを保存できます。プールでは「overwrite」フラグが<emphasis>true</emphasis>に設定されている必要があり、これは、プールが保存されているすべてのOSDがBlueStoreを使用している場合にのみ設定できます。
+   </para>
+   <para>
+    ECプールにイメージの「メタデータ」の部分を保存することはできません。<command>rbd create</command>コマンドの<option>--pool=</option>オプションを指定して、イメージのメタデータを保存するための複製プールを指定できます。
+   </para>
+   <para>
+    新しく作成したECプールのRBDイメージを作成するには、次の手順を使用します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool create <replaceable>POOL_NAME</replaceable> 12 12 erasure
+<prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> allow_ec_overwrites true
+
+#Metadata will reside in pool "<replaceable>OTHER_POOL</replaceable>", and data in pool "<replaceable>POOL_NAME</replaceable>"
+<prompt>cephadm@adm &gt; </prompt><command>rbd</command> create <replaceable>IMAGE_NAME</replaceable> --size=1G --data-pool <replaceable>POOL_NAME</replaceable> --pool=<replaceable>OTHER_POOL</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-list">
+   <title>Block Deviceイメージの一覧</title>
+   <para>
+    「mypool」という名前のプール内のBlock Deviceを一覧にするには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd ls mypool</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-info">
+   <title>イメージ情報の取得</title>
+   <para>
+    「mypool」という名前のプール内のイメージ「myimage」から情報を取得するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd info mypool/myimage</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-resize">
+   <title>Block Deviceイメージのサイズの変更</title>
+   <para>
+    RADOS Block Deviceイメージはシンプロビジョニングされます。つまり、そこにデータを保存し始めるまでは、実際に物理ストレージを使用しません。ただし、<option>--size</option>オプションで設定する最大容量があります。イメージの最大サイズを増やす(または減らす)場合、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd resize --size 2048 <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> # to increase
+<prompt>cephadm@adm &gt; </prompt>rbd resize --size 2048 <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> --allow-shrink # to decrease
+</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-rm">
+   <title>Block Deviceイメージの削除</title>
+   <para>
+    「mypool」という名前のプール内にあるイメージ「myimage」に対応するBlock Deviceを削除するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd rm mypool/myimage</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-integration-mount-rbd">
+  <title>マウントとアンマウント</title>
+
+  <para>
+   RADOS Block Deviceを作成した後は、他のディスクデバイスと同じように使用できます。デバイスをフォーマットし、マウントしてファイルを交換できるようにし、完了したらアンマウントできます。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Cephクラスタに、マップするディスクイメージが存在するプールが含まれることを確認します。プールは<literal>mypool</literal>、イメージは<literal>myimage</literal>という名前であると想定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd list mypool</screen>
+   </step>
+   <step>
+    <para>
+     イメージを新しいBlock Deviceにマップします。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool mypool myimage</screen>
+    <tip>
+     <title>ユーザ名と認証</title>
+     <para>
+      ユーザ名を指定するには、<option>--id <replaceable>user-name</replaceable></option>を使用します。<systemitem>cephx</systemitem>認証を使用する場合は、秘密を指定する必要もあります。秘密は、キーリング、または秘密が含まれるファイルから取得できます。
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+     <para>
+      または
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     すべてのマップ済みデバイスを一覧にします。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd showmapped
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    <para>
+     作業対象のデバイスは<filename>/dev/rbd0</filename>です。
+    </para>
+    <tip>
+     <title>RBDデバイスのパス</title>
+     <para>
+      <filename>/dev/rbd<replaceable>DEVICE_NUMBER</replaceable></filename>の代わりに、永続的なデバイスパスとして<filename>/dev/rbd/<replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></filename>を使用できます。次に例を示します。
+     </para>
+<screen>
+/dev/rbd/mypool/myimage
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     <filename>/dev/rbd0</filename>デバイス上にXFSファイルシステムを作成します。
+    </para>
+<screen><prompt>root # </prompt>mkfs.xfs /dev/rbd0
+ log stripe unit (4194304 bytes) is too large (maximum is 256KiB)
+ log stripe unit adjusted to 32KiB
+ meta-data=/dev/rbd0              isize=256    agcount=9, agsize=261120 blks
+          =                       sectsz=512   attr=2, projid32bit=1
+          =                       crc=0        finobt=0
+ data     =                       bsize=4096   blocks=2097152, imaxpct=25
+          =                       sunit=1024   swidth=1024 blks
+ naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+ log      =internal log           bsize=4096   blocks=2560, version=2
+          =                       sectsz=512   sunit=8 blks, lazy-count=1
+ realtime =none                   extsz=4096   blocks=0, rtextents=0</screen>
+   </step>
+   <step>
+    <para>
+     デバイスをマウントして、正しくマウントされていることを確認します。<filename>/mnt</filename>は、使用するマウントポイントに置き換えてください。
+    </para>
+<screen><prompt>root # </prompt>mount /dev/rbd0 /mnt
+<prompt>root # </prompt>mount | grep rbd0
+/dev/rbd0 on /mnt type xfs (rw,relatime,attr2,inode64,sunit=8192,...</screen>
+    <para>
+     これで、ローカルディレクトリと同じように、このデバイスとの間でデータを移動できます。
+    </para>
+    <tip>
+     <title>RBDデバイスのサイズの増加</title>
+     <para>
+      RBDデバイスのサイズが十分ではなくなった場合、簡単にサイズを増やすことができます。
+     </para>
+     <orderedlist spacing="normal">
+      <listitem>
+       <para>
+        RBDイメージのサイズを、たとえば10GBに増やします。
+       </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd resize --size 10000 mypool/myimage
+ Resizing image: 100% complete...done.</screen>
+      </listitem>
+      <listitem>
+       <para>
+        デバイスの新しいサイズ全体を使用するようファイルシステムを拡張します。
+       </para>
+<screen><prompt>root # </prompt>xfs_growfs /mnt
+ [...]
+ data blocks changed from 2097152 to 2560000</screen>
+      </listitem>
+     </orderedlist>
+    </tip>
+   </step>
+   <step>
+    <para>
+     デバイスへのアクセスが終わったら、デバイスをマップ解除してアンマウントできます。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd unmap /dev/rbd0
+<prompt>root # </prompt>unmount /mnt
+</screen>
+   </step>
+  </procedure>
+
+  <tip>
+   <title>手動でのマウントとアンマウント</title>
+   <para>
+    ブート後にRBDイメージを手動でマップしてマウントし、シャットダウン前にアンマウントしてマップ解除するのは煩雑であるため、<command>rbdmap</command>スクリプトと<systemitem class="daemon">systemd</systemitem>ユニットが提供されています。<xref linkend="ceph-rbd-rbdmap"/>を参照してください。
+   </para>
+  </tip>
+
+  <sect2 xml:id="ceph-rbd-rbdmap">
+   <title>rbdmap: ブート時のRBDデバイスのマップ</title>
+   <para>
+    <command>rbdmap</command>は、1つ以上のRBDイメージに対する<command>rbd map</command>および<command>rbd unmap</command>の操作を自動化するシェルスクリプトです。このスクリプトはいつでも手動で実行できますが、ブート時にRBDイメージを自動的にマップしてマウント(シャットダウン時にはアンマウントしてマップ解除)するのが主な利点です。これはInitシステムによってトリガされます。このために、<systemitem>ceph-common</systemitem>パッケージに<systemitem class="daemon">systemd</systemitem>のユニットファイルである<filename>rbdmap.service</filename>が含まれています。
+   </para>
+   <para>
+    このスクリプトは引数を1つ取り、<option>map</option>または<option>unmap</option>のどちらかを指定できます。どちらの場合も、スクリプトは設定ファイルを解析します。デフォルトは<filename>/etc/ceph/rbdmap</filename>ですが、環境変数<literal>RBDMAPFILE</literal>で上書きできます。設定ファイルの各行が、マップまたはマップ解除する1つのRBDイメージに対応します。
+   </para>
+   <para>
+    設定ファイルは次のような形式になっています。
+   </para>
+<screen>image_specification rbd_options</screen>
+   <variablelist>
+    <varlistentry>
+     <term><option>image_specification</option></term>
+     <listitem>
+      <para>
+       プール内のイメージのパス。<replaceable>pool_name</replaceable>/<replaceable>image_name</replaceable>として指定します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>rbd_options</option></term>
+     <listitem>
+      <para>
+       基礎となる<command>rbd map</command>コマンドに渡されるパラメータのオプションのリスト。これらのパラメータとその値をコンマ区切り文字列として指定する必要があります。次に例を示します。
+      </para>
+<screen>PARAM1=VAL1,PARAM2=VAL2,...</screen>
+      <para>
+       次の例では、<command>rbdmap</command>スクリプトで次のコマンドを実行します。
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> --PARAM1 VAL1 --PARAM2 VAL2</screen>
+      <para>
+       次の例では、ユーザ名とキーリングを対応する秘密とともに指定する方法を確認できます。
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbdmap map mypool/myimage id=rbd_user,keyring=/etc/ceph/ceph.client.rbd.keyring
+</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    <command>rbdmap map</command>として実行すると、設定ファイルを解析し、指定されているRBDイメージそれぞれに対して、最初にイメージをマップし(<command>rbd map</command>を使用)、次にイメージをマウントしようと試みます。
+   </para>
+   <para>
+    <command>rbdmap unmap</command>として実行すると、設定ファイルに一覧にされているイメージがアンマウントされてマップ解除されます。
+   </para>
+   <para>
+    <command>rbdmap unmap-all</command>は、設定ファイルに一覧にされているかどうかに関係なく、現在マップされているRBDイメージをすべてアンマウントし、その後マップ解除しようと試みます。
+   </para>
+   <para>
+    成功した場合、イメージはrbd map操作によって/dev/rbdXデバイスにマップされます。この時点でudevルールがトリガされ、実際にマップされたデバイスを指すフレンドリデバイス名のシンボリックリンク<filename>/dev/rbd/<replaceable>pool_name</replaceable>/<replaceable>image_name</replaceable></filename>が作成されます。
+   </para>
+   <para>
+    正常にマウントおよびアンマウントするには、<filename>/etc/fstab</filename>に「フレンドリ」デバイス名に対応するエントリが必要です。RBDイメージの<filename>/etc/fstab</filename>エントリを記述する場合、「noauto」(または「nofail」)マウントオプションを指定します。<filename>rbdmap.service</filename>は一般的にブートシーケンスのかなり遅い段階でトリガされるため、このオプションを指定することによって、Initシステムが、対象デバイスがまだ存在しない早すぎるタイミングでデバイスをマウントしないようにします。
+   </para>
+   <para>
+    <command>rbd</command>オプションの完全なリストについては、<command>rbd</command>のマニュアルページ(<command>man 8 rbd</command>)を参照してください。
+   </para>
+   <para>
+    <command>rbdmap</command>の使用法の例については、<command>rbdmap</command>のマニュアルページ(<command>man 8 rbdmap</command>)を参照してください。
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>RBDデバイスのサイズの増加</title>
+   <para>
+    RBDデバイスのサイズが十分ではなくなった場合、簡単にサイズを増やすことができます。
+   </para>
+   <orderedlist spacing="normal">
+    <listitem>
+     <para>
+      RBDイメージのサイズを、たとえば10GBに増やします。
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd resize --size 10000 mypool/myimage
+ Resizing image: 100% complete...done.</screen>
+    </listitem>
+    <listitem>
+     <para>
+      デバイスの新しいサイズ全体を使用するようファイルシステムを拡張します。
+     </para>
+<screen><prompt>root # </prompt>xfs_growfs /mnt
+ [...]
+ data blocks changed from 2097152 to 2560000</screen>
+    </listitem>
+   </orderedlist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-snapshots-rbd">
+  <title>スナップショット</title>
+
+  <para>
+   RBDのスナップショットは、RADOS Block Deviceイメージのスナップショットです。スナップショットにより、イメージの状態の履歴を保持します。Cephはスナップショットの階層化もサポートしており、VMイメージのクローンを素早く簡単に作成できます。<command>rbd</command>コマンド、およびさまざまな高レベルのインタフェース(QEMU、<systemitem>libvirt</systemitem>、OpenStack、CloudStackなど)を使用したBlock Deviceのスナップショットをサポートしています。
+  </para>
+
+  <note>
+   <para>
+    イメージのスナップショットを作成する前に、入出力操作を停止し、保留中の書き込みをすべてフラッシュする必要があります。イメージにファイルシステムが含まれる場合、スナップショットの作成時に、そのファイルシステムが整合性のある状態である必要があります。
+   </para>
+  </note>
+
+  <sect2>
+   <title>Cephxに関する注意事項</title>
+   <para>
+    <systemitem>cephx</systemitem>が有効な場合、ユーザ名またはIDと、そのユーザに対応する鍵が含まれるキーリングのパスを指定する必要があります。詳細については、<xref linkend="cha-storage-cephx"/>を参照してください。以降のパラメータを再入力せずに済むよう、<systemitem>CEPH_ARGS</systemitem>環境変数を追加することもできます。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --id <replaceable>user-ID</replaceable> --keyring=/path/to/secret <replaceable>commands</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --name <replaceable>username</replaceable> --keyring=/path/to/secret <replaceable>commands</replaceable></screen>
+   <para>
+    次に例を示します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --id admin --keyring=/etc/ceph/ceph.keyring <replaceable>commands</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --name client.admin --keyring=/etc/ceph/ceph.keyring <replaceable>commands</replaceable></screen>
+   <tip>
+    <para>
+     <systemitem>CEPH_ARGS</systemitem>環境変数にユーザと秘密を追加して、毎回入力しなくて済むようにします。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2>
+   <title>スナップショットの基本</title>
+   <para>
+    次の手順では、コマンドラインで<command>rbd</command>を使用して、スナップショットを作成、一覧、および削除する方法を説明します。
+   </para>
+   <sect3>
+    <title>スナップショットの作成</title>
+    <para>
+     <command>rbd</command>を使用してスナップショットを作成するには、<option>snap create</option>オプション、プール名、およびイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap create --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap create <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool rbd snap create --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap create rbd/image1@snapshot1</screen>
+   </sect3>
+   <sect3>
+    <title>スナップショットの一覧</title>
+    <para>
+     イメージのスナップショットを一覧にするには、プール名とイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap ls <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap ls <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool rbd snap ls image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap ls rbd/image1</screen>
+   </sect3>
+   <sect3>
+    <title>スナップショットのロールバック</title>
+    <para>
+     <command>rbd</command>を使用して特定のスナップショットにロールバックするには、<option>snap rollback</option>オプション、プール名、イメージ名、およびスナップショット名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap rollback --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap rollback <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap rollback --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap rollback pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      イメージをスナップショットにロールバックすることは、イメージの現在のバージョンをスナップショットのデータで上書きすることを意味します。ロールバックの実行にかかる時間は、イメージのサイズに応じて長くなります。イメージをスナップショットに「ロールバック」<emphasis/>するよりもスナップショットから「クローンを作成する方が高速」<emphasis/>であり、以前の状態に戻す場合はこの方法をお勧めします。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>スナップショットの削除</title>
+    <para>
+     <command>rbd</command>を使用してスナップショットを削除するには、<option>snap rm</option>オプション、プール名、イメージ名、およびユーザ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap rm --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap rm <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap rm --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap rm pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      Ceph OSDはデータを非同期で削除するので、スナップショットを削除してもディスク領域はすぐには解放されません。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>スナップショットのパージ</title>
+    <para>
+     <command>rbd</command>を使用してイメージのすべてのスナップショットを削除するには、<option>snap purge</option>オプションとイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap purge <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap purge <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap purge image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap purge pool1/image1</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-snapshoti-layering">
+   <title>階層化</title>
+   <para>
+    Cephでは、Block DeviceスナップショットのCOW (コピーオンライト)クローンを複数作成できます。スナップショットの階層化により、Ceph Block Deviceのクライアントはイメージを非常に素早く作成できます。たとえば、Linux VMが書き込まれたBlock Deviceイメージを作成してから、そのイメージのスナップショットを作成し、スナップショットを保護して、コピーオンライトクローンを必要な数だけ作成できます。スナップショットは読み込み専用なので、スナップショットのクローンを作成することでセマンティクスが簡素化され、クローンを素早く作成できます。
+   </para>
+   <note>
+    <para>
+     次のコマンドラインの例で使われている「親」および「子」という用語は、Ceph Block Deviceのスナップショット(親)と、そのスナップショットから作成された対応するクローンイメージ(子)を意味します。
+    </para>
+   </note>
+   <para>
+    クローンイメージ(子)にはその親イメージへの参照が保存されており、これによってクローンイメージから親のスナップショットを開いて読み込むことができます。
+   </para>
+   <para>
+    スナップショットのCOWクローンは、他のCeph Block Deviceイメージとまったく同じように動作します。クローンイメージに対して読み書きを行ったり、クローンを作成したり、サイズを変更したりできます。クローンイメージに特別な制約はありません。ただし、スナップショットのコピーオンライトクローンはスナップショットを参照するので、クローンを作成する前に「必ず」<emphasis/>スナップショットを保護する必要があります。
+   </para>
+   <note>
+    <title><option>--image-format 1</option>はサポートされない</title>
+    <para>
+     非推奨の<command>rbd create --image-format 1</command>オプションを使用して作成されたイメージのスナップショットを作成することはできません。Cephでサポートされているのは、<emphasis/>デフォルトの「format 2」のイメージのクローン作成のみです。
+    </para>
+   </note>
+   <sect3>
+    <title>階層化の基本事項</title>
+    <para>
+     Ceph Block Deviceの階層化は簡単なプロセスです。まずイメージを用意する必要があります。続いて、イメージのスナップショットを作成し、スナップショットを保護する必要があります。これらの手順を実行した後、スナップショットのクローンの作成を開始できます。
+    </para>
+    <para>
+     クローンイメージは親スナップショットへの参照を持ち、プールID、イメージID、およびスナップショットIDを含みます。プールIDが含まれることは、あるプールから別のプール内のイメージへスナップショットのクローンを作成できることを意味します。
+    </para>
+    <itemizedlist mark="bullet" spacing="normal">
+     <listitem>
+      <para>
+       「イメージテンプレート」<emphasis/>: Block Deviceの階層化の一般的な使用事例は、マスタイメージと、クローンのテンプレートとして機能するスナップショットを作成することです。たとえば、Linux配布パッケージ(たとえば、SUSE Linux Enterprise Server)のイメージを作成して、そのスナップショットを作成できます。定期的にイメージを更新して新しいスナップショットを作成できます(たとえば、<command>zypper ref &amp;&amp; zypper patch</command>の後に<command>rbd snap create</command>を実行します)。イメージが完成したら、いずれかのスナップショットのクローンを作成できます。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       「拡張テンプレート」<emphasis/>: より高度な使用事例として、ベースイメージより多くの情報を提供するテンプレートイメージを拡張することがあります。たとえば、イメージ(VMテンプレート)のクローンを作成して、他のソフトウェア(たとえば、データベース、コンテンツ管理システム、分析システム)をインストールしてから、拡張イメージのスナップショットを作成でき、このスナップショットそのものをベースイメージと同じ方法で更新できます。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       「テンプレートプール」<emphasis/>: Block Deviceの階層化を使用する方法の1つが、テンプレートとして機能するマスタイメージと、それらのテンプレートの各スナップショットが含まれるプールを作成することです。その後、読み込み専用特権をユーザに拡張し、プール内での書き込みまたは実行の能力を持たなくても、スナップショットのクローンを作成できるようにします。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       「イメージのマイグレーション/回復」<emphasis/>: Block Deviceの階層化を使用する方法の1つが、あるプールから別のプールへデータを移行または回復することです。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>スナップショットの保護</title>
+    <para>
+     クローンは親スナップショットにアクセスします。ユーザが誤って親スナップショットを削除すると、すべてのクローンが壊れます。データの損失を防ぐため、クローンを作成する前に、スナップショットを保護する必要があります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap protect \
+ --image <replaceable>image-name</replaceable> --snap <replaceable>snapshot-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap protect <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap protect --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd snap protect pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      保護されたスナップショットは削除できません。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>スナップショットのクローンの作成</title>
+    <para>
+     スナップショットのクローンを作成するには、親プール、イメージ、スナップショット、子プール、およびイメージ名を指定する必要があります。クローンを作成する前に、スナップショットを保護する必要があります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd clone --pool <replaceable>pool-name</replaceable> --image <replaceable>parent-image</replaceable> \
+ --snap <replaceable>snap-name</replaceable> --dest-pool <replaceable>pool-name</replaceable> \
+ --dest <replaceable>child-image</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd clone <replaceable>pool-name</replaceable>/<replaceable>parent-image</replaceable>@<replaceable>snap-name</replaceable> \
+<replaceable>pool-name</replaceable>/<replaceable>child-image-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd clone pool1/image1@snapshot1 pool1/image2</screen>
+    <note>
+     <para>
+      あるプールから別のプール内のイメージへスナップショットのクローンを作成できます。たとえば、一方のプール内に読み込み専用のイメージとスナップショットをテンプレートとして維持しておき、別のプール内に書き込み可能クローンを維持できます。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>スナップショットの保護の解除</title>
+    <para>
+     スナップショットを削除するには、まず保護を解除する必要があります。また、クローンから参照されているスナップショットは削除「できません」<emphasis/>。スナップショットを削除する前に、スナップショットの各クローンをフラット化する必要があります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap unprotect --image <replaceable>image-name</replaceable> \
+ --snap <replaceable>snapshot-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap unprotect <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap unprotect --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd snap unprotect pool1/image1@snapshot1</screen>
+   </sect3>
+   <sect3>
+    <title>スナップショットの子の一覧</title>
+    <para>
+     スナップショットの子を一覧にするには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> children --image <replaceable>image-name</replaceable> --snap <replaceable>snap-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd children <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 children --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd children pool1/image1@snapshot1</screen>
+   </sect3>
+   <sect3 xml:id="rbd-flatten">
+    <title>クローンイメージのフラット化</title>
+    <para>
+     クローンイメージは親スナップショットへの参照を保持しています。子クローンから親スナップショットへの参照を削除する場合、スナップショットからクローンへ情報をコピーすることによって効果的にイメージを「フラット化」します。クローンのフラット化にかかる時間は、スナップショットのサイズに応じて長くなります。スナップショットを削除するには、まず子イメージをフラット化する必要があります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> flatten --image <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd flatten <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 flatten --image image1
+<prompt>cephadm@adm &gt; </prompt>rbd flatten pool1/image1</screen>
+    <note>
+     <para>
+      フラット化されたイメージにはスナップショットからの情報がすべて含まれるため、階層化されたクローンよりも多くのストレージ領域を使用します。
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-rbd-mirror">
+  <title>ミラーリング</title>
+
+  <para>
+   RBDイメージを2つのCephクラスタ間で非同期でミラーリングできます。この機能は、RBDイメージのジャーナリング機能を使用して、クラスタ間でのクラッシュコンシステントなレプリケーションを保証します。ミラーリングはピアクラスタ内でプールごとに設定します。また、プール内のすべてのイメージ、またはイメージの特定のサブセットを自動的にミラーリングするよう設定できます。ミラーリングは<command>rbd</command>コマンドを使用して設定します。<systemitem>rbd-mirror</systemitem>デーモンは、リモートのピアクラスタからイメージの更新を取得して、ローカルクラスタ内のイメージに適用する処理を受け持ちます。
+  </para>
+
+  <note>
+   <title>rbd-mirrorデーモン</title>
+   <para>
+    RBDミラーリングを使用するには、それぞれが<systemitem>rbd-mirror</systemitem>デーモンを実行する2つのCephクラスタが必要です。
+   </para>
+  </note>
+
+  <important>
+   <title>iSCSI経由でエクスポートされたRADOS Block Device</title>
+   <para>
+    カーネルベースのiSCSI Gatewayを使用してiSCSI経由でエクスポートしたRBDデバイスはミラーリングできません。
+   </para>
+   <para>
+    iSCSIの詳細については、<xref linkend="cha-ceph-iscsi"/>を参照してください。
+   </para>
+  </important>
+
+  <sect2 xml:id="rbd-mirror-daemon">
+   <title>rbd-mirrorデーモン</title>
+   <para>
+    2つの<systemitem>rbd-mirror</systemitem>デーモンは、リモートのピアクラスタ上のイメージのジャーナルを監視し、そのジャーナルイベントをローカルクラスタに対して再生する処理を受け持ちます。RBDイメージのジャーナリング機能は、イメージに対するすべての変更を発生順に記録します。これにより、リモートイメージのクラッシュコンシステントなミラーをローカルで確実に利用できるようにします。
+   </para>
+   <para>
+    <systemitem>rbd-mirror</systemitem>デーモンは
+    <package>rbd-mirror</package> パッケージで提供されています。このパッケージは、OSDノード、ゲートウェイノード、または専用のノードにもインストールできます。管理ノードに <package>rbd-mirror</package> をインストールすることはお勧めしません。次の方法で、 <package>rbd-mirror</package>をインストール、有効化、および起動します。
+   </para>
+<screen><prompt>root@minion &gt; </prompt>zypper install rbd-mirror
+<prompt>root@minion &gt; </prompt>systemctl enable ceph-rbd-mirror@<replaceable>server_name</replaceable>.service
+<prompt>root@minion &gt; </prompt>systemctl start ceph-rbd-mirror@<replaceable>server_name</replaceable>.service</screen>
+   <important>
+    <para>
+     各<systemitem>rbd-mirror</systemitem>デーモンは、両方のクラスタに同時に接続できる必要があります。
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-mirror-poolconfig">
+   <title>プールの設定</title>
+   <para>
+    次の手順では、<command>rbd</command>コマンドを使用してミラーリングを設定するための基本的な管理タスクを実行する方法を説明します。ミラーリングは、Cephクラスタ内のプールごとに設定します。
+   </para>
+   <para>
+    これらのプール設定手順は、両方のピアクラスタで実行する必要があります。これらの手順では、わかりやすくするため、「local」および「remote」という名前の2つのクラスタが1つのホストからアクセス可能であることを想定しています。
+   </para>
+   <para>
+    異なるCephクラスタに接続する方法の詳細については、<command>rbd</command>のマニュアルページ(<command>man 8 rbd</command>)を参照してください。
+   </para>
+   <tip>
+    <title>複数のクラスタ</title>
+    <para>
+     次の例のクラスタ名は、同じ名前のCeph設定ファイル<filename>/etc/ceph/remote.conf</filename>に対応しています。
+    </para>
+   </tip>
+   <sect3>
+    <title>プールのミラーリングの有効化</title>
+    <para>
+     プールのミラーリングを有効にするには、<command>mirror pool enable</command>サブコマンド、プール名、およびミラーリングモードを指定します。ミラーリングモードはpoolまたはimageにすることができます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>pool</term>
+      <listitem>
+       <para>
+        ジャーナリング機能が有効な、プール内のすべてのイメージをミラーリングします。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>image</term>
+      <listitem>
+       <para>
+        各イメージに対して明示的にミラーリングを有効にする必要があります。詳細については、<xref linkend="rbd-mirror-enable-image-mirroring"/>を参照してください。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool enable <replaceable>POOL_NAME</replaceable> pool
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool enable <replaceable>POOL_NAME</replaceable> pool</screen>
+   </sect3>
+   <sect3>
+    <title>ミラーリングの無効化</title>
+    <para>
+     プールのミラーリングを無効にするには、<command>mirror pool disable</command>サブコマンドとプール名を指定します。この方法でプールのミラーリングを無効にした場合、ミラーリングを明示的に有効にしたイメージ(プール内)のミラーリングも無効になります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool disable <replaceable>POOL_NAME</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool disable <replaceable>POOL_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>クラスタピアの追加</title>
+    <para>
+     <systemitem>rbd-mirror</systemitem>デーモンがピアクラスタを検出するには、そのピアがプールに登録されている必要があります。ミラーリングピアクラスタを追加するには、<command>mirror pool peer add</command>サブコマンド、プール名、およびクラスタの仕様を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool peer add <replaceable>POOL_NAME</replaceable> client.remote@remote
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool peer add <replaceable>POOL_NAME</replaceable> client.local@local</screen>
+   </sect3>
+   <sect3>
+    <title>クラスタピアの削除</title>
+    <para>
+     ミラーリングピアクラスタを削除するには、<command>mirror pool peer remove</command>サブコマンド、プール名、およびピアのUUID (<command>rbd mirror pool info</command>コマンドで参照可能)を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool peer remove <replaceable>POOL_NAME</replaceable> \
+ 55672766-c02b-4729-8567-f13a66893445
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool peer remove <replaceable>POOL_NAME</replaceable> \
+ 60c0e299-b38f-4234-91f6-eed0a367be08</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="rbd-mirror-imageconfig">
+   <title>イメージ設定</title>
+   <para>
+    プール設定と異なり、イメージ設定はミラーリングピアの1つのCephクラスタのみで実行する必要があります。
+   </para>
+   <para>
+    ミラーリングされたRBDイメージは、「プライマリ」<emphasis/>または「非プライマリ」<emphasis/>のいずれかとして指定されます。これはイメージのプロパティであり、プールのプロパティではありません。非プライマリとして指定されたイメージは変更できません。
+   </para>
+   <para>
+    イメージに対して初めてミラーリングを有効にすると、イメージは自動的にプライマリに昇格します(プールのミラーモードが「pool」で、イメージのジャーナリング機能が有効な場合、ミラーリングは暗黙的に有効になります。または、<command>rbd</command>コマンドによって明示的に有効にします(<xref linkend="rbd-mirror-enable-image-mirroring"/>を参照してください))。
+   </para>
+   <sect3>
+    <title>イメージのジャーナリングのサポート</title>
+    <para>
+     RBDのミラーリングは、RBDのジャーナリング機能を使用して、複製イメージが常にクラッシュコンシステントな状態を保つようにします。イメージをピアクラスタにミラーリングするには、ジャーナリング機能が有効である必要があります。この機能は、イメージの作成時に<command>rbd</command>コマンドで<option>--image-feature exclusive-lock,journaling</option>オプションを指定することによって有効にできます。
+    </para>
+    <para>
+     または、既存のRBDイメージに対して動的にジャーナリング機能を有効にすることもできます。ジャーナリングを有効にするには、<command>feature enable</command>サブコマンド、プール名、イメージ名、および機能名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local feature enable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> journaling</screen>
+    <note>
+     <title>オプションの依存関係</title>
+     <para>
+      <option>journaling</option>機能は<option>exclusive-lock</option>機能に依存します。<option>exclusive-lock</option>機能がまだ有効になっていない場合は、有効にしてから<option>journaling</option>機能を有効にする必要があります。
+     </para>
+    </note>
+    <warning>
+     <title>すべての新規イメージのジャーナリング</title>
+     <para>
+      新しいイメージすべてに対してデフォルトでジャーナリングを有効にするには、Ceph設定ファイルの<option>rbd default features</option>オプションに<literal>journaling</literal>の値を付加します。次に例を示します。
+     </para>
+<screen>rbd default features = layering,exclusive-lock,object-map,deep-flatten,journaling</screen>
+     <para>
+      このような変更を適用する前に、自分の展開において、新しいイメージすべてに対してジャーナリングを有効にすることが適切かどうかを慎重に検討します。それにより、パフォーマンスに悪影響が及ぶ可能性があるためです。
+     </para>
+    </warning>
+   </sect3>
+   <sect3 xml:id="rbd-mirror-enable-image-mirroring">
+    <title>イメージのミラーリングの有効化</title>
+    <para>
+     ミラーリングが「image」モードで設定されている場合、プール内の各イメージに対して明示的にミラーリングを有効にする必要があります。特定のイメージのミラーリングを有効にするには、<command>mirror image enable</command>サブコマンドと共にプール名とイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image enable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>イメージのミラーリングの無効化</title>
+    <para>
+     特定のイメージのミラーリングを無効にするには、<command>mirror image disable</command>サブコマンドと共にプール名とイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image disable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>イメージの昇格と降格</title>
+    <para>
+     プライマリ指定をピアクラスタ内のイメージに移動する必要があるフェールオーバーシナリオの場合、プライマリイメージへのアクセスを停止し、現在のプライマリイメージを降格してから、新しいプライマリイメージを昇格し、代替クラスタ上のイメージへのアクセスを再開する必要があります。
+    </para>
+    <note>
+     <title>強制昇格</title>
+     <para>
+      <option>--force</option>オプションを使用して昇格を強制できます。強制昇格は、降格をピアクラスタに伝搬できない場合(たとえば、クラスタ障害や通信停止が発生した場合)に必要です。この結果、2つのピア間でスプリットブレインシナリオが発生し、<command>resync</command>サブコマンドを発行するまでイメージは同期されなくなります。
+     </para>
+    </note>
+    <para>
+     特定のイメージを非プライマリに降格するには、<command>mirror image demote</command>サブコマンドと共にプール名とイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image demote <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     プール内のすべてのプライマリイメージを非プライマリに降格するには、<command>mirror pool demote</command>サブコマンドと共にプール名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool demote <replaceable>POOL_NAME</replaceable></screen>
+    <para>
+     特定のイメージをプライマリに昇格するには、<command>mirror image promote</command>サブコマンドと共にプール名とイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror image promote <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     プール内のすべての非プライマリイメージをプライマリに昇格するには、<command>mirror pool promote</command>サブコマンドと共にプール名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool promote <replaceable>POOL_NAME</replaceable></screen>
+    <tip>
+     <title>I/O負荷の分割</title>
+     <para>
+      プライマリまたは非プライマリの状態はイメージごとなので、2つのクラスタでI/O負荷を分割したり、フェールオーバーまたはフェールバックを実行したりできます。
+     </para>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>イメージの再同期の強制</title>
+    <para>
+     <systemitem>rbd-mirror</systemitem>デーモンがスプリットブレインイベントを検出した場合、このデーモンは、イベントが修正されるまで、影響を受けるイメージのミラーリングを試行しません。イメージのミラーリングを再開するには、まず、古いと判定されたイメージを降格してから、プライマリイメージへの再同期を要求します。イメージの再同期を要求するには、<command>mirror image resync</command>サブコマンドと共にプール名とイメージ名を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror image resync <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="rbd-mirror-status">
+   <title>ミラーの状態</title>
+   <para>
+    ピアクラスタのレプリケーションの状態は、ミラーリングされたすべてのプライマリイメージについて保存されます。この状態は、<command>mirror image status</command>および<command>mirror pool status</command>の各サブコマンドを使用して取得できます。
+   </para>
+   <para>
+    ミラーイメージの状態を要求するには、<command>mirror image status</command>サブコマンドと共にプール名とイメージ名を指定します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror image status <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   <para>
+    ミラープールのサマリ状態を要求するには、<command>mirror pool status</command>サブコマンドと共にプール名を指定します。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror pool status <replaceable>POOL_NAME</replaceable></screen>
+   <tip>
+    <title/>
+    <para>
+     <command>mirror pool status</command>サブコマンドに<option>--verbose</option>オプションを追加すると、プール内にあるすべてのミラーリングイメージについて状態の詳細も出力されます。
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="rbd-cache-settings">
+  <title>キャッシュの設定</title>
+
+  <para>
+   Ceph Block Device (<systemitem>librbd</systemitem>)のユーザスペースの実装では、Linuxページキャッシュを利用できません。したがって、Ceph Block Deviceには独自のインメモリキャッシングが含まれます。RBDのキャッシュはハードディスクキャッシュと同様に動作します。OSがバリア要求またはフラッシュ要求を送信すると、すべての「ダーティ」データがOSDに書き込まれます。つまり、ライトバックキャッシュを使用することは、フラッシュを適切に送信するVMで正常に動作する物理ハードディスクを使用することと同様に安全です。キャッシュは<emphasis/>LRU (「Least Rec ntly Used」)アルゴリズムを使用しており、ライトバックモードでは、隣接する要求をマージしてスループットを向上させることができます。
+  </para>
+
+  <para>
+   Cephは、RBDのライトバックキャッシュをサポートしています。これを有効にするには、次の記述を追加します。
+  </para>
+
+<screen>
+[client]
+...
+rbd cache = true
+</screen>
+
+  <para>
+   追加する場所は、<filename>ceph.conf</filename>ファイルの<literal>[client]</literal>セクションです。デフォルトでは、<systemitem>librbd</systemitem>はキャッシュを実行しません。書き込みと読み込みはストレージクラスタに直接送信され、書き込みはデータがすべてのレプリカのディスク上にある場合にのみ返されます。キャッシュを有効にすると、<option>rbd cache max dirty</option>オプションで設定されている値より多くの未フラッシュバイトがある場合を除いて、書き込みはすぐに返されます。このような場合、書き込みはライトバックをトリガし、十分なバイトがフラッシュされるまでブロックされます。
+  </para>
+
+  <para>
+   CephはRBDのライトスルーキャッシュをサポートします。キャッシュのサイズを設定したり、ターゲットと制限を設定して、ライトバックキャッシュからライトスルーキャッシュに切り替えたりすることができます。ライトスルーモードを有効にするには、次のコマンドを実行します。
+  </para>
+
+<screen>
+rbd cache max dirty = 0
+</screen>
+
+  <para>
+   つまり、書き込みはデータがすべてのレプリカのディスク上にある場合にのみ返されますが、読み込みはキャッシュから行われる場合があります。キャッシュはクライアントのメモリ内にあり、各RBDイメージは専用のキャッシュを持ちます。キャッシュはクライアントに対してローカルであるため、イメージにアクセスする他のユーザがいる場合、整合性はありません。キャッシュが有効な場合、RBDに加えてGFSまたはOCFSを実行することはできません。
+  </para>
+
+  <para>
+   RBDの<filename>ceph.conf</filename>ファイルの設定は、設定ファイルの<literal>[client]</literal>セクションで設定する必要があります。設定には以下が含まれます。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd cache</option></term>
+    <listitem>
+     <para>
+      RBD (RADOS Block Device)のキャッシュを有効にします。デフォルトは「true」です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache size</option></term>
+    <listitem>
+     <para>
+      RBDキャッシュのサイズ(バイト単位)。デフォルトは32MBです。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache max dirty</option></term>
+    <listitem>
+     <para>
+      キャッシュがライトバックをトリガする「ダーティ」の制限(バイト単位)。<option>rbd cache max dirty</option>は、<option>rbd cache size</option>より小さくする必要があります。0に設定すると、ライトスルーキャッシュを使用します。デフォルトは24MBです。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache target dirty</option></term>
+    <listitem>
+     <para>
+      キャッシュがデータをデータストレージに書き込み始めるまでの「ダーティターゲット」。キャッシュへの書き込みはブロックしません。デフォルトは16MBです。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache max dirty age</option></term>
+    <listitem>
+     <para>
+      ライトバックの開始前にダーティデータがキャッシュ内に存在する秒数。デフォルトは1です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache writethrough until flush</option></term>
+    <listitem>
+     <para>
+      ライトスルーモードで開始し、最初のフラッシュ要求を受信したらライトバックに切り替えます。<systemitem>rbd</systemitem>で実行されている仮想マシンが古すぎてフラッシュを送信できない場合(たとえば、カーネル2.6.32より前のLinuxのvirtioドライバ)は、この設定を有効にするのは消極的ですが安全です。デフォルトは「true」です。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-qos">
+  <title>QoS設定</title>
+
+  <para>
+   一般的に、QoS (サービスの品質)とは、トラフィックの優先順位付けとリソース予約の方法のことを指します。これは特に、特別な要件を持つトラフィックを転送するために重要です。
+  </para>
+
+  <important>
+   <title>iSCISではサポートされない</title>
+   <para>
+    次のQoS設定は、ユーザスペースのRBD実装である<systemitem class="daemon">librbd</systemitem>によってのみ使用され、<systemitem>kRBD</systemitem>では使用「されません」。<emphasis/>iSCSIは<systemitem>kRBD</systemitem>を使用するため、QoS設定を使用しません。ただし、iSCSIでは、標準のカーネル機能を使用して、カーネルブロックデバイス層でQoSを設定できます。
+   </para>
+  </important>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd qos iops limit</option></term>
+    <listitem>
+     <para>
+      希望する秒あたりI/O操作数の上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos bps limit</option></term>
+    <listitem>
+     <para>
+      希望する秒あたりI/Oバイト数の上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read iops limit</option></term>
+    <listitem>
+     <para>
+      希望する秒あたり読み取り操作数の上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write iops limit</option></term>
+    <listitem>
+     <para>
+      希望する秒あたり書き込み操作数の上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read bps limit</option></term>
+    <listitem>
+     <para>
+      希望する秒あたり読み取りバイト数の上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write bps limit</option></term>
+    <listitem>
+     <para>
+      希望する秒あたり書き込みバイト数の上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos iops burst</option></term>
+    <listitem>
+     <para>
+      希望するI/O操作数のバースト上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos bps burst</option></term>
+    <listitem>
+     <para>
+      希望するI/Oバイト数のバースト上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read iops burst</option></term>
+    <listitem>
+     <para>
+      希望する読み取り操作数のバースト上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write iops burst</option></term>
+    <listitem>
+     <para>
+      希望する書き込み操作数のバースト上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read bps burst</option></term>
+    <listitem>
+     <para>
+      希望する読み取りバイト数のバースト上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write bps burst</option></term>
+    <listitem>
+     <para>
+      希望する書き込みバイト数のバースト上限。デフォルトは0 (制限なし)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos schedule tick min</option></term>
+    <listitem>
+     <para>
+      QoSの最小スケジュールチック(ミリ秒)。デフォルトは50です。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-readahead-settings">
+  <title>先読み設定</title>
+
+  <para>
+   RADOS Block Deviceは、先読み/プリフェッチをサポートしており、小容量の順次読み込みが最適化されます。これは、仮想マシンの場合は通常はゲストOSによって処理されますが、ブートローダは効率的な読み込みを発行できません。キャッシュが無効な場合、先読みは自動的に無効になります。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd readahead trigger requests</option></term>
+    <listitem>
+     <para>
+      先読みをトリガするために必要な順次読み込み要求の数。デフォルトは10です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd readahead max bytes</option></term>
+    <listitem>
+     <para>
+      先読み要求の最大サイズ。0に設定すると、先読みは無効になります。デフォルトは512KBです。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd readahead disable after bytes</option></term>
+    <listitem>
+     <para>
+      この量のバイトRBDイメージから読み込みを行った後は、そのイメージが閉じられるまで先読みは無効になります。これにより、ゲストOSは起動時に先読みを引き継ぐことができます。0に設定すると、先読みは有効なままです。デフォルトは50MBです。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-features">
+  <title>拡張機能</title>
+
+  <para>
+   RADOS Block Deviceは、RBDイメージの機能を拡張する拡張機能をサポートしています。RBDイメージの作成時にコマンドラインで機能を指定することも、<option>rbd_default_features</option>オプションを使用してCeph設定ファイルで機能を指定することもできます。
+  </para>
+
+  <para>
+   <option>rbd_default_features</option>オプションの値は、次の2つの方法で指定できます。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     機能の内部値の合計として指定する。各機能には独自の内部値があります。たとえば、「layering」は１で、「fast-diff」は16です。したがって、これらの2つの機能をデフォルトで有効にするには、以下を含めます。
+    </para>
+<screen>
+rbd_default_features = 17
+</screen>
+   </listitem>
+   <listitem>
+    <para>
+     機能のカンマ区切りリストとして指定する。この場合、前の例は次のようになります。
+    </para>
+<screen>
+rbd_default_features = layering,fast-diff
+</screen>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>機能はiSCISではサポートされない</title>
+   <para>
+    <option>deep-flatten</option>、<option>object-map</option>、<option>journaling</option>、<option>fast-diff</option>、および<option>striping</option>の機能を使用するRBDイメージは、iSCSIではサポートされません。
+   </para>
+  </note>
+
+  <para>
+   次に、RBDの拡張機能のリストを示します。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>layering</option></term>
+    <listitem>
+     <para>
+      階層化により、クローン作成を使用できます。
+     </para>
+     <para>
+      内部値は1で、デフォルトは「yes」です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>striping</option></term>
+    <listitem>
+     <para>
+      ストライピングは、複数のオブジェクトにデータを分散し、順次読み込み/書き込みワークロードの並列処理に役立ちます。これにより、大容量またはビジー状態のRADOS Block Deviceにおいて単一ノードのボトルネックを防ぎます。
+     </para>
+     <para>
+      内部値は2で、デフォルトは「yes」す。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>exclusive-lock</option></term>
+    <listitem>
+     <para>
+      有効にすると、クライアントは書き込みを行う前にオブジェクトのロックを取得する必要があります。単一のクライアントが同時に1つのイメージにアクセスしている場合にのみ、排他ロックを有効にします。内部値は4です。デフォルトは「yes」です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>object-map</option></term>
+    <listitem>
+     <para>
+      オブジェクトマップのサポートは、排他ロックのサポートに依存します。ブロックデバイスはシンプロビジョニングされます。つまり、実際に存在するデータのみを保存します。オブジェクトマップのサポートは、どのオブジェクトが実際に存在するか(ドライブに保存されたデータを持つか)を追跡するのに役立ちます。オブジェクトマップのサポートを有効にすると、クローン作成、保存密度の低いイメージのインポートとエクスポート、および削除のI/O操作が高速化されます。
+     </para>
+     <para>
+      内部値は8で、デフォルトは「yes」です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>fast-diff</option></term>
+    <listitem>
+     <para>
+      Fast-diffのサポートは、オブジェクトマップのサポートと排他ロックのサポートに依存します。これは、オブジェクトマップに別のプロパティを追加することで、イメージのスナップショットと、スナップショットの実際のデータ使用と間の差分を生成する速度が大幅に向上します。
+     </para>
+     <para>
+      内部値は16で、デフォルトは「yes」です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>deep-flatten</option></term>
+    <listitem>
+     <para>
+      ディープフラット化は、<command>rbd flatten</command> (<xref linkend="rbd-flatten"/>を参照)を、イメージそのもの以外にイメージのすべてのスナップショットでも機能するようにします。ディープフラット化がなければ、イメージのスナップショットは引き続き親に依存するため、スナップショットが削除されるまで親イメージを削除することはできません。ディープフラット化は、スナップショットがある場合でも、親をそのクローンから独立させます。
+     </para>
+     <para>
+      内部値は32で、デフォルトは「yes」です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option> ジャーナリング</option></term>
+    <listitem>
+     <para>
+      ジャーナリングのサポートは排他ロックに依存します。ジャーナリングは、イメージに対するすべての変更を発生順に記録します。RBDミラーリング(<xref linkend="ceph-rbd-mirror"/>を参照)では、ジャーナルを使用してクラッシュ整合イメージをリモートクラスタに複製します。
+     </para>
+     <para>
+      内部値は64で、デフォルトは「no」です。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-old-clients-map">
+  <title>古いカーネルクライアントを使用したRVDのマッピング</title>
+
+  <para>
+   SUSE Enterprise Storage 6を使用して展開したクラスタでは、古いクライアント(SLE11 SP4 など)でサポートされない複数の機能(RBDイメージレベルの機能とRADOSレベルの機能の両方)が強制的に適用されるため、これらの古いクライアントはRBDイメージをマップできない場合があります。これが発生した場合、OSDログに次のようなメッセージが表示されます。
+  </para>
+
+<screen>2019-05-17 16:11:33.739133 7fcb83a2e700  0 -- 192.168.122.221:0/1006830 &gt;&gt; \
+192.168.122.152:6789/0 pipe(0x65d4e0 sd=3 :57323 s=1 pgs=0 cs=0 l=1 c=0x65d770).connect \
+protocol feature mismatch, my 2fffffffffff &lt; peer 4010ff8ffacffff missing 401000000000000
+</screen>
+
+  <warning>
+   <title>CRUSHマップのバケットタイプを変更すると大規模なリバランスが発生する</title>
+   <para>
+    CRUSHマップのバケットタイプを「straw」と「straw2」の間で切り替える場合は、計画的に行ってください。バケットタイプを変更するとクラスタの大規模なリバランスが発生するため、クラスタノードに重大な影響があることを想定しておいてください。
+   </para>
+  </warning>
+
+  <procedure>
+   <step>
+    <para>
+     サポートされていないRBDイメージ機能を無効にします。次に例を示します。
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd feature disable pool1/image1 object-map
+<prompt>cephadm@adm &gt; </prompt>rbd feature disable pool1/image1 exclusive-lock
+</screen>
+   </step>
+   <step>
+    <para>
+     CRUSHマップのバケットタイプを「straw2」から「straw」に変更します。
+    </para>
+    <substeps>
+     <step>
+      <para>
+       CRUSHマップを保存します。
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd getcrushmap -o crushmap.original
+</screen>
+     </step>
+     <step>
+      <para>
+       CRUSHマップを逆コンパイルします。
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>crushtool -d crushmap.original -o crushmap.txt
+</screen>
+     </step>
+     <step>
+      <para>
+       CRUSHマップを編集して、「straw2」を「straw」に置き換えます。
+      </para>
+     </step>
+     <step>
+      <para>
+       CRUSHマップを再コンパイルします。
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>crushtool -c crushmap.txt -o crushmap.new
+</screen>
+     </step>
+     <step>
+      <para>
+       新しいCRUSHマップを設定します。
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd setcrushmap -i crushmap.new
+</screen>
+     </step>
+    </substeps>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

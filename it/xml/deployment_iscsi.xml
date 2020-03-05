@@ -1,0 +1,668 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_iscsi.xml" version="5.0" xml:id="cha-ceph-as-iscsi">
+
+ <title>Installazione di iSCSI Gateway</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>modifica</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>sì</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  iSCSI è un protocollo di rete dell'area di storage (SAN) che consente ai client (denominati <emphasis>iniziatori</emphasis>) di inviare comandi SCSI ai dispositivi di storage SCSI (<emphasis>destinazioni</emphasis>) su server remoti. SUSE Enterprise Storage 6 include una struttura che apre la gestione dello storage Ceph a client eterogenei, come Microsoft Windows* e VMware* vSphere, attraverso il protocollo iSCSI. L'accesso iSCSI multipath garantisce disponibilità e scalabilità per questi client e il protocollo iSCSI standardizzato fornisce inoltre un ulteriore livello di isolamento di sicurezza tra i client e il cluster SUSE Enterprise Storage 6. La struttura di configurazione è denominata <systemitem class="daemon">ceph-iscsi</systemitem>. Con <systemitem class="daemon">ceph-iscsi</systemitem>, gli amministratori dello storage Ceph possono definire volumi soggetti a thin-provisioning, replicati, a elevata disponibilità che supportano snapshot di sola lettura, cloni di scrittura-lettura e ridimensionamento automatico con il dispositivo di blocco RADOS (RBD) Ceph. Gli amministratori possono quindi esportare i volumi tramite un singolo host gateway <systemitem class="daemon">ceph-iscsi</systemitem> o tramite più host gateway che supportano il failover multipath. Gli host Linux, Microsoft Windows e VMware possono collegarsi a volumi che utilizzano il protocollo iSCSI, che li rende disponibili come altri dispositivi di blocco SCSI. Questo significa che i clienti di SUSE Enterprise Storage 6 possono efficacemente eseguire un sottosistema completo dell'infrastruttura di storage di blocco su Ceph che fornisce tutte le funzioni e vantaggi di un SAN convenzionale, consentendo la crescita futura.
+ </para>
+ <para>
+  Questo capitolo presenta informazioni dettagliate per configurare un'infrastruttura del cluster Ceph insieme con un iSCSI Gateway, in modo che gli host client possano utilizzare da remoto i dati memorizzati come dispositivi di storage locale con il protocollo iSCSI.
+ </para>
+ <sect1 xml:id="ceph-iscsi-iscsi">
+  <title>Storage di blocco iSCSI</title>
+
+  <para>
+   iSCSI è un'implementazione del set di comandi Small Computer System Interface (SCSI) mediante il Protocollo Internet (IP), specificato in RFC 3720. iSCSI è implementato come servizio dove un client (l'iniziatore) parla a un server (la destinazione) tramite una sessione sulla porta TCP 3260. Una porta e un indirizzo IP della destinazione iSCSI sono denominati portale iSCSI, dove una destinazione può essere esposta attraverso uno o più portali. La combinazione di una destinazione e uno o più portali è detta gruppo portale di destinazione (target portal group, TPG).
+  </para>
+
+  <para>
+   Il protocollo del livello collegamento dati sottostante per iSCSI e di solito Ethernet. Più specificamente, le moderne infrastrutture iSCSI utilizzano reti Ethernet 10 Gigabit o più veloci per un throughput ottimale. Si consiglia la connettività Ethernet 10 Gigabit tra iSCSI Gateway e il cluster Ceph back-end.
+  </para>
+
+  <sect2 xml:id="ceph-iscsi-iscsi-target">
+   <title>La destinazione iSCSI Kernel Linux</title>
+   <para>
+    La destinazione iSCSI Kernel Linux era in origine denominata LIO per linux-iscsi.org, il dominio originale e sito Web del progetto. Per qualche tempo, erano disponibili per la piattaforma Linux non meno di quattro implementazioni di destinazione iSCSI in concorrenza, ma LIO alla fine ha prevalso come singola destinazione di riferimento iSCSI. Il codice kernel mainline di LIO utilizza il semplice ma certamente ambiguo nome "destinazione", che distingue tra "core di destinazione" e una varietà di moduli di destinazione front-end e back-end.
+   </para>
+   <para>
+    Il modulo front-end più comunemente utilizzato è iSCSI. Tuttavia, LIO supporta anche i protocolli Fibre Channel (FC), Fibre Channel over Ethernet (FCoE) e diversi altri protocolli front-end. Attualmente, è supportato da SUSE Enterprise Storage solo il protocollo iSCSI.
+   </para>
+   <para>
+    Il modulo back-end di destinazione più utilizzato è quello in grado di riesportare semplicemente qualsiasi dispositivo di blocco disponibile sull'host di destinazione. Questo modulo è denominato iblock. Tuttavia, LIO ha anche un modulo back-end specifico RBD che supporta l'accesso I/O multipercorso parallelizzato alle immagini RBD.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-iscsi-initiators">
+   <title>Iniziatori iSCSI</title>
+   <para>
+    Questa sezione presenta brevi informazioni sugli iniziatori iSCSI utilizzati su piattaforme Linux, Microsoft Windows e VMware.
+   </para>
+   <sect3>
+    <title>Linux</title>
+    <para>
+     L'iniziatore standard per la piattaforma Linux è <systemitem>open-iscsi</systemitem>. <systemitem>open-iscsi</systemitem> lancia un daemon, <systemitem>iscsid</systemitem>, che l'utente può quindi utilizzare per rilevare destinazioni iSCSI su qualsiasi portale dato, accedere alle destinazioni e mappare volumi iSCSI. <systemitem>iscsid</systemitem> comunica con il livello mediano SCSI per creare dispositivi di blocco nel kernel, che il kernel può quindi trattare come altri dispositivi di blocco SCSI nel sistema. L'iniziatore <systemitem>open-iscsi</systemitem> può essere distribuito insieme con la facility Device Mapper Multipath (<systemitem>dm-multipath</systemitem>) per fornire un dispositivo di blocco iSCSI ad alta disponibilità.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Microsoft Windows e Hyper-V</title>
+    <para>
+     L'iniziatore iSCSI di default per il sistema operativo Microsoft Windows è l'iniziatore Microsoft iSCSI. Il servizio iSCSI può essere configurato tramite un'interfaccia grafica utente (GUI) e supporta I/O multipercorso per alta disponibilità.
+    </para>
+   </sect3>
+   <sect3>
+    <title>VMware</title>
+    <para>
+     L'iniziatore iSCSI di default per VMware vSphere ed ESX è l'iniziatore iSCSI del software VMware ESX, <systemitem>vmkiscsi</systemitem>. Quando abilitato, può essere configurato dal client vSphere o mediante il comando <command>vmkiscsi-tool</command>. È quindi possibile formattare i volumi di storage connessi attraverso l'adattatore di storage vSphere iSCSI con VMFS e utilizzarli come altri dispositivi di storage VM. L'iniziatore VMware supporta anche I/O multipercorso per alta disponibilità.
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-lrbd">
+  <title>Informazioni generali su <systemitem class="daemon">ceph-iscsi</systemitem></title>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> combina i vantaggi dei dispositivi di blocco RADOS con la versatilità diffusa di iSCSI. Impiegando <systemitem class="daemon">ceph-iscsi</systemitem> su un host di destinazione iSCSI (noto come iSCSI Gateway), qualsiasi applicazione che deve utilizzare uno storage di blocco può trarre vantaggio da Ceph, anche se non utilizza alcun protocollo del client Ceph. Al contrario, gli utenti possono utilizzare iSCSI o un altro protocollo front-end di destinazione per collegarsi a una destinazione LIO che traduce tutti gli I/O di destinazione in operazioni di storage RBD.
+  </para>
+
+  <figure>
+   <title>Cluster Ceph con un singolo iSCSI Gateway</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> è intrinsecamente a elevata disponibilità e supporta operazioni multipath. Perciò, gli host iniziatori a valle possono utilizzare più iSCSI Gateway per alta disponibilità e scalabilità. Quando si comunica con una configurazione iSCSI con più gateway, gli iniziatori possono bilanciare il carico delle richieste iSCSI tra più gateway. Nel caso in cui un gateway sia in errore, temporaneamente irraggiungibile o disattivato per manutenzione, gli I/O continueranno in modo trasparente attraverso un altro gateway.
+  </para>
+
+  <figure>
+   <title>Cluster Ceph con più iSCSI Gateway</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-deploy">
+  <title>Considerazioni sull'installazione</title>
+
+  <para>
+   Una configurazione minima di SUSE Enterprise Storage 6 con <systemitem class="daemon">ceph-iscsi</systemitem> contiene i componenti seguenti:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Un cluster di storage Ceph. Il cluster Ceph consiste di un minimo di quattro server fisici contenenti almeno otto OSD (object storage daemon) ciascuno. In tale configurazione, tre nodi OSD raddoppiano come host monitor (MON).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Un server di destinazione iSCSI che esegue la destinazione LIO iSCSI, configurato tramite <systemitem class="daemon">ceph-iscsi</systemitem>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Un host iniziatore iSCSI, che esegue <systemitem>open-iscsi</systemitem> (Linux), l'iniziatore Microsoft iSCSI (Microsoft Windows) o qualsiasi altra implementazione di iniziatore iSCSI compatibile.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Una configurazione di produzione raccomandata di SUSE Enterprise Storage 6 con <systemitem class="daemon">ceph-iscsi</systemitem> consiste di:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Un cluster di storage Ceph. Un cluster Ceph di produzione consiste di un numero qualsiasi di (in genere oltre 10) nodi OSD, ciascuno che esegue in genere 10-12 OSD (object storage daemon), con non meno di tre host MON dedicati.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Diversi server di destinazione iSCSI che eseguono la destinazione LIO iSCSI, configurati tramite <systemitem class="daemon">ceph-iscsi</systemitem>. Per bilanciamento di carico e failover iSCSI, questi server devono eseguire un kernel che supporti il modulo <systemitem>target_core_rbd</systemitem>. Dal canale di manutenzione SUSE Linux Enterprise Server sono disponibili pacchetti di aggiornamento.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Un numero a scelta di host iniziatori iSCSI, che eseguono <systemitem>open-iscsi</systemitem> (Linux), l'iniziatore Microsoft iSCSI (Microsoft Windows) o qualsiasi altra implementazione di iniziatore iSCSI compatibile.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-install">
+  <title>Installazione e configurazione</title>
+
+  <para>
+   Questa sezione descrive i passaggi per installare e configurare un iSCSI Gateway su SUSE Enterprise Storage.
+  </para>
+
+  <sect2>
+   <title>Distribuire iSCSI Gateway in un cluster Ceph</title>
+   <para>
+    È possibile distribuire iSCSI Gateway durante il processo di distribuzione del cluster Ceph oppure aggiungerlo a un cluster esistente con DeepSea.
+   </para>
+   <para>
+    Per includere iSCSI Gateway durante il processo di installazione del cluster, consultare <xref linkend="policy-role-assignment"/>.
+   </para>
+   <para>
+    Per aggiungere iSCSI Gateway a un cluster esistente, consultare <xref linkend="salt-adding-services"/>.
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Creare immagini RBD</title>
+   <para>
+    Le immagini RBD vengono create nello store Ceph e quindi esportate in iSCSI. Per questo scopo, si consiglia di utilizzare un pool RADOS dedicato. È possibile creare un volume da qualsiasi host in grado di collegarsi al cluster di storage mediante l'utility della riga di comando Ceph <command>rbd</command>. Ciò richiede che il client abbia almeno un file di configurazione ceph.conf minimo e appropriate credenziali di autenticazione CephX.
+   </para>
+   <para>
+    Per creare un nuovo volume per la successiva esportazione tramite iSCSI, utilizzare il comando <command>rbd create</command>, specificando la dimensione del volume in megabyte. Ad esempio, per creare un volume da 100 GB denominato "testvol" nel pool con il nome "iscsi-images", eseguire:
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool iscsi-images create --size=102400 'testvol'</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-rbd-export">
+   <title>Esportare immagini RBD tramite iSCSI</title>
+   <para>
+    Per esportare le immagini RBD tramite iSCSI, è possibile utilizzare l'interfaccia Web del Ceph Dashboard o l'utility gwcli <systemitem class="daemon">ceph-iscsi</systemitem>. Questa sezione è incentrata esclusivamente su gwcli e illustra come creare una destinazione iSCSI in grado di esportare un'immagine RBD tramite la riga di comando.
+   </para>
+   <note>
+    <para>
+     Sono supportate solo le funzioni dell'immagine RBD seguenti: <option>layering</option>, <option>striping (v2)</option>, <option>exclusive-lock</option>, <option>fast-diff</option> e <option>data-pool</option>. Non sarà possibile esportare le immagini RBD con altre funzioni abilitate.
+    </para>
+   </note>
+   <para>
+    Da <systemitem class="username">root</systemitem>, avviare l'interfaccia riga di comando di iSCSI Gateway:
+   </para>
+<screen><prompt>root # </prompt>gwcli</screen>
+   <para>
+    Andare a <literal>iscsi-targets</literal> e creare una destinazione con il nome <literal>iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol</literal>:
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; create iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol
+</screen>
+   <para>
+    Creare gli iSCSI Gateway specificando il nome (<literal>name</literal>) e l'indirizzo <literal>ip</literal> del gateway:
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; cd iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol/gateways
+<prompt>gwcli &gt; </prompt> /iscsi-target...tvol/gateways&gt; create iscsi1 192.168.124.104
+<prompt>gwcli &gt; </prompt> /iscsi-target...tvol/gateways&gt; create iscsi2 192.168.124.105
+</screen>
+   <tip>
+    <para>
+     Utilizzare il comando <literal>help</literal> per visualizzare l'elenco dei comandi disponibili nel nodo di configurazione corrente.
+    </para>
+   </tip>
+   <para>
+    Aggiungere l'immagine RBD denominata "testvol" nel pool "iscsi-images":
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-target...tvol/gateways&gt; cd /disks
+<prompt>gwcli &gt; </prompt> /disks&gt; attach iscsi-images/testvol
+</screen>
+   <para>
+    Mappare l'immagine RBD alla destinazione:
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /disks&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol/disks
+<prompt>gwcli &gt; </prompt> /iscsi-target...testvol/disks&gt; add iscsi-images/testvol
+</screen>
+   <note>
+    <para>
+     È possibile utilizzare strumenti di livello inferiore, come <command>targetcli</command>, per interrogare la configurazione locale, ma non per modificarla.
+    </para>
+   </note>
+   <tip>
+    <para>
+     È possibile utilizzare il comando <command>ls</command> per rivedere la configurazione. Alcuni nodi di configurazione supportano inoltre il comando <command>info</command>, che può essere utilizzato per visualizzare altri dettagli.
+    </para>
+   </tip>
+   <para>
+    Tenere presente che, l'autenticazione ACL è abilitata per default, pertanto questa destinazione non è ancora accessibile. Consultare la <xref linkend="iscsi-lrbd-autentication"/> per ulteriori informazioni sull'autenticazione e il controllo dell'accesso.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="iscsi-lrbd-autentication">
+   <title>Autenticazione e controllo dell'accesso</title>
+   <para>
+    L'autenticazione iSCSI è flessibile e include diverse possibilità di autenticazione.
+   </para>
+   <sect3>
+    <title>Nessuna autenticazione</title>
+    <para>
+     "No authentication" indica che qualsiasi iniziatore potrà accedere ai LUN sulla destinazione corrispondente. È possibile abilitare tale impostazione disabilitando l'autenticazione ACL:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol/hosts
+<prompt>gwcli &gt; </prompt> /iscsi-target...testvol/hosts&gt; auth disable_acl
+</screen>
+   </sect3>
+   <sect3>
+    <title>Autenticazione ACL</title>
+    <para>
+     Se si utilizza un nome di iniziatore basato sull'autenticazione ACL, la connessione è consentita soltanto agli iniziatori definiti. È possibile definire un iniziatore come indicato di seguito:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol/hosts
+<prompt>gwcli &gt; </prompt> /iscsi-target...testvol/hosts&gt; create iqn.1996-04.de.suse:01:e6ca28cc9f20
+</screen>
+    <para>
+     Gli iniziatori definiti potranno eseguire la connessione, ma disporranno dell'accesso soltanto alle immagini RBD aggiunte esplicitamente all'iniziatore:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-target...:e6ca28cc9f20&gt; disk add rbd/testvol
+</screen>
+   </sect3>
+   <sect3>
+    <title>Autenticazione CHAP</title>
+    <para>
+     Oltre all'ACL, è possibile abilitare l'autenticazione CHAP specificando un nome utente e una password per ciascun iniziatore:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol/hosts/iqn.1996-04.de.suse:01:e6ca28cc9f20
+<prompt>gwcli &gt; </prompt> /iscsi-target...:e6ca28cc9f20&gt; auth username=common12 password=pass12345678
+</screen>
+    <note>
+     <para>
+      I nomi utente devono avere una lunghezza compresa tra 8 e 64 caratteri e possono contenere solo lettere e i simboli ".", "@", "-", "_" o ":".
+     </para>
+     <para>
+      Le password devono avere una lunghezza compresa tra 12 e 16 caratteri e possono contenere solo lettere e i simboli "@", "-", "_" o "/".
+     </para>
+    </note>
+    <para>
+     Facoltativamente, è possibile abilitare anche l'autenticazione CHAP reciproca specificando i parametri <option>mutual_username</option> e <option>mutual_password</option> nel comando <command>auth</command>.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Autenticazione reciproca e rilevazione</title>
+    <para>
+     L'<emphasis>autenticazione rilevazione</emphasis> è indipendente dai metodi di autenticazione descritti in precedenza. Richiede le credenziali per la navigazione, è facoltativa e può essere configurata tramite:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; discovery_auth username=du123456 password=dp1234567890
+</screen>
+    <note>
+     <para>
+      I nomi utente devono avere una lunghezza compresa tra 8 e 64 caratteri e possono contenere solo lettere e i simboli ".", "@", "-", "_" o ":".
+     </para>
+     <para>
+      Le password devono avere una lunghezza compresa tra 12 e 16 caratteri e possono contenere solo lettere e i simboli "@", "-", "_" o "/".
+     </para>
+    </note>
+    <para>
+     Facoltativamente, è possibile specificare anche i parametri <option>mutual_username</option> e <option>mutual_password</option> nel comando <command>discovery_auth</command>.
+    </para>
+    <para>
+     È possibile disabilitare l'autenticazione rilevazione tramite il comando seguente:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; discovery_auth nochap
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-rbd-advanced">
+   <title>Impostazioni avanzate</title>
+   <para>
+    È possibile configurare <systemitem class="daemon">ceph-iscsi</systemitem> con parametri avanzati che vengono quindi trasmessi alla destinazione di I/O di LIO. Tali parametri sono suddivisi nei parametri "target" e "disk".
+   </para>
+   <warning>
+    <para>
+     Se non diversamente specificato, si consiglia di non modificare l'impostazione di default di questi parametri.
+    </para>
+   </warning>
+   <sect3>
+    <title>Impostazioni di destinazione</title>
+    <para>
+     È possibile visualizzare il valore di tali impostazioni tramite il comando <command>info</command>:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.x86:testvol
+<prompt>gwcli &gt; </prompt> /iscsi-target...i.x86:testvol&gt; info
+</screen>
+    <para>
+     E modificare un'impostazione con il comando <command>reconfigure</command>:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-target...i.x86:testvol&gt; reconfigure login_timeout 20
+</screen>
+    <para>
+     Le impostazioni di destinazione disponibili sono:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>default_cmdsn_depth</term>
+      <listitem>
+       <para>
+        Profondità di default CmdSN (Command Sequence Number). Limita la quantità di richieste che l'iniziatore iSCSI può avere in sospeso in qualsiasi momento.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>default_erl</term>
+      <listitem>
+       <para>
+        Livello di ripristino errore di default.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>login_timeout</term>
+      <listitem>
+       <para>
+        Valore timeout di login in secondi.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>netif_timeout</term>
+      <listitem>
+       <para>
+        Timeout errore NIC in secondi.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>prod_mode_write_protect</term>
+      <listitem>
+       <para>
+        Se impostato a 1, impedisce le scritture sui LUN.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>Impostazioni disco</title>
+    <para>
+     È possibile visualizzare il valore di tali impostazioni tramite il comando <command>info</command>:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /disks/rbd/testvol
+<prompt>gwcli &gt; </prompt> /disks/rbd/testvol&gt; info
+</screen>
+    <para>
+     E modificare un'impostazione con il comando <command>reconfigure</command>:
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /disks/rbd/testvol&gt; reconfigure rbd/testvol emulate_pr 0
+</screen>
+    <para>
+     Le impostazioni disco disponibili sono:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>block_size</term>
+      <listitem>
+       <para>
+        Dimensione di blocco del dispositivo sottostante.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_3pc</term>
+      <listitem>
+       <para>
+        Se impostato a 1, abilita Third Party Copy.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_caw</term>
+      <listitem>
+       <para>
+        Se impostato a 1, abilita Compare e Write.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_dpo</term>
+      <listitem>
+       <para>
+        Se impostato a 1, attiva Disable Page Out.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_fua_read</term>
+      <listitem>
+       <para>
+        Se impostato a 1, attiva la lettura Force Unit Access.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_fua_write</term>
+      <listitem>
+       <para>
+        Se impostato a 1, abilita la scrittura Force Unit Access.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_model_alias</term>
+      <listitem>
+       <para>
+        Se impostato a 1, utilizza il nome del dispositivo back-end per l'alias modello.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_pr</term>
+      <listitem>
+       <para>
+        Se impostata a 0, il supporto delle prenotazioni SCSI, incluse le Persistent Group Reservation, è disabilitato. Se è disabilitata, l'iSCSI Gateway SES può ignorare lo stato di prenotazione per generare una migliore latenza della richiesta.
+       </para>
+       <tip>
+        <para>
+         Si consiglia di impostare backstore_emulate_pr a 0 se gli iniziatori iSCSI non richiedono il supporto della prenotazione SCSI.
+        </para>
+       </tip>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_rest_reord</term>
+      <listitem>
+       <para>
+        Se impostato a 0, il modificatore algoritmo di coda ha riordinamento limitato.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tas</term>
+      <listitem>
+       <para>
+        Se impostato a 1, abilita Task Aborted Status.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tpu</term>
+      <listitem>
+       <para>
+        Se impostato a 1, abilita Thin Provisioning Unmap.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tpws</term>
+      <listitem>
+       <para>
+        Se impostato a 1, abilita Thin Provisioning Write Same.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_ua_intlck_ctrl</term>
+      <listitem>
+       <para>
+        Se impostato a 1, abilita Unit Attention Interlock.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_write_cache</term>
+      <listitem>
+       <para>
+        Se impostato a 1, attiva Write Cache Enable.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>enforce_pr_isids</term>
+      <listitem>
+       <para>
+        Se impostato a 1, applica gli ISID di prenotazione persistenti.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>is_nonrot</term>
+      <listitem>
+       <para>
+        Se impostato a 1, il backstore è un dispositivo non rotativo.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_unmap_block_desc_count</term>
+      <listitem>
+       <para>
+        Numero massimo di descrittori di blocco per UNMAP.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_unmap_lba_count:</term>
+      <listitem>
+       <para>
+        Numero massimo di LBA per UNMAP.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_write_same_len</term>
+      <listitem>
+       <para>
+        Lunghezza massima per WRITE_SAME.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>optimal_sectors</term>
+      <listitem>
+       <para>
+        Dimensione richiesta ottimale in settori.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>pi_prot_type</term>
+      <listitem>
+       <para>
+        Tipo di protezione DIF.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>queue_depth</term>
+      <listitem>
+       <para>
+        Profondità coda.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_granularity</term>
+      <listitem>
+       <para>
+        Granularità UNMAP.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_granularity_alignment</term>
+      <listitem>
+       <para>
+        Allineamento granularità UNMAP.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>force_pr_aptpl</term>
+      <listitem>
+       <para>
+        Se abilitata, LIO scriverà sempre lo stato di <emphasis>prenotazione permanente</emphasis> nello spazio di memorizzazione permanente, a prescindere dal fatto che il client lo abbia richiesto o meno tramite <option>aptpl=1</option>. Ciò non ha effetto sul back-end RBD del kernel per LIO, che manterrà sempre lo stato di prenotazione permanente. Idealmente, l'opzione <option>target_core_rbd</option> dovrebbe forzarla su "1" e generare un errore se qualcuno tenta di disabilitarla tramite configfs.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_zeroes_data</term>
+      <listitem>
+       <para>
+        Determina se LIO invierà un bit LBPRZ agli iniziatori SCSI, per indicare che gli zero di una determinata area verranno riletti dopo l'esecuzione di un comando UNMAP o WRITE SAME con un bit di annullamento della mappatura.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="iscsi-tcmu">
+  <title>Esportazione delle immagini del dispositivo di blocco RADOS con <systemitem>tcmu-runner</systemitem></title>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> supporta i backstore <option>rbd</option> (basati sul kernel) e <option>user:rbd</option> (tcmu-runner), rendendo la gestione invisibile all'utente e indipendente dal backstore.
+  </para>
+
+  <warning>
+   <title>tecnologia in anteprima</title>
+   <para>
+    Le distribuzioni di iSCSI Gateway basate su <systemitem>tcmu-runner</systemitem> sono attualmente un'anteprima.
+   </para>
+  </warning>
+
+  <para>
+   A differenza delle distribuzioni iSCSI Gateway basate su kernel, gli iSCSI Gateway basati su <systemitem>tcmu-runner</systemitem> non offrono supporto per Multipath I/O o per le prenotazioni permanenti SCSI.
+  </para>
+
+  <para>
+   Per esportare un'immagine del dispositivo di blocco RADOS con <systemitem>tcmu-runner</systemitem>, occorre semplicemente specificare il backstore <option>user:rbd</option> durante il collegamento del disco:
+  </para>
+
+<screen>
+<prompt>gwcli &gt; </prompt> /disks&gt; attach rbd/testvol backstore=user:rbd
+</screen>
+
+  <note>
+   <para>
+    Durante l'uso di <systemitem>tcmu-runner</systemitem>, sull'immagine RBD esportata deve essere abilitata la funzione <option>exclusive-lock</option>.
+   </para>
+  </note>
+ </sect1>
+</chapter>

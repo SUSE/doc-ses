@@ -1,0 +1,434 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tiered_storage.xml" version="5.0" xml:id="cha-ceph-tiered">
+
+ <title>缓存分层</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>编辑</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  <emphasis>缓存层</emphasis>是在客户端与标准存储之间实施的附加存储层。该层用于加快访问低速硬盘中存储的存储池以及纠删码存储池的速度。
+ </para>
+ <para>
+  通常，缓存分层涉及到创建一个由相对快速的存储设备（例如 SSD 驱动器）组成且配置为充当缓存层的存储池，以及一个由较慢但较便宜的设备组成且配置为充当存储层的后备存储池。缓存池大小通常是存储池大小的 10-20%。
+ </para>
+ <sect1>
+  <title>分层存储的相关术语</title>
+
+  <para>
+   缓存分层识别两种类型的池：<emphasis>缓存池</emphasis>和<emphasis>存储池</emphasis>。
+  </para>
+
+  <tip>
+   <para>
+    有关池的一般信息，请参见<xref linkend="ceph-pools"/>。
+   </para>
+  </tip>
+
+  <variablelist>
+   <varlistentry>
+    <term>存储池</term>
+    <listitem>
+     <para>
+      在 Ceph 存储集群中存储一个对象的多个副本的标准副本存储池，或纠删码存储池（请参见<xref linkend="cha-ceph-erasure"/>）。
+     </para>
+     <para>
+      存储池有时称为“后备”存储或“冷”存储。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>缓存池</term>
+    <listitem>
+     <para>
+      标准副本存储池，存储在相对较小但速度较快的存储设备上，在 CRUSH 索引中具有自己的规则组。
+     </para>
+     <para>
+      缓存池也称为“热”存储。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="sec-ceph-tiered-caution">
+  <title>需考虑的要点</title>
+
+  <para>
+   缓存分层可能会<emphasis>降低</emphasis>特定工作负载的集群性能。以下几点指出了您需要考虑的有关缓存分层的几个方面：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>取决于工作负载</emphasis>：缓存能否提高性能取决于工作负载。由于将对象移入或移出缓存会耗费资源，因此，如果大多数请求只涉及到少量的对象，则使用缓存可能更高效。缓存池的大小应该足以接收工作负载的工作集，以避免性能大幅波动。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>难以进行基准测试</emphasis>：大多数性能基准测试可能会反映使用缓存分层时性能会较低。原因在于，这些基准测试请求了大量的对象，而缓存的“预热”需要较长时间。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>性能可能较低</emphasis>：对于不适合进行缓存分层的工作负载而言，其性能往往比不启用缓存分层的普通副本存储池更低。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis><systemitem>librados</systemitem> 对象枚举</emphasis>：如果应用直接使用 <systemitem>librados</systemitem> 并依赖于对象枚举，则缓存分层可能无法按预期工作（对于对象网关、RBD 或 CephFS 而言，这不会造成问题）。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1>
+  <title>何时使用缓存分层</title>
+
+  <para>
+   在以下情况下，请考虑使用缓存分层：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     您的纠删码存储池存储在 FileStore 上，并且您需要通过 RADOS 块设备访问它们。有关 RBD 的详细信息，请参见<xref linkend="ceph-rbd"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     您的纠删码存储池存储在 FileStore 上，并且您需要通过 iSCSI 访问它们。有关 iSCSI 的详细信息，请参见<xref linkend="cha-ceph-iscsi"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     您的高性能存储数量有限，而低性能存储众多，您需要更快地访问存储的数据。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sec-ceph-tiered-cachemodes">
+  <title>缓存模式</title>
+
+  <para>
+   缓存分层代理可处理缓存层与后备存储层之间的数据迁移。管理员可以配置如何进行这种迁移。主要有两种方案：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>写回模式</term>
+    <listitem>
+     <para>
+      在写回模式下，Ceph 客户端将数据写入缓存层，并从缓存层接收确认响应。一段时间后，写入缓存层的数据将迁移到存储层，并从缓存层中清除。从概念上讲，缓存层叠加在后备存储层的“前面”。当 Ceph 客户端需要驻留在存储层中的数据时，缓存分层代理会在读取时将数据迁移到缓存层，然后，数据将发送到 Ceph 客户端。因此，在数据变为不活跃状态前，Ceph 客户端可以使用缓存层执行 I/O。这种做法非常适合可变的数据，例如，编辑的照片或视频，或事务数据。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>只读模式</term>
+    <listitem>
+     <para>
+      在只读模式下，Ceph 客户端将数据直接写入后备层。在读取时，Ceph 将请求的对象从后备层复制到缓存层。过时对象将会根据定义的策略从缓存层中删除。这种做法非常适合不可变的数据，例如，在社交网络上呈现的图片或视频、DNA 数据或 X 光成像，因为从可能包含过时数据的缓存池中读取数据会导致一致性很差。不要对可变的数据使用只读模式。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="ceph-tier-erasure">
+  <title>纠删码存储池和缓存分层</title>
+
+  <para>
+   纠删码存储池需要的资源比副本存储池多。要克服这些限制，建议在纠删码存储池的前面设置一个缓存层。使用 FileStore 时需要这么做。
+  </para>
+
+  <para>
+   例如，如果 <quote>hot-storage</quote> 存储池由高速存储设备构成，则可使用以下命令来加速<xref linkend="cha-ceph-erasure-erasure-profiles"/>中创建的<quote>ecpool</quote>：
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier add ecpool hot-storage
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier cache-mode hot-storage writeback
+<prompt>cephadm@adm &gt; </prompt>ceph osd tier set-overlay ecpool hot-storage</screen>
+
+  <para>
+   这会将充当 ecpool 的一个层的 <quote>hot-storage</quote> 存储池置于写回模式，以便每次在 ecpool 中写入和读取数据时实际使用的都是热存储，从而受益于热存储的灵活性和速度。
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool ecpool create --size 10 myvolume</screen>
+
+  <para>
+   有关缓存分层的详细信息，请参见<xref linkend="cha-ceph-tiered"/>。
+  </para>
+ </sect1>
+ <sect1 xml:id="ses-tiered-storage">
+  <title>设置示例分层存储</title>
+
+  <para>
+   本节举例说明如何在标准硬盘（冷存储）的前面设置一个高速 SSD 缓存层（热存储）。
+  </para>
+
+  <tip>
+   <para>
+    下面的示例仅用于说明目的，其中的设置包含单个 Ceph 节点上存在的 SSD 部件的一个根及一条规则。
+   </para>
+   <para>
+    在生产环境中，集群设置通常包含热存储以及混合节点（配有 SSD 和 SATA 磁盘）的更多根项和规则项。
+   </para>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     创建两个额外的 CRUSH 规则“replicated_ssd”和“replicated_hdd”，前者用于较快的 SSD 缓存设备类型，后者用于较慢的 HDD 设备类型：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rule create-replicated replicated_ssd default host ssd
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rule create-replicated replicated_hdd default host hdd
+</screen>
+   </step>
+   <step>
+    <para>
+     将所有现有存储池都切换为使用“replicated_hdd”规则。这样可防止 Ceph 将数据存储到新添加的 SSD 设备：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> crush_rule replicated_hdd
+</screen>
+   </step>
+   <step>
+    <para>
+     使用 DeepSea 将该计算机转变成 Ceph 节点。根据<xref linkend="salt-adding-nodes"/>中所述安装软件并配置主机计算机。我们假设此节点名为 <replaceable>node-4</replaceable>。此节点需要有 4 个 OSD 磁盘。
+    </para>
+<screen>[...]
+host node-4 {
+   id -5  # do not change unnecessarily
+   # weight 0.012
+   alg straw
+   hash 0  # rjenkins1
+   item osd.6 weight 0.003
+   item osd.7 weight 0.003
+   item osd.8 weight 0.003
+   item osd.9 weight 0.003
+}
+[...]</screen>
+   </step>
+   <step>
+    <para>
+     编辑热存储池（已映射到基于高速 SSD 驱动器的 OSD）的 CRUSH 索引。定义另一个包含 SSD 的根节点的层次结构（命令为“root ssd”）。此外，请为 SSD 更改权重并添加一个 CRUSH 规则。有关 CRUSH 索引的详细信息，请参见<xref linkend="op-crush"/>。
+    </para>
+    <para>
+     使用 <command>getcrushmap</command> 和 <command>crushtool</command> 等命令行工具直接编辑 CRUSH 索引：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush rm-device-class osd.6 osd.7 osd.8 osd.9
+<prompt>cephadm@adm &gt; </prompt>ceph osd crush set-device-class ssd osd.6 osd.7 osd.8 osd.9
+</screen>
+   </step>
+   <step>
+    <para>
+     创建用于缓存分层的热存储池。对该池使用新的“ssd”规则：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create hot-storage 100 100 replicated ssd</screen>
+   </step>
+   <step>
+    <para>
+     使用默认的“replicated_ruleset”规则创建冷存储池：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create cold-storage 100 100 replicated replicated_ruleset</screen>
+   </step>
+   <step>
+    <para>
+     然后，设置缓存层的过程涉及到将后备存储池关联到缓存池，在本例中，需要将冷存储（即存储池）关联到热存储（即缓存池）：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier add cold-storage hot-storage</screen>
+   </step>
+   <step>
+    <para>
+     要将缓存模式设置为“写回”，请执行以下命令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier cache-mode hot-storage writeback</screen>
+    <para>
+     有关缓存模式的详细信息，请参见<xref linkend="sec-ceph-tiered-cachemodes"/>。
+    </para>
+    <para>
+     写回缓存层叠加在后备存储池上，因此需要执行一个额外的步骤：必须将来自存储池的所有客户端流量定向到缓存池。例如，要将客户端流量直接定向到缓存池，请执行以下命令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd tier set-overlay cold-storage hot-storage</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cache-tier-configure">
+  <title>配置缓存层</title>
+
+  <para>
+   可以使用多个选项来配置缓存层。使用以下语法：
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> <replaceable>key</replaceable> <replaceable>value</replaceable></screen>
+
+  <sect2 xml:id="ses-tiered-hitset">
+   <title>命中集</title>
+   <para>
+    使用<emphasis>命中集</emphasis>参数可以优化<emphasis>缓存池</emphasis>。Ceph 中的命中集通常是布隆过滤器，提供节省内存用量的方式来跟踪已存放于缓存池的对象。
+   </para>
+   <para>
+    命中集是一个位数组，用于存储针对对象名称应用的一组哈希函数的结果。最初，所有的位都设为 <literal>0</literal>。将对象添加到命中集后，该对象的名称将经过哈希处理，结果将映射在命中集中的不同位置，那时，位的值便会设置为 <literal>1</literal>。
+   </para>
+   <para>
+    为了确定某个对象是否存在于缓存中，将会再次对对象名称进行哈希处理。如果有任何位是 <literal>0</literal>，则表示该对象肯定不在缓存中，需要从冷存储中检索它。
+   </para>
+   <para>
+    不同对象的结果可能会存储在命中集的同一位置。在巧合的情况下，可能所有位都是 <literal>1</literal>，而对象却不在缓存中。因此，处理布隆过滤器的命中集只能确定某个对象是否一定不在缓存中，需要从冷存储检索它。
+   </para>
+   <para>
+    一个缓存池可以使用多个命中集来跟踪各时间段的文件访问。设置 <literal>hit_set_count</literal> 定义所用的命中集数量，<literal>hit_set_period</literal> 定义每个命中集已使用了多长时间。该期限过期后，将使用下一个命中集。如果用尽了命中集，将会释放最旧命中集的内存，并创建新的命中集。将 <literal>hit_set_count</literal> 和 <literal>hit_set_period</literal> 的值相乘可定义已跟踪对象访问的整个时间范围。
+   </para>
+   <figure xml:id="ses-tiered-hitset-overview-bloom">
+    <title>包含 3 个存储对象的布隆过滤器</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="bloom-filter.svg" width="70%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="bloom-filter.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    与哈希处理对象的数量相比，基于布隆过滤器的命中集非常地节省内存用量。只需使用不到 10 个位即可将误报率降低到 1% 以下。可以使用 <literal>hit_set_fpp</literal> 定义误报率。Ceph 可根据归置组中的对象数量及误报率自动计算命中集的大小。
+   </para>
+   <para>
+    可以使用 <literal>min_write_recency_for_promote</literal> 和 <literal>min_read_recency_for_promote</literal> 限制缓存池中所需的存储。如果将值设置为 <literal>0</literal>，则所有对象在被读取或写入后，会立即提升到缓存池，并且在被赶出之前会一直保持这种模式。使用大于 <literal>0</literal> 的任何值可定义在其中搜索对象的命中集（已按期限排序）的数量。如果在某个命中集中找到了该对象，会将该对象提升到缓存池。请记住，对对象执行备份操作也可能导致对象被提升到缓存中。如果执行值设置为“0”的完全备份，可能会导致所有数据都被提升到缓存层，而活跃数据会从缓存层中删除。因此，根据备份策略更改此设置的做法可能会有帮助。
+   </para>
+   <note>
+    <para>
+     期限越长，<option>min_read_recency_for_promote</option> 和 <option>min_write_recency_for_promote</option> 的值越大，<systemitem class="process">ceph-osd</systemitem> 守护进程耗费的 RAM 就越多。特别是，当代理正在刷新或赶出缓存对象时，所有 <option>hit_set_count</option> 命中集都会加载到 RAM 中。
+    </para>
+   </note>
+   <sect3 xml:id="ceph-tier-gmt-hitset">
+    <title>对命中集使用 GMT</title>
+    <para>
+     缓存层设置包含一个称作<emphasis>命中集</emphasis>的布隆过滤器。该过滤器测试某个对象是属于一组热对象还是冷对象。对象将添加到命中集，其名称后面附有时戳。
+    </para>
+    <para>
+     如果集群计算机位于不同的时区，且时戳根据当地时间派生，则命中集中对象的名称可能包含将来或过去的时戳，致使用户产生误解。在最坏的情况下，对象可能根本不在命中集中。
+    </para>
+    <para>
+     为防止这种问题发生，在新建的缓存层设置中，<option>use_gmt_hitset</option> 默认设为“1”。这样，您便可以在创建命中集的对象名称时，强制 OSD 使用 GMT（格林威治标准时间）时戳。
+    </para>
+    <warning>
+     <title>保留默认值</title>
+     <para>
+      不要更改 <option>use_gmt_hitset</option> 的默认值“1”。如果与此选项相关的错误不是因集群设置造成，切勿手动更改此选项。否则，集群的行为可能变得无法预测。
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>缓存大小调整</title>
+   <para>
+    缓存分层代理执行两项主要功能：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>刷新</term>
+     <listitem>
+      <para>
+       代理识别已修改的（脏）对象，并将其转发到存储池长期存储。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>赶出</term>
+     <listitem>
+      <para>
+       代理识别未曾修改的（正常）对象，并将其中最近用得最少的对象从缓存中赶出。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <sect3 xml:id="cache-tier-config-absizing">
+    <title>绝对大小调整</title>
+    <para>
+     缓存分层代理可根据字节总数或对象总数来刷新或赶出对象。要指定最大字节数，请执行以下命令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> target_max_bytes <replaceable>num_of_bytes</replaceable></screen>
+    <para>
+     要指定最大对象数，请执行以下命令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> target_max_objects <replaceable>num_of_objects</replaceable></screen>
+    <note>
+     <para>
+      Ceph 无法自动确定缓存池的大小，因此需要配置绝对大小。否则，刷新和赶出功能将无法正常工作。如果这两项限制都指定，则一旦触发任一阈值，缓存分层代理就会开始执行刷新或赶出。
+     </para>
+    </note>
+    <note>
+     <para>
+      仅当达到 <option>target_max_bytes</option> 或 <option>target_max_objects</option> 时，才会阻止所有客户端请求。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="cache-tier-config-relsizing">
+    <title>相对大小调整</title>
+    <para>
+     缓存分层代理可以根据缓存池的相对大小（通过<xref linkend="cache-tier-config-absizing"/>中所述的 <option>target_max_bytes</option> 或 <option>target_max_objects</option> 指定）刷新或赶出对象。当缓存池中的已修改（脏）对象达到特定百分比时，缓存分层代理会将这些对象刷新到存储池。要设置 <option>cache_target_dirty_ratio</option>，请执行以下命令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_ratio <replaceable>0.0...1.0</replaceable></screen>
+    <para>
+     例如，如果将值设置为 0.4，则当已修改（脏）对象的大小达到缓存池容量的 40% 时，就会开始刷新这些对象。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set hot-storage cache_target_dirty_ratio 0.4</screen>
+    <para>
+     当脏对象的大小达到容量的特定百分比时，将以更高的速度刷新。使用 <option>cache_target_dirty_high_ratio</option>：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_target_dirty_high_ratio <replaceable>0.0..1.0</replaceable></screen>
+    <para>
+     当缓存池的大小达到其容量的特定百分比时，缓存分层代理会赶出对象，以维持可用容量。要设置 <option>cache_target_full_ratio</option>，请执行以下命令：
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_target_full_ratio <replaceable>0.0..1.0</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2>
+   <title>缓存期限</title>
+   <para>
+    您可以指定在缓存分层代理将最近修改过的（脏）对象刷回到后备存储池之前，这些对象可保留的最短期限。请注意，此命令仅在缓存确实需要清理/赶出对象时适用：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_min_flush_age <replaceable>num_of_seconds</replaceable></screen>
+   <para>
+    您可以指定在将某个对象赶出缓存层之前，该对象至少可保留的期限：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool set <replaceable>cachepool</replaceable> cache_min_evict_age <replaceable>num_of_seconds</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ses-tiered-hitset-examples">
+   <title>示例</title>
+   <sect3 xml:id="ses-tiered-hitset-examples-memory">
+    <title>大型缓存池和少量内存</title>
+    <para>
+     如果有大量的存储，但只有少量的 RAM 可用，则所有对象在被访问后可立即提升到缓存池。命中集保持较小的规模。下面是一组示例配置值：
+    </para>
+<screen>hit_set_count = 1
+hit_set_period = 3600
+hit_set_fpp = 0.05
+min_write_recency_for_promote = 0
+min_read_recency_for_promote = 0</screen>
+   </sect3>
+   <sect3 xml:id="ses-tiered-hitset-examples-storage">
+    <title>小型缓存池和大量内存</title>
+    <para>
+     如果只有少量的存储，但可用的内存量相对较大，则可以将缓存层配置为将有限数量的对象提升到缓存池。如果有 12 个命中集，并且在 14,400 秒期限内可以使用其中每个命中集，则这些命中集总共可提供 48 小时的跟踪。如果在过去 8 小时内访问了某个对象，该对象将提升到缓存池。这种情况的一组示例配置值如下：
+    </para>
+<screen>hit_set_count = 12
+hit_set_period = 14400
+hit_set_fpp = 0.01
+min_write_recency_for_promote = 2
+min_read_recency_for_promote = 2</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

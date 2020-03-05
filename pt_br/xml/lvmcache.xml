@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="lvmcache.xml" version="5.0" xml:id="lvmcache">
+
+ <title>Melhorando o desempenho com o cache LVM</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>editando</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes (sim)</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <warning>
+  <title>Technology Preview</title>
+  <para>
+   Atualmente, o cache LVM é uma versão Technology Preview.
+  </para>
+ </warning>
+ <para>
+  O cache LVM é um mecanismo de cache usado para melhorar o desempenho de um volume lógico (LV, logical volume). Normalmente, um dispositivo menor e mais rápido é usado para melhorar o desempenho de E/S de um volume lógico maior e mais lento. Consulte a respectiva página de manual (<command>man 7 lvmcache</command>) para encontrar mais detalhes sobre o cache LVM.
+ </para>
+ <para>
+  No SUSE Enterprise Storage, o cache LVM pode melhorar o desempenho dos OSDs. O suporte ao cache LVM é fornecido por meio de um plug-in <command>ceph-volume</command>. Você pode encontrar informações detalhadas sobre o uso do cache executando o comando <command>ceph-volume lvmcache</command>.
+ </para>
+ <sect1 xml:id="lvmcache-prerequisites">
+  <title>Pré-requisitos</title>
+
+  <para>
+   Para usar os recursos de cache LVM para melhorar o desempenho de um cluster do Ceph, você precisa ter:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Um cluster do Ceph com estado estável em execução (“HEALTH_OK”).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     OSDs implantados com BlueStore e LVM, que é o padrão se os OSDs foram implantados usando o SUSE Enterprise Storage 6 ou posterior.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Discos ou partições vazios que serão usados para armazenamento em cache.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-planning">
+  <title>Pontos a serem considerados</title>
+
+  <para>
+   Considere os seguintes pontos antes de configurar os OSDs para usar o cache LVM:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis role="bold">Verifique se o cache LVM é adequado ao seu caso de uso.</emphasis> Se você tem poucas unidades rápidas disponíveis que <emphasis role="bold">não</emphasis> são usadas para OSDs, a recomendação geral é usá-las como dispositivos WAL/BD para os OSDs. Nesse caso, as operações de WAL e BD (operações pequenas e raras) são aplicadas à unidade rápida, enquanto as operações de dados são aplicadas à unidade OSD.
+    </para>
+    <tip>
+     <para>
+      Se a latência for mais importante para sua implantação do que o IOPS ou o throughput, você poderá usar as unidades rápidas como cache LVM em vez das partições de WAL/BD.
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     Se você planeja usar uma unidade rápida como cache LVM para vários OSDs, saiba que <emphasis role="bold">todas as operações de OSD (incluindo a replicação) passarão pelo dispositivo de cache</emphasis>. Todas as leituras serão consultadas por meio do dispositivo de cache e apenas serão processadas pelo dispositivo lento em caso de perda de cache. As gravações são sempre aplicadas ao dispositivo de cache primeiro e descarregadas para o dispositivo lento em um momento posterior (“writeback” é o modo de cache padrão).
+    </para>
+    <para>
+     Ao decidir se você deve utilizar um cache LVM, verifique se a unidade rápida pode servir como interface para vários OSDs e ainda fornecer uma quantidade aceitável de IOPS. Você pode testá-lo medindo a quantidade máxima de IOPS que o dispositivo rápido pode processar e, em seguida, dividindo o resultado pelo número de OSDs por trás do dispositivo rápido. Se o resultado for menor ou próximo ao valor máximo de IOPS que o OSD pode fornecer sem o cache, o cache LVM provavelmente não será adequado para esta configuração.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">A interação do dispositivo de cache LVM com os OSDs é importante.</emphasis> As gravações são periodicamente descarregadas do dispositivo de cache para o dispositivo lento. Se o tráfego de entrada é constante e significativo, o dispositivo de cache se empenhará para acompanhar as solicitações recebidas e também o processo de descarregamento, resultando na queda do desempenho. A menos que o dispositivo rápido possa fornecer muito mais IOPS com melhor latência do que o dispositivo lento, não use o cache LVM com uma carga de trabalho de alto volume constante. O tráfego em um padrão burst é mais adequado ao cache LVM porque concede ao cache tempo para descarregar os dados modificados sem interferir no tráfego do cliente. Para uma carga de trabalho de pouco tráfego constante, é difícil prever se o uso do cache LVM melhorará o desempenho. O melhor teste é realizar o benchmark e comparar a configuração do cache LVM com a configuração do WAL/BD. Além disso, como as pequenas gravações sobrecarregam a partição WAL, a sugestão é usar o dispositivo rápido para o BD e/ou WAL, em vez de um cache LVM.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Se você não tem certeza se deve usar o cache LVM, use o dispositivo rápido como um dispositivo WAL e/ou BD.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-preparation">
+  <title>Preparação</title>
+
+  <para>
+   Você precisa dividir o dispositivo rápido em várias partições. Cada OSD precisa de duas partições para o cache: uma para os dados e outra para os metadados do cache. O tamanho mínimo de qualquer partição é de 2 GB. Você pode usar um único dispositivo rápido para armazenar vários OSDs. Ele apenas precisa ser particionado de acordo.
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-configuring">
+  <title>Configurando o cache LVM</title>
+
+  <para>
+   Você pode encontrar informações detalhadas sobre como adicionar, remover e configurar o cache LVM executando o comando <command>ceph-volume lvmcache</command>.
+  </para>
+
+  <sect2 xml:id="lvmcache-adding">
+   <title>Adicionando o cache LVM</title>
+   <para>
+    Para adicionar o cache LVM a um OSD existente, use o seguinte comando:
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache add
+ --cachemetadata <replaceable>METADATA-PARTITION</replaceable>
+ --cachedata <replaceable>DATA-PARTITION</replaceable>
+ --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    O <option>--data</option>, <option>--db</option> ou <option>--wal</option> opcional especifica qual partição armazenar em cache. O padrão é <option>--data</option>.
+   </para>
+   <tip>
+    <title>Especifique o Volume Lógico (LV)</title>
+    <para>
+     Você também pode usar a opção <option>--origin</option> no lugar da <option>--osd-id</option> para especificar o volume lógico que será armazenado em cache:
+    </para>
+<screen>
+[...]
+--origin <replaceable>VOLUME-GROUP</replaceable>/<replaceable>LOGICAL-VOLUME</replaceable>
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-removing">
+   <title>Removendo o cache LVM</title>
+   <para>
+    Para remover o cache LVM existente de um OSD, use o seguinte comando:
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache rm --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-mode">
+   <title>Definindo o modo de cache LVM</title>
+   <para>
+    Para especificar o modo de cache, use o seguinte comando:
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache mode --set <replaceable>CACHING-MODE</replaceable> --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    <replaceable>CACHING-MODE</replaceable> é “writeback” (padrão) ou “writethrough”
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="lvmcache-failures">
+  <title>Lidando com falhas</title>
+
+  <para>
+   Se o dispositivo de cache falhar, todos os OSDs por trás dele precisarão ser removidos do cluster (consulte a <xref linkend="salt-removing-osd"/>), purgados e reimplantados. Se a unidade OSD falhar, o volume lógico tanto do OSD quanto do cache estará ativo, mas não funcionará. Use <command>pvremove <replaceable>PARTITION</replaceable></command> para purgar as partições (volumes físicos) usadas para os dados do cache do OSD e as partições de metadados. É possível usar <command>pvs</command> para listar todos os volumes físicos.
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-faq">
+  <title>Perguntas frequentes (FAQ)</title>
+
+  <qandaset>
+   <qandaentry>
+    <question>
+     <para>
+      O que acontece se um OSD for removido?
+     </para>
+    </question>
+    <answer>
+     <para>
+      Ao remover o volume lógico do OSD usando <command>lvremove</command>, os volumes lógicos do cache também serão removidos. No entanto, você ainda precisará chamar <command>pvremove</command> nas partições para se certificar de que todos os rótulos foram limpos.
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      O que acontece se o OSD for limpo usando <command>ceph-volume zap</command>?
+     </para>
+    </question>
+    <answer>
+     <para>
+      A mesma resposta vale para a pergunta <emphasis role="bold">O que acontece se um OSD for removido?</emphasis>
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      O que acontece se a unidade de origem falhar?
+     </para>
+    </question>
+    <answer>
+     <para>
+      Os volumes lógicos do cache ainda existem e as <command>informações do cache</command> ainda os mostram como disponíveis. Não será possível cancelar o cache porque a LVM não poderá descarregá-lo, já que o dispositivo do volume lógico de origem não existe mais. A situação agora é que o volume lógico de origem existe, mas o dispositivo de suporte dele não. Para corrigir isso, use o comando <command>pvs</command> e localize os dispositivos associados ao volume lógico de origem. Em seguida, você poderá removê-los usando
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo pvremove /dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      É possível fazer o mesmo com as partições de cache. Este procedimento fará com que o volume lógico de origem e os volumes lógicos do cache desapareçam. Você também pode usar
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo dd if=/dev/zero of=/dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      para limpá-los antes de usar o comando <command>pvremove</command>.
+     </para>
+    </answer>
+   </qandaentry>
+  </qandaset>
+ </sect1>
+</chapter>

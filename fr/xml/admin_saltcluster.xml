@@ -1,0 +1,1251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_saltcluster.xml" version="5.0" xml:id="storage-salt-cluster">
+ <title>Administration de grappe Salt</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>oui</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Après avoir déployé une grappe Ceph, vous devrez probablement effectuer plusieurs modifications de manière occasionnelle. Citons notamment l'ajout ou la suppression de nouveaux noeuds, disques ou services. Ce chapitre décrit la manière dont vous pouvez réaliser ces tâches d'administration.
+ </para>
+ <sect1 xml:id="salt-adding-nodes">
+  <title>Ajout de nouveaux noeuds à la grappe</title>
+
+  <para>
+   La procédure d'ajout de nouveaux noeuds à la grappe est presque identique au déploiement initial du noeud de grappe décrit dans le <xref linkend="ceph-install-saltstack"/> :
+  </para>
+
+  <tip>
+   <title>empêchez le rééquilibrage</title>
+   <para>
+    Lorsque vous ajoutez un OSD à la grappe existante, gardez à l'esprit que le rééquilibrage de celle-ci dure un certain temps après cette opération. Pour réduire les périodes de rééquilibrage, ajoutez tous les OSD que vous avez l'intention d'ajouter en même temps.
+   </para>
+   <para>
+    Une autre méthode consiste à définir l'option <option>osd crush initial weight = 0</option> dans le fichier <filename>ceph.conf</filename> avant d'ajouter les OSD :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Ajoutez <option>osd crush initial weight = 0</option> dans <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/global.conf</filename>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Créez la configuration sur le noeud Salt Master :
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>SALT_MASTER_NODE</replaceable>' state.apply ceph.configuration.create
+</screen>
+    </step>
+    <step>
+     <para>
+      Appliquez la nouvelle configuration aux minions OSD ciblés :
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>OSD_MINIONS</replaceable>' state.apply ceph.configuration
+</screen>
+    </step>
+    <step>
+     <para>
+      Après l'ajout des nouveaux OSD, ajustez leur pondération selon les besoins avec la commande <command>ceph osd crush reweight</command>.
+     </para>
+    </step>
+   </procedure>
+  </tip>
+
+  <procedure>
+   <step>
+    <para>
+     Installez SUSE Linux Enterprise Server 15 SP1 sur le nouveau noeud et configurez son paramètre réseau de sorte qu'il résolve correctement le nom d'hôte Salt Master. Vérifiez qu'il a une connexion appropriée aux réseaux public et de grappe, et que la synchronisation temporelle est correctement configurée. Ensuite, installez le paquetage <systemitem>salt-minion</systemitem> :
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+    <para>
+     Si le nom d'hôte de Salt Master est différent de <literal>salt</literal>, modifiez <filename>etc/salt/minion</filename> pour lui ajouter ce qui suit :
+    </para>
+<screen>master: <replaceable>DNS_name_of_your_salt_master</replaceable></screen>
+    <para>
+     Si vous avez apporté des modifications aux fichiers de configuration mentionnés ci-dessus, redémarrez le service <systemitem>salt.minion</systemitem> :
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Sur Salt Master, acceptez la clé Salt du nouveau noeud :
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept <replaceable>NEW_NODE_KEY</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez que <filename>/srv/pillar/ceph/deepsea_minions.sls</filename> cible le nouveau minion Salt et/ou définissez le grain DeepSea approprié. Pour plus d'informations, reportez-vous au <xref linkend="ds-minion-targeting-name"/> ou <xref linkend="ds-depl-stages"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Exécutez la phase de préparation. Lors de cette phase, les modules et les grains sont synchronisés afin que le nouveau minion puisse fournir toutes les informations attendues par DeepSea.
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.0</screen>
+    <important>
+     <title>redémarrage possible de la phase 0 de DeepSea</title>
+     <para>
+      Si Salt Master a redémarré après la mise à jour du kernel, vous devez à nouveau exécuter la phase 0 de DeepSea.
+     </para>
+    </important>
+   </step>
+   <step>
+    <para>
+     Exécutez la phase de découverte. Elle va écrire de nouvelles entrées de fichier dans le répertoire <filename>/srv/pillar/ceph/proposals</filename> dans lequel vous pouvez modifier les fichiers .yml pertinents :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.1</screen>
+   </step>
+   <step>
+    <para>
+     Éventuellement, modifiez le fichier <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> si le nouvel hôte ajouté ne correspond pas au schéma de dénomination existant. Pour plus d'informations, reportez-vous au <xref linkend="policy-configuration"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Exécutez la phase de configuration. Elle lit tous les éléments sous <filename>/srv/pillar/ceph</filename> et met à jour Pillar en conséquence :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+    <para>
+     Pillar stocke les données auxquelles vous pouvez accéder à l'aide de la commande suivante :
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>target</replaceable> pillar.items</screen>
+    <tip>
+     <title>modification de la disposition de l'OSD</title>
+     <para>
+      Si vous souhaitez modifier la disposition par défaut de l'OSD et la configuration des groupes d'unités, suivez la procédure décrite dans la <xref linkend="ds-drive-groups"/>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Les phases de configuration et de déploiement incluent les noeuds que vous venez d'ajouter :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-adding-services">
+  <title>Ajout de nouveaux rôles à des noeuds</title>
+
+  <para>
+   Vous pouvez déployer tous les types de rôles pris en charge avec DeepSea. Reportez-vous au <xref linkend="policy-role-assignment"/> pour plus d'informations sur les types de rôles pris en charge et des exemples sur leur mise en correspondance.
+  </para>
+
+  <para>
+   Pour ajouter un nouveau service à un noeud existant, procédez comme suit :
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Adaptez <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> pour faire correspondre l'hôte existant à un nouveau rôle. Pour plus d'informations, reportez-vous au <xref linkend="policy-configuration"/>. Par exemple, si vous devez exécuter une passerelle Object Gateway sur un noeud MON, la ligne est similaire à ceci :
+    </para>
+<screen>role-rgw/xx/x/example.mon-1.sls</screen>
+   </step>
+   <step>
+    <para>
+     Exécutez la phase 2 pour mettre à jour Pillar :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2</screen>
+   </step>
+   <step>
+    <para>
+     Exécutez la phase 3 pour déployer les services de base ou la phase 4 pour déployer les services facultatifs. L'exécution des deux phases est sans risque.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-node-removing">
+  <title>Suppression et réinstallation de noeuds de grappe</title>
+
+  <tip>
+   <title>suppression temporaire d'un noeud de grappe</title>
+   <para>
+    Master Salt s'attend à ce que tous les minions soient présents dans la grappe et réactifs. Si un minion est endommagé et n'est plus réactif, il pose des problèmes à l'infrastructure Salt, principalement à DeepSea et à Ceph Dashboard.
+   </para>
+   <para>
+    Avant de réparer le minion, supprimez temporairement sa clé de Salt Master :
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-key -d <replaceable>MINION_HOST_NAME</replaceable>
+</screen>
+   <para>
+    Une fois que le minion est réparé, rajoutez sa clé à Salt Master :
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-key -a <replaceable>MINION_HOST_NAME</replaceable>
+</screen>
+  </tip>
+
+  <para>
+   Pour supprimer un rôle d'une grappe, modifiez <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> et supprimez la ou les lignes correspondantes. Exécutez ensuite les phases 2 et 5 comme décrit dans le <xref linkend="ceph-install-stack"/>.
+  </para>
+
+  <note>
+   <title>suppression d'OSD de la grappe</title>
+   <para>
+    Si vous devez supprimer un noeud OSD particulier de votre grappe, assurez-vous que celle-ci dispose de plus d'espace disque libre que le disque que vous souhaitez supprimer. Gardez à l'esprit que la suppression d'un OSD entraîne un rééquilibrage de l'ensemble de la grappe.
+   </para>
+   <para>
+    Avant d'exécuter la phase 5 pour effectuer la suppression proprement dite, vérifiez toujours quels OSD vont être supprimés par DeepSea :
+   </para>
+<screen><prompt>root@master # </prompt>salt-run rescinded.ids</screen>
+  </note>
+
+  <para>
+   Lorsqu'un rôle est supprimé d'un minion, l'objectif est d'annuler toutes les modifications liées à ce rôle. Pour la plupart des rôles, la tâche est simple, mais des dépendances de paquetages peuvent être problématiques. Si un paquetage est désinstallé, ses dépendances ne le sont pas pour autant.
+  </para>
+
+  <para>
+   Les OSD supprimés apparaissent comme des unités vides. Les tâches associées remplacent le début des systèmes de fichiers et suppriment les partitions de sauvegarde, en plus de supprimer les tables de partition.
+  </para>
+
+  <note>
+   <title>préservation des partitions créées par d'autres méthodes</title>
+   <para>
+    Les unités de disque précédemment configurées à l'aide d'autres méthodes, telles que <command>ceph-deploy</command>, peuvent toujours contenir des partitions. DeepSea ne les détruira pas automatiquement. L'administrateur doit récupérer ces unités manuellement.
+   </para>
+  </note>
+
+  <example xml:id="ex-ds-rmnode">
+   <title>Suppression d'un minion Salt de la grappe</title>
+   <para>
+    Si vos minions de stockage sont nommés, par exemple, « data1.ceph », « data2.ceph » ... « data6.ceph », et les lignes associées dans votre fichier <filename>policy.cfg</filename> sont similaires à ce qui suit :
+   </para>
+<screen>[...]
+# Hardware Profile
+role-storage/cluster/data*.sls
+[...]</screen>
+   <para>
+    Ensuite, pour supprimer le minion Salt « data2.ceph », modifiez les lignes comme suit :
+   </para>
+<screen>
+[...]
+# Hardware Profile
+role-storage/cluster/data[1,3-6]*.sls
+[...]</screen>
+   <para>
+    Pensez également à adapter votre fichier drive_groups.yml pour qu'il corresponde aux nouvelles cibles.
+   </para>
+<screen>
+    [...]
+    drive_group_name:
+      target: 'data[1,3-6]*'
+    [...]</screen>
+   <para>
+    Exécutez ensuite la phase 2, vérifiez quels OSD vont être supprimés et terminez par la phase 5 :
+   </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run rescinded.ids
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.5</screen>
+  </example>
+
+  <example xml:id="ex-ds-mignode">
+   <title>Migration des noeuds</title>
+   <para>
+    Imaginons la situation suivante : lors de l'installation de la nouvelle grappe, vous (l'administrateur) avez alloué l'un des noeuds de stockage en tant que passerelle Object Gateway autonome en attendant la livraison du matériel de la passerelle. Le matériel permanent est à présent arrivé pour la passerelle et vous pouvez enfin attribuer le rôle prévu au noeud de stockage de sauvegarde et supprimer le rôle de passerelle.
+   </para>
+   <para>
+    Après avoir exécuté les phases 0 et 1 (voir le manuel <xref linkend="ds-depl-stages"/>) pour le nouveau matériel, vous avez nommé la nouvelle passerelle <literal>rgw1</literal>. Si le noeud <literal>data8</literal> requiert la suppression du rôle Object Gateway et l'ajout du rôle de stockage, le fichier <filename>policy.cfg</filename> se présente comme suit :
+   </para>
+<screen># Hardware Profile
+role-storage/cluster/data[1-7]*.sls
+
+# Roles
+role-rgw/cluster/data8*.sls</screen>
+   <para>
+    Modifiez-le de sorte qu'il contienne les informations suivantes :
+   </para>
+<screen># Hardware Profile
+role-storage/cluster/data[1-8]*.sls
+
+# Roles
+role-rgw/cluster/rgw1*.sls</screen>
+   <para>
+    Exécutez les phases 2 à 4, vérifiez quels OSD vont éventuellement être supprimés et terminez en exécutant la phase 5. La phase 3 ajoute <literal>data8</literal> en tant que noeud de stockage. Pour quelques instants, <literal>data8</literal> a deux rôles. La phase 4 ajoute le rôle Object Gateway à <literal>rgw1</literal> et la phase 5 supprime le rôle Object Gateway de <literal>data8</literal> :
+   </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4
+<prompt>root@master # </prompt>salt-run rescinded.ids
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.5</screen>
+  </example>
+ </sect1>
+ <sect1 xml:id="ds-mon">
+  <title>Redéploiement des noeuds de moniteur</title>
+
+  <para>
+   Lorsqu'un ou plusieurs de vos noeuds de moniteur échouent et ne répondent pas, vous devez supprimer de la grappe les moniteurs ayant échoué et éventuellement les rajouter dans la grappe.
+  </para>
+
+  <important>
+   <title>le minimum est de trois noeuds de moniteur</title>
+   <para>
+    Le nombre de noeuds de moniteur ne doit pas être inférieur à trois. Si un noeud de moniteur échoue et que votre grappe ne possède que deux noeuds de moniteur, vous devez assigner temporairement le rôle de moniteur aux autres noeuds de la grappe avant de redéployer les noeuds de moniteur ayant échoué. Après avoir redéployé les noeuds de moniteur ayant échoué, vous pouvez désinstaller les rôles de moniteur temporaires.
+   </para>
+   <para>
+    Pour plus d'informations sur l'ajout de nouveaux noeuds/rôles à la grappe Ceph, reportez-vous à la <xref linkend="salt-adding-nodes"/> et à la <xref linkend="salt-adding-services"/>.
+   </para>
+   <para>
+    Pour plus d'informations sur la suppression de noeuds de grappe, reportez-vous à la <xref linkend="salt-node-removing"/>.
+   </para>
+  </important>
+
+  <para>
+   On distingue deux degrés de base lors d'un échec de noeud Ceph :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     L'hôte minion Salt est endommagé physiquement ou au niveau du système d'exploitation et ne répond pas à l'appel <command>salt '<replaceable>nom_minion</replaceable>' test.ping</command>. Dans ce cas, vous devez redéployer le serveur complètement en suivant les instructions appropriées dans le <xref linkend="ceph-install-stack"/>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Les services liés au moniteur ont échoué et ne permettent pas de récupérer les ressources, mais l'hôte répond à l'appel <command>salt '<replaceable>nom_minion</replaceable>' test.ping</command>. Dans ce cas, procédez comme suit :
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <procedure>
+   <step>
+    <para>
+     Modifiez le fichier <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> sur Salt Master et supprimez ou mettez à jour les lignes qui correspondent aux noeuds de moniteur ayant échoué afin qu'elles pointent sur les noeuds de moniteur opérationnels. Par exemple :
+    </para>
+<screen>
+[...]
+# MON
+#role-mon/cluster/ses-example-failed1.sls
+#role-mon/cluster/ses-example-failed2.sls
+role-mon/cluster/ses-example-new1.sls
+role-mon/cluster/ses-example-new2.sls
+[...]
+</screen>
+   </step>
+   <step>
+    <para>
+     Exécutez les phases 2 à 5 de DeepSea pour appliquer les modifications :
+    </para>
+<screen>
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.2
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.3
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.4
+<prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.5
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-node-add-disk">
+  <title>Ajout d'un disque OSD à un noeud</title>
+
+  <para>
+   Pour ajouter un disque à un noeud OSD existant, vérifiez que toutes les partitions du disque ont été supprimées et effacées. Reportez-vous à l'<xref linkend="deploy-wiping-disk"/> du <xref linkend="ceph-install-stack"/> pour plus de détails. Adaptez <filename>/srv/salt/ceph/configuration/files/drive_groups.yml</filename> en conséquence (pour plus d'informations, reportez-vous au <xref linkend="ds-drive-groups"/>). Après avoir sauvegardé le fichier, exécutez la phase 3 de DeepSea :
+  </para>
+
+<screen><prompt>root@master # </prompt><command>deepsea</command> stage run ceph.stage.3</screen>
+ </sect1>
+ <sect1 xml:id="salt-removing-osd">
+  <title>Suppression d'un OSD</title>
+
+  <para>
+   Vous pouvez supprimer Ceph OSD de la grappe en exécutant la commande suivante :
+  </para>
+
+<screen><prompt>root@master # </prompt>salt-run osd.remove <replaceable>OSD_ID</replaceable></screen>
+
+  <para>
+   <replaceable>OSD_ID</replaceable> doit être un numéro d'OSD sans le préfixe <literal>osd.</literal>. Par exemple, à partir de <literal>osd.3</literal>, utilisez uniquement le chiffre <literal>3</literal>.
+  </para>
+
+  <sect2 xml:id="osd-removal-multiple">
+   <title>suppression de plusieurs OSD</title>
+   <para>
+    Utilisez la même procédure que celle indiquée à la <xref linkend="salt-removing-osd"/>, mais spécifiez plusieurs ID d'OSD :
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-run osd.remove 2 6 11 15
+Removing osd 2 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.2 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+Removing osd 6 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.6 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+Removing osd 11 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.11 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+Removing osd 15 on host data1
+Draining the OSD
+Waiting for ceph to catch up.
+osd.15 is safe to destroy
+Purging from the crushmap
+Zapping the device
+
+
+2:
+True
+6:
+True
+11:
+True
+15:
+True
+
+</screen>
+  </sect2>
+
+  <sect2 xml:id="remove-all-osds-per-host">
+   <title>Suppression de tous les OSD sur un hôte</title>
+   <para>
+    Pour supprimer tous les OSD d'un hôte spécifique, exécutez la commande suivante :
+   </para>
+<screen><prompt>root@master # </prompt>salt-run osd.remove <replaceable>OSD_HOST_NAME</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="osd-forced-removal">
+   <title>Suppression forcée des OSD rompus</title>
+   <para>
+    La suppression normale d'un OSD peut parfois conduire à un échec (reportez-vous à la <xref linkend="salt-removing-osd"/>). Cela peut se produire, par exemple, si l'OSD ou bien son journal ou sa partition WAL ou DB sont endommagés, si un blocage d'opérations d'E/S se produit ou si le démontage du disque OSD échoue.
+   </para>
+<screen><prompt>root@master # </prompt>salt-run osd.remove <replaceable>OSD_ID</replaceable> force=True</screen>
+   <tip>
+    <title>montages bloqués</title>
+    <para>
+     Si une partition est toujours montée sur le disque supprimé, la commande se terminera avec le message « Unmount failed - check for processes on <replaceable>PÉRIPHÉRIQUE</replaceable> ». Vous pouvez ensuite lister tous les processus qui accèdent au système de fichiers avec la commande <command>fuser -m <replaceable>PÉRIPHÉRIQUE</replaceable></command>. Si la commande <command>fuser</command> ne renvoie rien, essayez la commande manuelle <command>unmount <replaceable>PÉRIPHÉRIQUE</replaceable></command> et examinez la sortie des commandes <command>dmesg</command> ou <command>journalctl</command>.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="validate-osd-lvm">
+   <title>Validation des métadonnées LVM OSD</title>
+   <para>
+    Après avoir supprimé un OSD au moyen de la commande <command>salt-run osd.remove <replaceable>ID</replaceable></command> ou d'autres commandes Ceph, les métadonnées LVM peuvent ne pas être entièrement supprimées. Cela signifie que si vous souhaitiez redéployer un nouvel OSD, d'anciennes métadonnées LVM seraient utilisées.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Vérifiez si l'OSD a été supprimé :
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume lvm list</screen>
+     <para>
+      Un OSD effectivement supprimé peut toujours être répertorié. Par exemple, si vous avez supprimé <literal>osd.2</literal>, la sortie serait :
+     </para>
+<screen>
+  ====== osd.2 =======
+
+  [block] /dev/ceph-a2189611-4380-46f7-b9a2-8b0080a1f9fd/osd-data-ddc508bc-6cee-4890-9a42-250e30a72380
+
+  block device /dev/ceph-a2189611-4380-46f7-b9a2-8b0080a1f9fd/osd-data-ddc508bc-6cee-4890-9a42-250e30a72380
+  block uuid kH9aNy-vnCT-ExmQ-cAsI-H7Gw-LupE-cvSJO9
+  cephx lockbox secret
+  cluster fsid 6b6bbac4-eb11-45cc-b325-637e3ff9fa0c
+  cluster name ceph
+  crush device class None
+  encrypted 0
+  osd fsid aac51485-131c-442b-a243-47c9186067db
+  osd id 2
+  type block
+  vdo 0
+  devices /dev/sda
+</screen>
+     <para>
+      Dans cet exemple, on voit que <literal>osd.2</literal> figure toujours dans <filename>/dev/sda</filename>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Validez les métadonnées LVM sur le noeud OSD :
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume inventory</screen>
+     <para>
+      En sortie, la commande <command>ceph-volume inventory</command> indique la disponibilité de <filename>/dev/sda</filename> comme <literal>False</literal> (Faux). Par exemple :
+     </para>
+<screen>
+  Device Path Size rotates available Model name
+  /dev/sda 40.00 GB True False QEMU HARDDISK
+  /dev/sdb 40.00 GB True False QEMU HARDDISK
+  /dev/sdc 40.00 GB True False QEMU HARDDISK
+  /dev/sdd 40.00 GB True False QEMU HARDDISK
+  /dev/sde 40.00 GB True False QEMU HARDDISK
+  /dev/sdf 40.00 GB True False QEMU HARDDISK
+  /dev/vda 25.00 GB True False
+</screen>
+    </step>
+    <step>
+     <para>
+      Exécutez la commande suivante sur le noeud OSD pour supprimer complètement les métadonnées LVM :
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume lvm zap --osd-id <replaceable>ID</replaceable> --destroy </screen>
+    </step>
+    <step>
+     <para>
+      Exécutez à nouveau la commande <command>inventory</command> pour vérifier que la disponibilité de <filename>/dev/sda</filename> renvoie <literal>True</literal> (Vrai). Par exemple :
+     </para>
+<screen><prompt>cephadm@osd &gt; </prompt>ceph-volume inventory
+Device Path Size rotates available Model name
+/dev/sda 40.00 GB True True QEMU HARDDISK
+/dev/sdb 40.00 GB True False QEMU HARDDISK
+/dev/sdc 40.00 GB True False QEMU HARDDISK
+/dev/sdd 40.00 GB True False QEMU HARDDISK
+/dev/sde 40.00 GB True False QEMU HARDDISK
+/dev/sdf 40.00 GB True False QEMU HARDDISK
+/dev/vda 25.00 GB True False</screen>
+     <para>
+      Les métadonnées LVM sont maintenant supprimées. Une commande <command>dd</command> peut à présent être effectuée pour le périphérique en toute sécurité.
+     </para>
+    </step>
+    <step>
+     <para>
+      L'OSD peut être redéployé sans redémarrer le noeud OSD :
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ds-osd-replace">
+  <title>Remplacement d'un disque OSD</title>
+
+  <para>
+   Plusieurs raisons peuvent vous pousser à remplacer un disque OSD, par exemple :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Le disque OSD est défaillant ou, d'après les informations SMART, sera bientôt défaillant et ne peut plus être utilisé pour stocker des données en toute sécurité.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Vous devez mettre à niveau le disque OSD, par exemple pour augmenter sa taille.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   La procédure de remplacement est la même dans les deux cas. Elle vaut également pour les cartes CRUSH par défaut et personnalisées.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Supposons que « 5 » est l'ID de l'OSD dont le disque doit être remplacé. La commande suivante le marque comme <emphasis role="bold">détruit</emphasis> dans la carte CRUSH, mais laisse son ID d'origine :
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run osd.replace 5
+</screen>
+    <tip>
+     <title><command>osd.replace</command> et <command>osd.remove</command></title>
+     <para>
+      Les commandes <command>osd.replace</command> et <command>osd.remove </command> (voir <xref linkend="salt-removing-osd"/>) sont identiques, excepté que <command>osd.replace</command> continue de renseigner l'OSD comme « détruit » dans la carte CRUSH alors que <command>osd.remove</command> supprime toutes les traces de la carte CRUSH.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Remplacez manuellement l'unité OSD défaillante/mise à niveau.
+    </para>
+   </step>
+   <step>
+    <para>
+     Si vous souhaitez modifier la disposition de l'OSD par défaut et la configuration DriveGroups, suivez la procédure décrite dans le <xref linkend="ds-drive-groups"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Exécutez la phase de déploiement 3 pour déployer le disque OSD remplacé :
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="ds-osd-recover">
+  <title>Récupération d'un noeud OSD réinstallé</title>
+
+  <para>
+   Si le système d'exploitation subit des dommages et n'est pas récupérable sur l'un de vos noeuds OSD, procédez comme suit pour le récupérer et redéployer son rôle OSD avec les données de grappe intactes :
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Réinstallez le système d'exploitation de base SUSE Linux Enterprise sur le noeud sur lequel le système d'exploitation est endommagé. Installez les paquetages <package>salt minion</package> sur le noeud OSD, supprimez l'ancienne clé du minion Salt sur Salt Master et enregistrez la nouvelle clé du minion Salt auprès de Salt Master. Pour plus d'informations sur le déploiement initial, reportez-vous au <xref linkend="ceph-install-stack"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Au lieu d'exécuter l'ensemble de la phase 0, exécutez les parties suivantes :
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.sync
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.packages.common
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.mines
+<prompt>root@master # </prompt>salt '<replaceable>osd_node</replaceable>' state.apply ceph.updates
+</screen>
+   </step>
+   <step>
+    <para>
+     Exécutez les phases 1 à 5 de DeepSea :
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.1
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.2
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.5
+</screen>
+   </step>
+   <step>
+    <para>
+     Exécutez la phase 0 de DeepSea :
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.0
+</screen>
+   </step>
+   <step>
+    <para>
+     Redémarrez le noeud OSD correspondant. Tous les disques OSD seront redécouverts et réutilisés.
+    </para>
+   </step>
+   <step>
+    <para>
+     Installez/exécutez l'exportateur de noeuds Prometheus :
+    </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>RECOVERED_MINION</replaceable>' \
+ state.apply ceph.monitoring.prometheus.exporters.node_exporter</screen>
+   </step>
+   <step>
+    <para>
+     Mettez à jour les grains Salt :
+    </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>RECOVERED_MINION</replaceable>' osd.retain</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="moving-saltmaster">
+  <title>Déplacement du noeud Admin vers un nouveau serveur</title>
+
+  <para>
+   Si vous avez besoin de remplacer l'hôte du noeud Admin, vous devez déplacer les fichiers Salt Master et DeepSea. Utilisez votre outil de synchronisation habituel pour transférer les fichiers. Dans cette procédure, nous utilisons <command>rsync</command>, qui est un outil standard disponible dans les dépôts de logiciels SUSE Linux Enterprise Server 15 SP1.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Arrêtez les services <systemitem class="daemon">salt-master</systemitem> et <systemitem class="daemon">salt-minion</systemitem> sur l'ancien noeud Admin :
+    </para>
+<screen>
+<prompt>root@master # </prompt>systemctl stop salt-master.service
+<prompt>root@master # </prompt>systemctl stop salt-minion.service
+</screen>
+   </step>
+   <step>
+    <para>
+     Configurez Salt sur le nouveau noeud Admin pour permettre la communication entre Salt Master et les minions Salt. Pour plus de détails, reportez-vous au <xref linkend="ceph-install-stack"/>.
+    </para>
+    <tip>
+     <title>transition des minions Salt</title>
+     <para>
+      Pour faciliter la transition des minions Salt vers le nouveau noeud Admin, retirez la clé publique Salt Master d'origine de chacun d'eux :
+     </para>
+<screen>
+<prompt>root@minion &gt; </prompt>rm /etc/salt/pki/minion/minion_master.pub
+<prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Vérifiez que le paquetage <package>DeepSea</package> est installé, sinon installez-le.
+    </para>
+<screen><prompt>root@master # </prompt>zypper install deepsea</screen>
+   </step>
+   <step>
+    <para>
+     Personnalisez le fichier <filename>policy.cfg</filename> en modifiant la ligne <literal>role-master</literal>. Pour plus de détails, reportez-vous au <xref linkend="policy-configuration"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Synchronisez les répertoires <filename>/srv/pillar</filename> et <filename>/srv/salt</filename> entre l'ancien et le nouveau noeud Admin.
+    </para>
+    <tip>
+     <title>exécution directe de <command>rsync</command> et liens symboliques</title>
+     <para>
+      Si possible, essayez d'abord de synchroniser les fichiers directement pour voir quels fichiers seront transférés (option <command>rsync</command> <option>-n</option>). Incluez également des liens symboliques (option <command>rsync</command> <option>-a</option>). Pour <command>rsync</command>, la commande de synchronisation sera comme suit :
+     </para>
+<screen><prompt>root@master # </prompt>rsync -avn /srv/pillar/ <replaceable>NEW-ADMIN-HOSTNAME:</replaceable>/srv/pillar</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Si vous avez personnalisé des fichiers en dehors de <filename>/srv/pillar</filename> et <filename>/srv/salt</filename>, par exemple dans <filename>/etc/salt/master</filename> ou <filename>/etc/salt/master.d</filename>, synchronisez-les également.
+    </para>
+   </step>
+   <step>
+    <para>
+     Maintenant, vous pouvez exécuter les phases DeepSea à partir du nouveau noeud Admin. Pour une description détaillée, reportez-vous au <xref linkend="deepsea-description"/>.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="salt-automated-installation">
+  <title>Installation automatisée via Salt</title>
+
+  <para>
+   L'installation peut être automatisée à l'aide du réacteur Salt. Pour les environnements virtuels ou les environnements matériels cohérents, cette configuration permettra la création d'une grappe Ceph avec le comportement indiqué.
+  </para>
+
+  <warning>
+   <para>
+    Salt ne peut pas effectuer de contrôles de dépendance basés sur les événements du réacteur. Il existe un risque réel de mettre en danger Salt Master de façon irréversible.
+   </para>
+  </warning>
+
+  <para>
+   L'installation automatisée nécessite les éléments suivants :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Un fichier <filename>/srv/pillar/ceph/proposals/policy.cfg</filename> correctement créé.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Une configuration personnalisée préparée et placée dans le répertoire <filename>/srv/pillar/ceph/stack</filename>.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   La configuration du réacteur par défaut n'exécutera que les phases 0 et 1. Cela permet de tester le réacteur sans attendre la fin des phases suivantes.
+  </para>
+
+  <para>
+   Lorsque le premier salt-minion démarre, la phase 0 commence. Un verrouillage empêche la présence de plusieurs instances. Lorsque tous les minions terminent la phase 0, la phase 1 commence.
+  </para>
+
+  <para>
+   Si l'opération se déroule correctement, modifiez le fichier
+  </para>
+
+<screen>/etc/salt/master.d/reactor.conf</screen>
+
+  <para>
+   et remplacez la ligne suivante
+  </para>
+
+<screen>- /srv/salt/ceph/reactor/discovery.sls</screen>
+
+  <para>
+   par
+  </para>
+
+<screen>- /srv/salt/ceph/reactor/all_stages.sls</screen>
+
+  <para>
+   Vérifiez que la ligne ne contient pas de commentaires.
+  </para>
+ </sect1>
+ <sect1 xml:id="deepsea-rolling-updates">
+  <title>Mise à jour des noeuds de grappe</title>
+
+  <para>
+   Gardez les noeuds de grappe Ceph à jour en appliquant régulièrement des mises à jour progressives.
+  </para>
+
+  <sect2 xml:id="rolling-updates-repos">
+   <title>Dépôts logiciels</title>
+   <para>
+    Avant d'appliquer des correctifs à la grappe avec les paquetages les plus récents, vérifiez que tous les noeuds de la grappe ont accès aux dépôts pertinents. Pour obtenir la liste complète des dépôts requis, reportez-vous au <xref linkend="upgrade-one-node-manual"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="rolling-upgrades-staging">
+   <title>Préparation du dépôt</title>
+   <para>
+    Si vous utilisez un outil de préparation (SUSE Manager, Subscription Management Tool ou Repository Mirroring Tool, par exemple) qui met à disposition des dépôts logiciels pour les noeuds de la grappe, vérifiez que les phases pour les dépôts de mise à jour de SUSE Linux Enterprise Server et de SUSE Enterprise Storage sont créées au même moment.
+   </para>
+   <para>
+    Nous recommandons d'utiliser un outil de préparation pour les correctifs avec des <emphasis role="bold">niveaux de correction figés ou par phases</emphasis>. Cela garantit le même niveau de correctif aux noeuds qui rejoignent la grappe et à ceux qui y sont déjà en cours d'exécution. Vous évitez ainsi de devoir appliquer les correctifs les plus récents à tous les noeuds de la grappe avant que de nouveaux noeuds puissent la rejoindre.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="rolling-updates-patch-or-dup">
+   <title><command>zypper patch</command> ou <command>zypper dup</command></title>
+   <para>
+    Par défaut, les noeuds de grappe sont mis à niveau à l'aide de la commande <command>zypper dup</command>. Si vous préférez mettre à jour le système en utilisant la commande <command>zypper patch</command>, ajoutez la ligne suivante au fichier <filename>/srv/pillar/ceph/stack/global.yml</filename> :
+   </para>
+<screen>update_method_init: zypper-patch</screen>
+  </sect2>
+
+  <sect2 xml:id="rolling-updates-reboots">
+   <title>Redémarrage de noeuds de grappe</title>
+   <para>
+    Pendant la mise à jour, les noeuds de grappe peuvent être redémarrés si leur kernel a été mis à niveau par la mise à jour. Pour supprimer un potentiel redémarrage forcé de tous les noeuds, vérifiez que le kernel le plus récent est installé et en cours d'exécution sur les noeuds Ceph, ou désactivez les redémarrages automatiques des noeuds comme décrit dans le <xref linkend="ds-disable-reboots"/>.
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Temps hors service des services Ceph</title>
+   <para>
+    Selon la configuration, les noeuds de grappe peuvent être redémarrés pendant la mise à jour, comme décrit à la <xref linkend="rolling-updates-reboots"/>. S'il existe un point d'échec unique pour des services tels qu'Object Gateway, Samba Gateway, NFS Ganesha ou iSCSI, les machines clientes peuvent être temporairement déconnectées des services dont les noeuds sont redémarrés.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="rolling-updates-running">
+   <title>Exécution de la mise à jour</title>
+   <para>
+    Pour mettre à jour les paquetages sur tous les noeuds de grappe vers la dernière version, procédez comme suit :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Mettez à jour les paquetages <package>deepsea</package>, <package>salt-master</package> et <package>salt minion,</package> et redémarrez les services pertinents sur Salt Master :
+     </para>
+<screen><prompt>root@master # </prompt>salt -I 'roles:master' state.apply ceph.updates.master</screen>
+    </step>
+    <step>
+     <para>
+      Mettez à jour et redémarrez le paquetage <package>salt minion</package> sur tous les noeuds de grappe :
+     </para>
+<screen><prompt>root@master # </prompt>salt -I 'cluster:ceph' state.apply ceph.updates.salt</screen>
+    </step>
+    <step>
+     <para>
+      Mettez à jour tous les autres paquetages de la grappe :
+     </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.maintenance.upgrade</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="sec-salt-cluster-reboot">
+  <title>Arrêt ou redémarrage de la grappe</title>
+
+  <para>
+   Dans certains cas, il faudra peut-être arrêter ou redémarrer l'ensemble de la grappe. Nous vous recommandons de contrôler soigneusement les dépendances des services en cours d'exécution. Les étapes suivantes fournissent un aperçu de l'arrêt et du démarrage de la grappe :
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Ordonnez à la grappe Ceph de ne pas marquer les OSD comme étant hors service :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd set noout</screen>
+   </step>
+   <step>
+    <para>
+     Arrêtez les daemons et les noeuds dans l'ordre suivant :
+    </para>
+    <orderedlist>
+     <listitem>
+      <para>
+       Clients de stockage
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Passerelles, par exemple NFS Ganesha ou Object Gateway
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Serveur de métadonnées
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph OSD
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph Manager
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph Monitor
+      </para>
+     </listitem>
+    </orderedlist>
+   </step>
+   <step>
+    <para>
+     Si nécessaire, effectuez des tâches de maintenance.
+    </para>
+   </step>
+   <step>
+    <para>
+     Démarrez les noeuds et les serveurs dans l'ordre inverse du processus d'arrêt :
+    </para>
+    <orderedlist>
+     <listitem>
+      <para>
+       Ceph Monitor
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph Manager
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Ceph OSD
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Serveur de métadonnées
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Passerelles, par exemple NFS Ganesha ou Object Gateway
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Clients de stockage
+      </para>
+     </listitem>
+    </orderedlist>
+   </step>
+   <step>
+    <para>
+     Supprimez l'indicateur noout :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd unset noout</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="ds-custom-cephconf">
+  <title>Ajustement de <filename>ceph.conf</filename> avec des paramètres personnalisés</title>
+
+  <para>
+   Si vous devez personnaliser des paramètres dans le fichier <filename>ceph.conf</filename>, vous pouvez le faire en modifiant les fichiers de configuration dans le répertoire <filename>/srv/salt/ceph/configuration/files/ceph.conf.d</filename> :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     global.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     mon.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     mgr.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     mds.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     osd.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     client.conf
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     rgw.conf
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title><filename>rgw.conf</filename> exclusif</title>
+   <para>
+    La passerelle Object Gateway est très flexible et se démarque des autres sections de <filename>ceph.conf</filename>. Tous les autres composants Ceph ont des en-têtes statiques, tels que <literal>[lun]</literal> ou <literal>[osd]</literal>. La passerelle Object Gateway possède des en-têtes uniques, tels que <literal>[client.rgw.rgw1]</literal>. Cela signifie que le fichier <filename>rgw.conf</filename> nécessite une entrée d'en-tête. Pour obtenir des exemples, reportez-vous à
+   </para>
+<screen>
+<filename>/srv/salt/ceph/configuration/files/rgw.conf</filename>
+</screen>
+   <para>
+    ou
+   </para>
+<screen>
+<filename>/srv/salt/ceph/configuration/files/rgw-ssl.conf</filename>
+</screen>
+  </note>
+
+  <important>
+   <title>exécution de la phase 3</title>
+   <para>
+    Après avoir apporté des modifications personnalisées aux fichiers de configuration mentionnés ci-dessus, exécutez les phases 3 et 4 pour appliquer ces modifications aux noeuds de la grappe :
+   </para>
+<screen><prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.4</screen>
+  </important>
+
+  <para>
+   Ces fichiers sont inclus dans le fichier modèle <filename>/srv/salt/ceph/configuration/files/ceph.conf.j2</filename> et correspondent aux différentes sections acceptées par le fichier de configuration Ceph. Si vous placez un extrait de configuration dans le fichier approprié, DeepSea sera en mesure de la copier dans la section appropriée. Il est inutile d'ajouter des en-têtes de section.
+  </para>
+
+  <tip>
+   <para>
+    Pour appliquer des options de configuration uniquement à des instances spécifiques d'un daemon, ajoutez un en-tête tel que <literal>[osd.1]</literal>. Les options de configuration suivantes ne seront appliquées qu'au daemon OSD ayant l'ID 1.
+   </para>
+  </tip>
+
+  <sect2>
+   <title>Remplacement des valeurs par défaut</title>
+   <para>
+    Dans une section, les instructions les plus récentes remplacent les plus anciennes. Par conséquent, il est possible de remplacer la configuration par défaut comme indiqué dans le modèle <filename>/srv/salt/ceph/configuration/files/ceph.conf.j2</filename>. Par exemple, pour désactiver l'authentification cephx, ajoutez les trois lignes suivantes au fichier <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/global.conf</filename> :
+   </para>
+<screen>auth cluster required = none
+auth service required = none
+auth client required = none</screen>
+   <para>
+    Lorsque vous redéfinissez les valeurs par défaut, des outils associés à Ceph tels que <command>rados</command> peuvent afficher des messages d'avertissement indiquant que certaines valeurs de <filename>ceph.conf.j2</filename> ont été redéfinies dans <filename>global.conf</filename>. Ces avertissements sont dus à un paramètre assigné deux fois dans le fichier <filename>ceph.conf</filename> résultant.
+   </para>
+   <para>
+    La solution de contournement pour ce cas spécifique est la suivante :
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Remplacez le répertoire actuel par <filename>/srv/salt/ceph/configuration/create</filename> :
+     </para>
+<screen>
+<prompt>root@master # </prompt>cd /srv/salt/ceph/configuration/create
+</screen>
+    </step>
+    <step>
+     <para>
+      Copiez <filename>default.sls</filename> dans <filename>custom.sls</filename> :
+     </para>
+<screen>
+<prompt>root@master # </prompt>cp default.sls custom.sls
+</screen>
+    </step>
+    <step>
+     <para>
+      Éditez <filename>custom.sls</filename> et modifiez <option>ceph.conf.j2</option> en <option>custom-ceph.conf.j2</option>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Remplacez le répertoire actuel par <filename>/srv/salt/ceph/configuration/files</filename> :
+     </para>
+<screen>
+<prompt>root@master # </prompt>cd /srv/salt/ceph/configuration/files
+</screen>
+    </step>
+    <step>
+     <para>
+      Copiez <filename>ceph.conf.j2</filename> dans <filename>custom-ceph.conf.j2</filename> :
+     </para>
+<screen>
+<prompt>root@master # </prompt>cp ceph.conf.j2 custom-ceph.conf.j2
+</screen>
+    </step>
+    <step>
+     <para>
+      Éditez <filename>custom-ceph.conf.j2</filename> et supprimez la ligne suivante :
+     </para>
+<screen>
+{% include "ceph/configuration/files/rbd.conf" %}
+</screen>
+     <para>
+      Éditez <filename>/global.yml</filename> et ajoutez la ligne suivante :
+     </para>
+<screen>
+configuration_create: custom
+</screen>
+    </step>
+    <step>
+     <para>
+      Rafraîchissez Pillar :
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt <replaceable>target</replaceable> saltutil.pillar_refresh
+</screen>
+    </step>
+    <step>
+     <para>
+      Exécutez la phase 3 :
+     </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+    </step>
+   </procedure>
+   <para>
+    Maintenant, vous devriez avoir une seule entrée pour chaque définition de valeur. Pour recréer la configuration, exécutez :
+   </para>
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.configuration.create
+</screen>
+   <para>
+    Vérifiez ensuite le contenu de <filename>/srv/salt/ceph/configuration/cache/ceph.conf</filename>.
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>Inclusion des fichiers de configuration</title>
+   <para>
+    Si vous devez appliquer un grand nombre de configurations personnalisées, utilisez les instructions include suivantes dans les fichiers de configuration personnalisés afin de faciliter la gestion des fichiers. Voici un exemple de fichier <filename>osd.conf</filename> :
+   </para>
+<screen>[osd.1]
+{% include "ceph/configuration/files/ceph.conf.d/osd1.conf" ignore missing %}
+[osd.2]
+{% include "ceph/configuration/files/ceph.conf.d/osd2.conf" ignore missing %}
+[osd.3]
+{% include "ceph/configuration/files/ceph.conf.d/osd3.conf" ignore missing %}
+[osd.4]
+{% include "ceph/configuration/files/ceph.conf.d/osd4.conf" ignore missing %}</screen>
+   <para>
+    Dans l'exemple précédent, les fichiers <filename>osd1.conf</filename>, <filename>osd2.conf</filename>, <filename>osd3.conf</filename> et <filename>osd4.conf</filename> contiennent les options de configuration propres à l'OSD connexe.
+   </para>
+   <tip>
+    <title>configuration d'exécution</title>
+    <para>
+     Les modifications apportées aux fichiers de configuration de Ceph prennent effet après le redémarrage des daemons Ceph connexes. Reportez-vous à la <xref linkend="ceph-config-runtime"/> pour plus d'informations sur la modification de la configuration de l'exécution de Ceph.
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="admin-apparmor">
+  <title>Activation des profils AppArmor</title>
+
+  <para>
+   AppArmor est une solution de sécurité qui confine les programmes à un profil spécifique. Pour plus d'informations, reportez-vous à la page <link xlink:href="https://www.suse.com/documentation/sles-15/book_security/data/part_apparmor.html"/>.
+  </para>
+
+  <para>
+   DeepSea fournit trois états pour les profils AppArmor : « enforce », « complain » et « disable ». Pour activer un état AppArmor particulier, exécutez :
+  </para>
+
+<screen>
+salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-<replaceable>STATE</replaceable>
+</screen>
+
+  <para>
+   Pour passer les profils AppArmor à l'état « enforce » :
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-enforce
+</screen>
+
+  <para>
+   Pour passer les profils AppArmor à l'état « complain » :
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-complain
+</screen>
+
+  <para>
+   Pour désactiver les profils AppArmor :
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-disable
+</screen>
+
+  <tip>
+   <title>activation du service AppArmor</title>
+   <para>
+    Chacun de ces trois appels vérifie si AppArmor est installé et l'installe s'il le faut, puis démarre et active le service <systemitem class="daemon">systemd</systemitem> associé. DeepSea affiche un message si AppArmor a été installé et démarré/activé par d'autres moyens et fonctionne donc sans profils DeepSea.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="deactivate-tuned-profiles">
+  <title>Désactivation des profils réglés</title>
+
+  <para>
+   Par défaut, DeepSea déploie des grappes Ceph avec des profils réglés actifs sur les noeuds Ceph Monitor, Ceph Manager et Ceph OSD. Dans certains cas, vous devrez peut-être désactiver définitivement les profils réglés. Pour ce faire, copiez les lignes suivantes dans <filename>srv/pillar/ceph/stack/global.yml</filename> et exécutez de nouveau la phase 3 :
+  </para>
+
+<screen>
+alternative_defaults:
+ tuned_mgr_init: default-off
+ tuned_mon_init: default-off
+ tuned_osd_init: default-off
+</screen>
+
+<screen>
+<prompt>root@master # </prompt>salt-run state.orch ceph.stage.3
+</screen>
+ </sect1>
+ <sect1 xml:id="deepsea-ceph-purge">
+  <title>Suppression d'une grappe Ceph entière</title>
+
+  <para>
+   L'exécuteur <command>ceph.purge</command> supprime la totalité de la grappe Ceph. De cette façon, vous pouvez nettoyer l'environnement de grappe lors du test de différentes configurations. Après l'opération <command>ceph.purge</command>, la grappe Salt est remise à l'état auquel elle était à la fin de la phase 1 de DeepSea. Vous pouvez alors modifier <filename>policy.cfg</filename> (voir le <xref linkend="policy-configuration"/>) ou procéder à la phase 2 de DeepSea avec la même configuration.
+  </para>
+
+  <para>
+   Pour éviter toute suppression accidentelle, l'orchestration vérifie si la sécurité est désengagée. Vous pouvez désengager les mesures de sécurité et supprimer la grappe Ceph en exécutant les commandes suivantes :
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>salt-run disengage.safety
+<prompt>root@master # </prompt>salt-run state.orch ceph.purge
+</screen>
+
+  <tip>
+   <title>désactivation de la suppression de grappe Ceph</title>
+   <para>
+    Pour empêcher toute exécution de l'exécuteur <command>ceph.purge</command>, créez le fichier <filename>disabled.sls</filename> dans le répertoire <filename>/srv/salt/ceph/purge</filename> et ajoutez la ligne suivante dans le fichier <filename>/srv/pillar/ceph/stack/global.yml</filename> :
+   </para>
+<screen>purge_init: disabled</screen>
+  </tip>
+
+  <important>
+   <title>Annulez les rôles personnalisés</title>
+   <para>
+    Si vous avez déjà créé des rôles personnalisés pour Ceph Dashboard (pour plus d'informations, voir <xref linkend="dashboard-adding-roles"/> et <xref linkend="dashboard-permissions"/>), purgez-les manuellement avant d'exécuter <command>ceph.purge</command>. Par exemple, si le rôle personnalisé d'Object Gateway est nommé « us-east-1 », procédez comme suit :
+   </para>
+<screen>
+<prompt>root@master # </prompt>cd /srv/salt/ceph/rescind
+<prompt>root@master # </prompt>rsync -a rgw/ us-east-1
+<prompt>root@master # </prompt>sed -i 's!rgw!us-east-1!' us-east-1/*.sls
+</screen>
+  </important>
+ </sect1>
+</chapter>

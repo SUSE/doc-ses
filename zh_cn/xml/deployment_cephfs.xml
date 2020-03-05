@@ -1,0 +1,969 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_cephfs.xml" version="5.0" xml:id="cha-ceph-as-cephfs">
+
+ <title>安装 CephFS</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>编辑</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ceph 文件系统 (CephFS) 是符合 POSIX 标准的文件系统，它使用 Ceph 存储集群来存储其数据。CephFS 使用与 Ceph 块设备相同的集群系统：Ceph 对象存储及其 S3 和 Swift API 或本机绑定 (<systemitem>librados</systemitem>)。
+ </para>
+ <para>
+  要使用 CephFS，需有一个正在运行的 Ceph 存储集群，并至少要有一台正在运行的 <emphasis>Ceph 元数据服务器</emphasis>。
+ </para>
+ <sect1 xml:id="ceph-cephfs-limitations">
+  <title>支持的 CephFS 方案和指导</title>
+
+  <para>
+   借助 SUSE Enterprise Storage 6，SUSE 引入了对分布式扩展组件 CephFS 的众多使用场景的正式支持。本节介绍硬性限制，并提供有关建议用例的指导。
+  </para>
+
+  <para>
+   支持的 CephFS 部署必须符合以下要求：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     至少有一台元数据服务器。SUSE 建议部署多个具有 MDS 角色的节点。其中只有一个节点是<literal>主动</literal>节点，其余节点都是<literal>被动</literal>节点。从客户端装入 CephFS 时，请记得在 <command>mount</command> 命令中指定所有 MON 节点。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     客户端是使用 <literal>cephfs</literal> 内核扩展模块驱动程序的 SUSE Linux Enterprise Server 12 SP3（或更新版本）或 SUSE Linux Enterprise Server 15（或更新版本）。不支持 FUSE 扩展模块。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     SUSE Enterprise Storage 6 中支持 CephFS 配额，且可对 Ceph 文件系统的任何子目录设置该配额。配额可限制目录层次结构中指定点下所存储的<literal>字节</literal>或<literal>文件</literal>数。有关详细信息，请参见 <xref linkend="cephfs-quotas"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     CephFS 支持 <xref linkend="cephfs-layouts"/> 中所述的文件布局更改。但是，尽管文件系统可由任何客户端装入，但无法将新数据池添加到现有的 CephFS 文件系统 (<literal>ceph mds add_data_pool</literal>)。只能在文件系统已卸载时添加这些存储池。
+    </para>
+   </listitem>
+   <listitem>
+     <para>
+       至少有一台元数据服务器。SUSE 建议部署多个具有 MDS 角色的节点。默认情况下，其他 MDS 守护进程启动时处于<literal>待机</literal>状态，充当主动 MDS 的后备。系统也支持多个主动 MDS 守护进程（请参见<xref linkend="ceph-cephfs-multimds"/>）。
+     </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph-cephfs-mds">
+  <title>Ceph 元数据服务器</title>
+
+  <para>
+   Ceph 元数据服务器 (MDS) 存储 CephFS 的元数据。Ceph 块设备和 Ceph 对象存储<emphasis>不</emphasis>使用 MDS。POSIX 文件系统用户可通过 MDS 执行基本命令（例如 <command>ls</command> 或 <command>find</command>），因而不会对 Ceph 存储集群施加巨大的负担。
+  </para>
+
+  <sect2 xml:id="ceph-cephfs-mdf-add">
+   <title>添加元数据服务器</title>
+   <para>
+    您可以根据<xref linkend="ceph-install-stack"/>中所述，在初始集群部署过程中部署 MDS；或者根据<xref linkend="salt-adding-nodes"/>中所述，将 MDS 添加到已部署的集群。
+   </para>
+   <para>
+    部署 MDS 后，请在部署 MDS 的服务器的防火墙设置中允许 <literal>Ceph OSD/MDS</literal> 服务：启动 <literal>yast</literal>，导航到 <menuchoice> <guimenu>Security and Users（安全性和用户）</guimenu> <guimenu>Firewall（防火墙）</guimenu> <guimenu>Allowed Services（允许的服务）</guimenu> </menuchoice>，然后在 <guimenu>Service to Allow（要允许的服务）</guimenu>下拉菜单中选择 <guimenu>Ceph OSD/MDS</guimenu>。如果不允许在 Ceph MDS 节点中传送完整流量，则即使其他操作可以正常进行，装入文件系统也会失败。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-mds-config">
+   <title>配置元数据服务器</title>
+   <para>
+    可以通过在 <filename>ceph.conf</filename> 配置文件中插入相关的选项来微调 MDS 的行为。
+   </para>
+   <variablelist>
+    <title>元数据服务器设置</title>
+    <varlistentry>
+     <term>mon force standby active</term>
+     <listitem>
+      <para>
+       如果设为“true”（默认值），Monitor 会将 standby-replay 模式强制设为 active 模式。在 <literal>[mon]</literal> 或 <literal>[global]</literal> 段落下设置。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>mds cache memory limit</option></term>
+     <listitem>
+      <para>
+       MDS 将针对其缓存实施软内存限制（以字节数为单位）。管理员应使用此项设置取代旧的 <option>mds cache size</option> 设置。默认设为 1 GB。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>mds cache reservation</option></term>
+     <listitem>
+      <para>
+       MDS 缓存要维护的缓存预留（内存或 inode）。当 MDS 开始接近其预留大小时，会撤消客户端状态，直到其缓存大小收缩到可恢复预留为止。默认值为 0.05。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds cache size</term>
+     <listitem>
+      <para>
+       要缓存的 Inode 数量。值为 0（默认值）表示数量不限。建议使用 <option>mds cache memory limit</option> 来限制 MDS 缓存使用的内存量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds cache mid</term>
+     <listitem>
+      <para>
+       新项目在缓存 LRU 中的插入点（从顶部插入）。默认值为 0.7.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dir commit ratio</term>
+     <listitem>
+      <para>
+       触发 Ceph 使用完整更新而非部分更新提交的脏目录比例。默认值为 0.5。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dir max commit size</term>
+     <listitem>
+      <para>
+       触发 Ceph 将其分解为多个更小事务的目录更新的大小上限。默认设为 90 MB。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds decay halflife</term>
+     <listitem>
+      <para>
+       MDS 缓存温度的半衰期。默认值为 5。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds beacon interval</term>
+     <listitem>
+      <para>
+       向 Monitor 发送信标讯息的频率（以秒为单位）。默认值为 4.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds beacon grace</term>
+     <listitem>
+      <para>
+       从 Monitor 未收到信标到 Ceph 声明 MDS 延迟并可能替换它相隔的时间。默认值为 15.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds blacklist interval</term>
+     <listitem>
+      <para>
+       在 OSD 索引中将故障 MDS 列入黑名单的持续时间。此设置可控制故障 MDS 守护进程保留在 OSD 索引黑名单中的时长，但无法控制管理员手动加入黑名单的项目的保留时长。例如，<command>ceph osd blacklist add</command> 命令仍将使用默认黑名单时间。默认值为 24*60。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds reconnect timeout</term>
+     <listitem>
+      <para>
+       MDS 重启动期间等待客户端重新连接的间隔（以秒为单位）。默认值为 45.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds tick interval</term>
+     <listitem>
+      <para>
+       MDS 执行内部周期任务的频率。默认值为 5。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dirstat min interval</term>
+     <listitem>
+      <para>
+       尝试避免在树中向上传播递归统计数据的最短间隔（以秒为单位）。默认值为 1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds scatter nudge interval</term>
+     <listitem>
+      <para>
+       dirstat 更改向上传播的速度。默认值为 5。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds client prealloc inos</term>
+     <listitem>
+      <para>
+       要为每个客户端会话预分配的 Inode 数量。默认值为 1000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds early reply</term>
+     <listitem>
+      <para>
+       决定 MDS 是否应允许客户端在提交到日志前查看请求结果。默认值为“true”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds use tmap</term>
+     <listitem>
+      <para>
+       对目录更新使用普通索引。默认值为“true”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds default dir hash</term>
+     <listitem>
+      <para>
+       用于跨目录分片对文件进行哈希处理的函数。默认设为 2（即“rjenkins”）。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log skip corrupt events</term>
+     <listitem>
+      <para>
+       决定在日志重播期间 MDS 是否应尝试跳过损坏的日志事件。默认值为“false”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max events</term>
+     <listitem>
+      <para>
+       我们启动修整前日志中的事件数上限。设为 -1（默认值）表示禁用上限。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max segments</term>
+     <listitem>
+      <para>
+       我们启动修整前日志中的段（对象）数上限。设为 -1 表示禁用上限。默认值为 30。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log max expiring</term>
+     <listitem>
+      <para>
+       同时过期的段数上限。默认值为 20。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds log eopen size</term>
+     <listitem>
+      <para>
+       EOpen 事件中的 Inode 数上限。默认值为 100。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal sample interval</term>
+     <listitem>
+      <para>
+       决定目录温度的取样频率（用于制定分片决策）。默认值为 3。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal replicate threshold</term>
+     <listitem>
+      <para>
+       触发 Ceph 尝试将元数据复制到其他节点的温度上限。默认值为 8000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal unreplicate threshold</term>
+     <listitem>
+      <para>
+       触发 Ceph 停止将元数据复制到其他节点的温度下限。默认值为 0。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split size</term>
+     <listitem>
+      <para>
+       触发 MDS 将目录分片分割为更小的位的目录大小上限。默认值为 10000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split rd</term>
+     <listitem>
+      <para>
+       触发 Ceph 分割目录分片的目录读取温度上限。默认值为 25000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split wr</term>
+     <listitem>
+      <para>
+       触发 Ceph 分割目录分片的目录写入温度上限。默认值为 10000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal split bits</term>
+     <listitem>
+      <para>
+       将目录分片分割成的位数。默认值为 3。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal merge size</term>
+     <listitem>
+      <para>
+       触发 Ceph 尝试合并相邻目录分片的目录大小下限。默认值为 50。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal interval</term>
+     <listitem>
+      <para>
+       在 MDS 之间交换工作负载的频率（以秒为单位）。默认值为 10。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment interval</term>
+     <listitem>
+      <para>
+       从分片可分割或合并到执行分片更改之间的延迟时间（以秒为单位）。默认值为 5。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment fast factor</term>
+     <listitem>
+      <para>
+       分片超出分割大小的比例，达到该比例后将跳过分片间隔，立即执行分割。默认值为 1.5。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal fragment size max</term>
+     <listitem>
+      <para>
+       触发因 ENOSPC 错误而拒绝所有新条目的分片大小上限。默认值为 100000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal idle threshold</term>
+     <listitem>
+      <para>
+       触发 Ceph 将子树迁移回其父项的温度下限。默认值为 0。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal mode</term>
+     <listitem>
+      <para>
+       计算 MDS 负载的方法：
+      </para>
+      <itemizedlist>
+       <listitem>
+        <para>
+         0 = 混合式。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         1 = 请求率和延迟。
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         2 = CPU 负载。
+        </para>
+       </listitem>
+      </itemizedlist>
+      <para>
+       默认值为 0。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal min rebalance</term>
+     <listitem>
+      <para>
+       触发 Ceph 迁移的子树温度下限。默认值为 0.1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal min start</term>
+     <listitem>
+      <para>
+       触发 Ceph 搜索子树的子树温度下限。默认值为 0.2。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal need min</term>
+     <listitem>
+      <para>
+       可接受的目标子树大小比例下限。默认值为 0.8。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal need max</term>
+     <listitem>
+      <para>
+       可接受的目标子树大小比例上限。默认值为 1.2。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal midchunk</term>
+     <listitem>
+      <para>
+       Ceph 将迁移任何超过此目标子树大小比例的子树。默认值为 0.3。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal minchunk</term>
+     <listitem>
+      <para>
+       Ceph 将忽略任何小于此目标子树大小比例的子树。默认值为 0.001。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal target removal min</term>
+     <listitem>
+      <para>
+       触发 Ceph 从 MDS 索引中删除旧 MDS 目标的平衡器迭代数下限。默认值为 5。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds bal target removal max</term>
+     <listitem>
+      <para>
+       触发 Ceph 从 MDS 索引中删除旧 MDS 目标的平衡器迭代数上限。默认值为 10。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds replay interval</term>
+     <listitem>
+      <para>
+       处于 standby-replay 模式（“热待机”）时的日志巡回检测间隔。默认值为 1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds shutdown check</term>
+     <listitem>
+      <para>
+       MDS 关闭期间巡回检测缓存的间隔。默认值为 0。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds thrash fragments</term>
+     <listitem>
+      <para>
+       Ceph 会将目录随机分片或合并。默认值为 0。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dump cache on map</term>
+     <listitem>
+      <para>
+       Ceph 会将 MDS 缓存内容转储到每个 MDS 索引上的某个文件中。默认值为“false”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds dump cache after rejoin</term>
+     <listitem>
+      <para>
+       恢复期间重新加入缓存后，Ceph 会将 MDS 缓存内容转储到文件中。默认值为“false”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby for name</term>
+     <listitem>
+      <para>
+       此设置中以名称指定的 MDS 守护进程将存在一个待机 MDS 守护进程。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby for rank</term>
+     <listitem>
+      <para>
+       具有此排位的 MDS 守护进程将存在一个待机 MDS 守护进程。默认值为 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds standby replay</term>
+     <listitem>
+      <para>
+       决定 Ceph MDS 守护进程是否应巡回检测并重播主动 MDS 的日志（“热待机”）。默认值为“false”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds min caps per client</term>
+     <listitem>
+      <para>
+       设置一个客户端可具有的最小权限数。默认值为 100。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>mds max ratio caps per client</term>
+     <listitem>
+      <para>
+       设置处于 MDS 缓存压力期间可重新调用的当前权限的最大比例。默认值为 0.8。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>元数据服务器日志程序设置</title>
+    <varlistentry>
+     <term>journaler write head interval</term>
+     <listitem>
+      <para>
+       更新日志标题对象的频率。默认值为 15。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler prefetch periods</term>
+     <listitem>
+      <para>
+       日志重播前读取的条带周期数。默认值为 10。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journal prezero periods</term>
+     <listitem>
+      <para>
+       写入位置前置零的条带周期数。默认值为 10。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler batch interval</term>
+     <listitem>
+      <para>
+       人为产生的最大额外延迟时间（以秒为单位）。默认值为 0.001。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>journaler batch max</term>
+     <listitem>
+      <para>
+       一次延迟刷新的最大字节数。默认值为 0。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-cephfs-cephfs">
+  <title>CephFS</title>
+
+  <para>
+   部署至少包含一台 Ceph 元数据服务器的正常 Ceph 存储集群后，可以创建并装入 Ceph 文件系统。请确保客户端可连接到网络，并具有正确的身份验证密钥环。
+  </para>
+
+  <sect2 xml:id="ceph-cephfs-cephfs-create">
+   <title>创建 CephFS</title>
+   <para>
+    CephFS 至少需要两个 RADOS 存储池：一个用于存储<emphasis>数据</emphasis>，另一个用于存储<emphasis>元数据</emphasis>。配置这些存储池时，可以考虑：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      对元数据池使用较高的复制级别，因为丢失此池中的任何数据都可能会导致整个文件系统不可访问。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      对元数据池使用延迟较低的存储，例如 SSD，因为在客户端上执行文件系统操作时，这样可以改善用户可察觉到的延迟。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    在 <filename>policy.cfg</filename> 中指定 <literal>role-mds</literal> 时，会自动创建所需的存储池。在设置元数据服务器之前，可以手动创建存储池 <literal>cephfs_data</literal> 和 <literal>cephfs_metadata</literal>，以手动优化性能。如果这些存储池已存在，DeepSea 将不会创建它们。
+   </para>
+   <para>
+    有关管理存储池的详细信息，请参见<xref linkend="ceph-pools"/>。
+   </para>
+   <para>
+    要使用默认设置创建两个需要用于 CephFS 的存储池（例如“cephfs_data”和“cephfs_metadata”），请运行以下命令：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph osd pool create cephfs_data <replaceable>pg_num</replaceable>
+<prompt>cephadm@adm &gt; </prompt>ceph osd pool create cephfs_metadata <replaceable>pg_num</replaceable></screen>
+   <para>
+    可以使用 EC 存储池取代副本存储池。建议仅针对低性能要求和不经常发生的随机访问（例如冷存储、备份和存档）使用 EC 存储池。EC 存储池中的 CephFS 需要启用 BlueStore，并且必须为存储池设置 <literal>allow_ec_overwrite</literal> 选项。可以运行 <command>ceph osd pool set ec_pool allow_ec_overwrites true</command> 来设置此选项。
+   </para>
+   <para>
+    纠删码会明显增大文件系统操作的开销，尤其是执行小规模更新时。使用纠删码作为容错机制必然会产生这种开销。这种代价抵消了明显减小的存储空间开销。
+   </para>
+   <para>
+    创建存储池时，可以使用 <command>ceph fs new</command> 命令来启用文件系统：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs new <replaceable>fs_name</replaceable> <replaceable>metadata_pool_name</replaceable> <replaceable>data_pool_name</replaceable></screen>
+   <para>
+    例如：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs new cephfs cephfs_metadata cephfs_data</screen>
+   <para>
+    可以通过列出所有可用的 CephFS 来检查是否已创建文件系统：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> <option>fs ls</option>
+ name: cephfs, metadata pool: cephfs_metadata, data pools: [cephfs_data]</screen>
+   <para>
+    创建文件系统后，MDS 将能够进入<emphasis>工作</emphasis>状态。例如，在单个 MDS 系统中：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> <option>mds stat</option>
+e5: 1/1/1 up</screen>
+   <tip>
+    <title>更多主题</title>
+    <para>
+     可以在<xref linkend="cha-ceph-cephfs"/>中找到特定任务（例如装入、卸载和高级 CephFS 设置）的更多信息。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-multimds">
+   <title>MDS 集群大小</title>
+   <para>
+    一个 CephFS 实例可由多个工作 MDS 守护进程提供支持。指定给 CephFS 实例的所有工作 MDS 守护进程将在彼此之间分发文件系统的目录树，以此来分散并行客户端的负载。要为 CephFS 实例添加工作 MDS 守护进程，需要一个备用待机守护进程。请启动其他守护进程或使用现有待机实例。
+   </para>
+   <para>
+    以下命令将显示当前工作和被动 MDS 守护进程的数量。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph mds stat</screen>
+   <para>
+    以下命令在文件系统实例中将主动 MDS 的数量设置为两个。
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs set <replaceable>fs_name</replaceable> max_mds 2</screen>
+   <para>
+    要在更新前收缩 MDS 集群，需要执行以下两个步骤。首先，将 <option>max_mds</option> 设置为只保留一个实例：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph fs set <replaceable>fs_name</replaceable> max_mds 1</screen>
+   <para>
+    然后明确停用另一个主动 MDS 守护进程：
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph mds deactivate <replaceable>fs_name</replaceable>:<replaceable>rank</replaceable></screen>
+   <para>
+    其中 <replaceable>rank</replaceable> 为文件系统实例的工作 MDS 守护进程的数量，范围介于 0 到 <option>max_mds</option>-1 之间。
+   </para>
+   <para>
+    我们建议至少保留一个 MDS 作为待机守护进程。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-cephfs-multimds-updates">
+   <title>MDS 集群和更新</title>
+   <para>
+    在 Ceph 更新期间，文件系统实例上的功能标识可能会发生变化（通常在添加新功能时发生）。不兼容的守护进程（例如旧版本）无法与不兼容的功能集搭配使用，并将拒绝启动。这意味着更新并重启动一个守护进程可能会导致尚未更新的其他所有守护进程都将停止并拒绝启动。出于此原因，我们建议将主动 MDS 集群缩小为仅包含一个实例，并在更新 Ceph 之前停止所有待机守护进程。此更新过程的手动步骤如下所述：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      使用 <command>zypper</command> 更新 Ceph 相关的包。
+     </para>
+    </step>
+    <step>
+     <para>
+      按上述说明将主动 MDS 集群缩小至一个实例，并在所有其他节点上使用所有待机 MDS 守护进程的 <systemitem class="daemon">systemd</systemitem> 单元将它们停止：
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl stop ceph-mds\*.service ceph-mds.target</screen>
+    </step>
+    <step>
+     <para>
+      然后才重启动其余一个 MDS 守护进程，以使其使用更新的二进制文件重启动。
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl restart ceph-mds\*.service ceph-mds.target</screen>
+    </step>
+    <step>
+     <para>
+      重启动所有其他 MDS 守护进程，并重设置所需的 <option>max_mds</option> 设置。
+     </para>
+<screen><prompt>cephadm@mds &gt; </prompt>systemctl start ceph-mds.target</screen>
+    </step>
+   </procedure>
+   <para>
+    如果您使用 DeepSea，则在阶段 0 和 4 中更新 
+    <package>ceph </package> 包时，它会遵循此过程。当客户端装入 CephFS 实例并且正在进行 I/O 操作时，可能会执行此过程。不过请注意，当工作 MDS 重启动时，会有一个短暂的 I/O 暂停。客户端将自动恢复。
+   </para>
+   <para>
+    最好在更新 MDS 集群之前尽可能减少 I/O 负载。如此空闲的 MDS 集群将能更快地完成此更新。反之，在一个负载较重具有多个 MDS 守护进程的集群上，必须提前减少负载以防止进行中的 I/O 超出单个 MDS 守护进程的负载能力。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-layouts">
+   <title>文件布局</title>
+   <para>
+    文件的布局可控制其内容映射到 Ceph RADOS 对象的方式。您可以使用<emphasis>虚拟扩展属性</emphasis>或 <emphasis>xattrs</emphasis> 短暂读取和写入文件的布局。
+   </para>
+   <para>
+    布局 xattrs 的名称取决于文件是常规文件还是目录。常规文件的布局 xattrs 名为 <literal>ceph.file.layout</literal>，而目录的布局 xattrs 名为 <literal>ceph.dir.layout</literal>。示例中将使用 <literal>ceph.file.layout</literal> 名称，处理目录时则相应地替换 <literal>.dir.</literal> 部分。
+   </para>
+   <sect3>
+    <title>布局字段</title>
+    <para>
+     系统可识别下列属性字段：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>pool</term>
+      <listitem>
+       <para>
+        将在其中存储文件数据对象的 RADOS 存储池的 ID 或名称。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>pool_namespace</term>
+      <listitem>
+       <para>
+        数据存储池内对象将写入其中的 RADOS 名称空间。默认为空，表示使用默认名称空间。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>stripe_unit</term>
+      <listitem>
+       <para>
+        在文件的 RAID 0 分布中使用的数据块大小（以字节为单位）。文件的所有条带单元大小都相同。最后一个条带单元通常不完整，它代表文件末尾的数据，以及文件末尾至固定大小的条带单元末端未使用的“空间”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>stripe_count</term>
+      <listitem>
+       <para>
+        构成文件数据的 RAID 0“条带”的连续条带单元的数量。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>object_size</term>
+      <listitem>
+       <para>
+        用于存储文件数据块的 RADOS 对象的大小（以字节为单位）。
+       </para>
+       <tip>
+        <title>对象大小</title>
+        <para>
+         RADOS 会强制施加一个可配置的对象大小上限。如果您将 CephFS 对象大小增加到超出该上限的值，则写入将失败。OSD 设置为 <option>osd_max_object_size</option>，默认值为 128 MB。RADOS 对象太大可能会妨碍集群顺利运行，因此不建议将对象大小上限指定为超出默认值的数值。
+        </para>
+       </tip>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>使用 <command>getfattr</command> 读取布局</title>
+    <para>
+     使用 <command>getfattr</command> 命令可读取示例文件 <filename>file</filename> 的布局信息并将其输出为单个字符串：
+    </para>
+<screen>
+<prompt>root # </prompt>touch file
+<prompt>root # </prompt>getfattr -n ceph.file.layout file
+# file: file
+ceph.file.layout="stripe_unit=4194304 stripe_count=1 object_size=419430
+</screen>
+    <para>
+     读取单个布局字段：
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.file.layout.pool file
+# file: file
+ceph.file.layout.pool="cephfs_data"
+<prompt>root # </prompt>getfattr -n ceph.file.layout.stripe_unit file
+# file: file
+ceph.file.layout.stripe_unit="4194304"
+</screen>
+    <tip>
+     <title>存储池 ID 或名称</title>
+     <para>
+      读取布局时，通常使用名称指示存储池。但在极少数情况下，当存储池刚刚创建时，可能会输出 ID 而非名称。
+     </para>
+    </tip>
+    <para>
+     目录没有显式布局，除非对其进行了自定义。如果从未修改过布局，则尝试读取布局的操作将失败：这表示系统将使用具有显式布局的上一层目录的布局。
+    </para>
+<screen>
+<prompt>root # </prompt>mkdir dir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+dir: ceph.dir.layout: No such attribute
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.stripe_count -v 2 dir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 pool=cephfs_data"
+</screen>
+   </sect3>
+   <sect3>
+    <title>使用 <command>setfattr</command> 写入布局</title>
+    <para>
+     使用 <command>setfattr</command> 命令可修改示例文件 <command>file</command> 的布局字段：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd lspools
+0 rbd
+1 cephfs_data
+2 cephfs_metadata
+<prompt>root # </prompt>setfattr -n ceph.file.layout.stripe_unit -v 1048576 file
+<prompt>root # </prompt>setfattr -n ceph.file.layout.stripe_count -v 8 file
+# Setting pool by ID:
+<prompt>root # </prompt>setfattr -n ceph.file.layout.pool -v 1 file
+# Setting pool by name:
+<prompt>root # </prompt>setfattr -n ceph.file.layout.pool -v cephfs_data file
+</screen>
+    <note>
+     <title>清空文件</title>
+     <para>
+      使用 <command>setfattr</command> 修改文件的布局字段时，需要清空此文件，否则会发生错误。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>清空布局</title>
+    <para>
+     如果您要从示例目录 <filename>mydir</filename> 中删除显式布局，并恢复为继承上一层目录的布局，请运行以下命令：
+    </para>
+<screen>
+<prompt>root # </prompt>setfattr -x ceph.dir.layout mydir
+</screen>
+    <para>
+     同样，如果您设置了“pool_namespace”属性，现在希望修改布局以转为使用默认名称空间，请运行以下命令：
+    </para>
+<screen>
+# Create a directory and set a namespace on it
+<prompt>root # </prompt>mkdir mydir
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.pool_namespace -v foons mydir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout mydir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=1 object_size=4194304 \
+ pool=cephfs_data_a pool_namespace=foons"
+
+# Clear the namespace from the directory's layout
+<prompt>root # </prompt>setfattr -x ceph.dir.layout.pool_namespace mydir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout mydir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=1 object_size=4194304 \
+ pool=cephfs_data_a"
+</screen>
+   </sect3>
+   <sect3>
+    <title>布局的继承</title>
+    <para>
+     文件在创建时会继承其父目录的布局。但在此之后对父目录布局所做的更改不会影响其子项：
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# file1 inherits its parent's layout
+<prompt>root # </prompt>touch dir/file1
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file1
+# file: dir/file1
+ceph.file.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# update the layout of the directory before creating a second file
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.stripe_count -v 4 dir
+<prompt>root # </prompt>touch dir/file2
+
+# file1's layout is unchanged
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file1
+# file: dir/file1
+ceph.file.layout="stripe_unit=4194304 stripe_count=2 object_size=4194304 \
+ pool=cephfs_data"
+
+# ...while file2 has the parent directory's new layout
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/file2
+# file: dir/file2
+ceph.file.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+</screen>
+    <para>
+     如果中间目录未设置布局，则所创建的作为目录后代的文件也将继承目录的布局：
+    </para>
+<screen>
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir
+# file: dir
+ceph.dir.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+<prompt>root # </prompt>mkdir dir/childdir
+<prompt>root # </prompt>getfattr -n ceph.dir.layout dir/childdir
+dir/childdir: ceph.dir.layout: No such attribute
+<prompt>root # </prompt>touch dir/childdir/grandchild
+<prompt>root # </prompt>getfattr -n ceph.file.layout dir/childdir/grandchild
+# file: dir/childdir/grandchild
+ceph.file.layout="stripe_unit=4194304 stripe_count=4 object_size=4194304 \
+ pool=cephfs_data"
+</screen>
+   </sect3>
+   <sect3>
+    <title>将数据存储池添加到元数据服务器</title>
+    <para>
+     要对 CephFS 使用存储池，需要先将存储池添加到元数据服务器：
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph fs add_data_pool cephfs cephfs_data_ssd
+<prompt>cephadm@adm &gt; </prompt>ceph fs ls  # Pool should now show up
+.... data pools: [cephfs_data cephfs_data_ssd ]
+</screen>
+    <tip>
+     <title>cephx 密钥</title>
+     <para>
+      请确保您的 cephx 密钥允许客户端访问此新存储池。
+     </para>
+    </tip>
+    <para>
+     然后，您可以在 CephFS 中更新目录的布局，以使用所添加的存储池：
+    </para>
+<screen>
+<prompt>root # </prompt>mkdir /mnt/cephfs/myssddir
+<prompt>root # </prompt>setfattr -n ceph.dir.layout.pool -v cephfs_data_ssd /mnt/cephfs/myssddir
+</screen>
+    <para>
+     所有在该目录中创建的新文件现在都将继承该目录的布局，并会将其数据存放到新添加的存储池中。您可能会发现主数据存储池中的对象数量会持续增加，即使文件是在您新添加的存储池中创建的也是如此。这是正常现象：文件数据会存储到布局所指定的存储池中，但仍会在主数据存储池中为所有文件保存少量元数据。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,885 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_tips.xml" version="5.0" xml:id="storage-tips">
+ <title>Suggerimenti</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>sì</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  In questo capito sono fornite le informazioni necessarie per migliorare le prestazioni del cluster Ceph e vengono forniti i suggerimenti su come impostare il cluster.
+ </para>
+ <sect1 xml:id="tips-orphaned-partitions">
+  <title>Identificazione delle partizioni orfane</title>
+
+  <para>
+   Per identificare possibili dispositivi journal/WAL/DB orfani, seguire la procedura indicata di seguito:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Selezionare il dispositivo che potrebbe contenere partizioni orfane e salvare l'elenco delle partizioni in un file:
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>ls /dev/sdd?* &gt; /tmp/partitions
+</screen>
+   </step>
+   <step>
+    <para>
+     Eseguire <command>readlink</command> a fronte di tutti i dispositivi block.wal, block.db e journal, quindi confrontare l'output con l'elenco delle partizioni salvato precedentemente:
+    </para>
+<screen>
+<prompt>root@minion &gt; </prompt>readlink -f /var/lib/ceph/osd/ceph-*/{block.wal,block.db,journal} \
+ | sort | comm -23 /tmp/partitions -
+</screen>
+    <para>
+     L'output è l'elenco delle partizioni che <emphasis>non</emphasis> vengono utilizzate da Ceph.
+    </para>
+   </step>
+   <step>
+    <para>
+     Rimuovere le partizioni orfane che non appartengono a Ceph utilizzando il proprio comando preferito (ad esempio, <command>fdisk</command>, <command>parted</command> o <command>sgdisk</command>).
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="tips-scrubbing">
+  <title>Regolazione della pulitura</title>
+
+  <para>
+   Per default, Ceph esegue la pulitura leggera giornaliera (ulteriori dettagli sono disponibili nella <xref linkend="scrubbing"/>) e la pulitura approfondita settimanale. Con la pulitura <emphasis>leggera</emphasis> vengono verificati le dimensioni e i checksum degli oggetti per assicurare che i gruppi di posizionamento memorizzino gli stessi dati oggetto. Con la pulitura <emphasis>approfondita</emphasis> viene verificato il contenuto di un oggetto con quello delle rispettive repliche per assicurare che i contenuti effettivi siano gli stessi. Il prezzo per la verifica dell'integrità dei dati è un carico I/O maggiore sul cluster durante la procedura di pulitura.
+  </para>
+
+  <para>
+   Le impostazioni di default consentono ai Ceph OSD di iniziare la pulitura in momenti inappropriati, ad esempio durante i periodi di carichi pesanti. I clienti possono riscontrare latenza e prestazioni scarse quando le operazioni di pulitura sono in conflitto con le rispettive operazioni. In Ceph sono disponibili diverse impostazioni di pulitura che possono limitare la pulitura a periodi con carichi inferiori o durante le ore non di punta.
+  </para>
+
+  <para>
+   Se il cluster riscontra carichi elevati durante il giorno e carichi bassi durante la notte, considerare di limitare la pulitura alle ore notturne, ad esempio dalle 23.00 alle 06.00:
+  </para>
+
+<screen>
+[osd]
+osd_scrub_begin_hour = 23
+osd_scrub_end_hour = 6
+</screen>
+
+  <para>
+   Se la restrizione dell'orario non è un metodo efficace per determinare la pianificazione di una pulitura, considerare di utilizzare l'opzione <option>osd_scrub_load_threshold</option>. Il valore di default è 0,5, ma è possibile modificarlo per condizioni di carico inferiore:
+  </para>
+
+<screen>
+[osd]
+osd_scrub_load_threshold = 0.25
+</screen>
+ </sect1>
+ <sect1 xml:id="tips-stopping-osd-without-rebalancing">
+  <title>Interruzione degli OSD senza ribilanciamento</title>
+
+  <para>
+   Potrebbe essere necessario interrompere gli OSD per la manutenzione periodica. Se non si desidera che CRUSH esegua automaticamente il ribilanciamento del cluster in modo da evitare il trasferimento di grandi quantità di dati, prima impostare il cluster su <literal>noout</literal>:
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>ceph osd set noout
+</screen>
+
+  <para>
+   Quando il cluster è impostato su <literal>noout</literal>, è possibile iniziare a interrompere gli OSD nel dominio di errore per il quale è richiesta la manutenzione:
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl stop ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Per ulteriori informazioni, vedere <xref linkend="ceph-operating-services-individual"/>.
+  </para>
+
+  <para>
+   Una volta completata la manutenzione, avviare di nuovo gli OSD:
+  </para>
+
+<screen>
+<prompt>root@minion &gt; </prompt>systemctl start ceph-osd@<replaceable>OSD_NUMBER</replaceable>.service
+</screen>
+
+  <para>
+   Dopo l'avvio dei servizi OSD, annullare l'impostazione <literal>noout</literal>:
+  </para>
+
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd unset noout
+</screen>
+ </sect1>
+ <sect1 xml:id="Cluster-Time-Setting">
+  <title>Sincronizzazione dell'orario dei nodi</title>
+
+  <para>
+   Ceph richiede la sincronizzazione precisa dell'orario tra tutti i nodi.
+  </para>
+
+  <para>
+   Si consiglia di sincronizzare tutti i nodi del cluster Ceph con almeno tre origini dell'orario attendibili ubicate nella rete interna. Le origini dell'orario interne possono puntare a un server dell'orario pubblico o disporre di una propria origine dell'orario.
+  </para>
+
+  <important>
+   <title>server dell'orario pubblici</title>
+   <para>
+    Non sincronizzare tutti i nodi del cluster Ceph direttamente con i server dell'orario pubblici. Con tale configurazione, ciascun nodo del cluster dispone di un daemon NTP proprio che comunica continuamente su Internet con un set di tre o quattro server dell'orario che possono fornire orari leggermente diversi. Questa soluzione comporta un alto grado di variabilità della latenza, per cui è difficile, se non impossibile, mantenere l'orologio in moto al di sotto di 0,05 secondi (che è il valore richiesto dai Ceph Monitor).
+   </para>
+  </important>
+
+  <para>
+   Per informazioni dettagliate su come configurare il server NTP, fare riferimento a <link xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/cha_ntp.html">SUSE Linux Enterprise Server Administration Guide</link> (in lingua inglese).
+  </para>
+
+  <para>
+   Quindi, per modificare l'orario sul cluster, eseguire quanto riportato di seguito:
+  </para>
+
+  <important>
+   <title>impostazione dell'orario</title>
+   <para>
+    Talvolta potrebbe essere necessario impostare indietro l'ora, ad esempio nel passaggio dall'ora legale all'ora solare. Non è consigliato spostare indietro l'ora per un periodo più lungo di quello di inattività del cluster. Lo spostamento dell'ora in avanti non causa alcun problema.
+   </para>
+  </important>
+
+  <procedure>
+   <title>Sincronizzazione dell'orario sul cluster</title>
+   <step>
+    <para>
+     Interrompere tutti i client che accedono al cluster Ceph, soprattutto quelli che utilizzano iSCSI.
+    </para>
+   </step>
+   <step>
+    <para>
+     Spegnere il cluster Ceph. Su ciascun nodo eseguire:
+    </para>
+<screen><prompt>root # </prompt>systemctl stop ceph.target</screen>
+    <note>
+     <para>
+      Se si utilizzano Ceph e SUSE OpenStack Cloud, interrompere anche SUSE OpenStack Cloud.
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Verificare che il server NTP sia configurato correttamente: l'ora di tutti i daemon <systemitem class="daemon">chronyd</systemitem> è ricavata da una o più origini nella rete locale.
+    </para>
+   </step>
+   <step>
+    <para>
+     Impostare l'ora corretta sul server NTP.
+    </para>
+   </step>
+   <step>
+    <para>
+     Verificare che NTP sia in esecuzione e funzioni correttamente, quindi eseguire su tutti i nodi:
+    </para>
+<screen><prompt>root # </prompt>systemctl status chronyd.service</screen>
+   </step>
+   <step>
+    <para>
+     Avviare tutti i nodi di monitoraggio e verificare che non vi siano sfasamenti di orario:
+    </para>
+<screen><prompt>root # </prompt>systemctl start <replaceable>target</replaceable></screen>
+   </step>
+   <step>
+    <para>
+     Avviare tutti i nodi OSD.
+    </para>
+   </step>
+   <step>
+    <para>
+     Avviare altri servizi Ceph.
+    </para>
+   </step>
+   <step>
+    <para>
+     Avviare SUSE OpenStack Cloud se disponibile.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="storage-bp-cluster-mntc-unbalanced">
+  <title>Verifica della scrittura dati non bilanciata</title>
+
+  <para>
+   Quando i dati vengono scritti negli OSD in modo uniforme, il cluster è considerato bilanciato. A ciascun OSD in un cluster viene assegnato il rispettivo <emphasis>peso</emphasis>. Il peso è un numero relativo e indica a Ceph la quantità di dati da scrivere nell'OSD correlato. Più alto è il peso, maggiore sarà la quantità di dati che vengono scritti. Se il peso di un OSD è pari a zero, non verranno scritti dati al suo interno. Se il peso di un OSD è relativamente alto rispetto ad altri OSD, in esso verrà scritta una grande porzione di dati causando uno sbilanciamento del cluster.
+  </para>
+
+  <para>
+   I cluster non bilanciati hanno prestazioni scarse e nel caso in cui un OSD dal peso elevato si blocchi improvvisamente, è necessario spostare una gran quantità di dati in altri OSD, con un conseguente rallentamento del cluster.
+  </para>
+
+  <para>
+   Per evitare tale problema, è necessario verificare regolarmente la quantità di dati scritti negli OSD. Se la quantità è compresa tra il 30 e il 50% della capacità di un gruppo di OSD specificato da un determinato set di regole, è necessario pesare di nuovo gli OSD. Verificare la presenta di dischi individuali e scoprire quali si riempiono più velocemente degli altri (o generalmente sono più lenti) e ridurne il peso. La stessa cosa vale per gli OSD in cui la quantità di dati scritti è insufficiente: è possibile aumentarne il peso in modo che Ceph scriva in essi una quantità maggiore di dati. Nell'esempio seguente, si individuerà il peso di un OSD con ID 13, che verrà modificato da 3 a 3,05:
+  </para>
+
+<screen>$ ceph osd tree | grep osd.13
+ 13  3                   osd.13  up  1
+
+ $ ceph osd crush reweight osd.13 3.05
+ reweighted item id 13 name 'osd.13' to 3.05 in crush map
+
+ $ ceph osd tree | grep osd.13
+ 13  3.05                osd.13  up  1</screen>
+
+  <para/>
+
+  <tip>
+   <title>nuovo peso dell'OSD in base all'utilizzo</title>
+   <para>
+    Il comando <command>ceph osd reweight-by-utilization</command>
+    <replaceable>threshold</replaceable> consente di automatizzare il processo di riduzione del peso degli OSD utilizzati eccessivamente. Per default i pesi saranno arrotondati per difetto negli OSD che raggiungono il 120% di utilizzo medio, ma se si include la soglia verrà utilizzata invece tale percentuale.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="storage-tips-ceph-btrfs-subvol">
+  <title>Sottovolume Btrfs per <filename>/var/lib/ceph</filename> sui nodi Ceph Monitor</title>
+
+  <para>
+   Per default SUSE Linux Enterprise è installato in una partizione Btrfs. I Ceph Monitor memorizzano stato e database nella directory <filename>/var/lib/ceph</filename>. Per impedire che i Ceph Monitor vengano danneggiati da un rollback di sistema di una snapshot precedente, creare un sottovolume Btrfs per <filename>/var/lib/ceph</filename>. Un sottovolume dedicato esclude i dati dei monitor dalle snapshot del sottovolume radice.
+  </para>
+
+  <tip>
+   <para>
+    Creare il sottovolume <filename>/var/lib/ceph</filename> prima di eseguire la fase 0 di DeepSea, poiché quest'ultima prevede l'installazione dei pacchetti relativi a Ceph e la creazione della directory <filename>/var/lib/ceph</filename>.
+   </para>
+  </tip>
+
+  <para>
+   A questo punto, la fase 3 di DeepSea verifica se <filename>@/var/lib/ceph</filename> è un sottovolume Btrfs e non riesce se è una directory normale.
+  </para>
+
+  <sect2 xml:id="btrfs-subvol-requirements">
+   <title>Requisiti</title>
+   <sect3 xml:id="tips-ceph-btrfs-subvol-new">
+    <title>Distribuzione di nuovi elementi</title>
+    <para>
+     Salt e DeepSea devono essere correttamente installati e in funzione.
+    </para>
+   </sect3>
+   <sect3 xml:id="storage-tips-ceph-btrfs-subvol-req-existing">
+    <title>Distribuzione di elementi esistenti</title>
+    <para>
+     Se il cluster è già installato, occorre soddisfare i seguenti requisiti:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       È stato eseguito l'upgrade dei nodi a SUSE Enterprise Storage 6 e il cluster è controllato da DeepSea.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Il cluster Ceph è attivo e integro.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Il processo di upgrade ha sincronizzato i moduli Salt e DeepSea in tutti i nodi minion.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage-tips-ceph-btrfs-subvol-automatic">
+   <title>Passaggi obbligatori per la distribuzione di un nuovo cluster</title>
+   <sect3 xml:id="var-lib-ceph-stage0">
+    <title>Prima di eseguire la fase 0 di DeepSea</title>
+    <para>
+     Prima di eseguire la fase 0 di DeepSea, applicare i comandi seguenti a ciascuno dei Salt minion che diventeranno Ceph Monitor:
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' saltutil.sync_all
+<prompt>root@master # </prompt>salt '<replaceable>MONITOR_NODES</replaceable>' state.apply ceph.subvolume
+</screen>
+    <para>
+     Il comando <command>ceph.subvolume</command> consente di effettuare le operazioni seguenti:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Creare <filename>/var/lib/ceph</filename> come sottovolume Btrfs <literal>@/var/lib/ceph</literal>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Montare il nuovo sottovolume e aggiornare <filename>/etc/fstab</filename> di conseguenza.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>Errore di convalida della fase 3 di DeepSea</title>
+    <para>
+     Se si dimentica di eseguire i comandi di cui alla <xref linkend="var-lib-ceph-stage0"/> prima di eseguire la fase 0, la sottodirectory <filename>/var/lib/ceph</filename> è già esistente e causa un errore di convalida della fase 3 di DeepSea. Per trasformare la directory in un sottovolume, procedere come indicato di seguito:
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Modificare la directory in <filename>/ver/lib</filename>:
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib</screen>
+     </step>
+     <step>
+      <para>
+       Effettuare il backup del contenuto della sottodirectory <filename>ceph</filename>:
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>sudo mv ceph ceph-</screen>
+     </step>
+     <step>
+      <para>
+       Creare il sottovolume, montarlo e aggiornare <filename>/etc/fstab</filename>:
+      </para>
+<screen><prompt>root@master # </prompt>salt 'MONITOR_NODES' state.apply ceph.subvolume</screen>
+     </step>
+     <step>
+      <para>
+       Andare alla sottodirectory di backup, sincronizzarne il contenuto con il nuovo sottovolume e rimuoverla:
+      </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="btrfs-subvol-upgrades">
+   <title>Passaggi obbligatori per l'upgrade del cluster</title>
+   <para>
+    In SUSE Enterprise Storage 5.5, la directory <filename>/var</filename> non si trova in un sottovolume Btrfs, ma le relative sottocartelle (come <filename>/var/log</filename> o <filename>/var/cache</filename>) sono sottovolumi Btrfs in "@". Per creare dei sottovolumi <filename>@/var/lib/ceph</filename> è necessario montare innanzitutto il sottovolume "@" (non montato per default) e crearvi all'interno il sottovolume <filename>@/var/lib/ceph</filename>.
+   </para>
+   <para>
+    Di seguito sono riportati dei comandi di esempio che illustrano la procedura:
+   </para>
+<screen>
+<prompt>root # </prompt>mkdir -p /mnt/btrfs
+<prompt>root # </prompt>mount -o subvol=@ <replaceable>ROOT_DEVICE</replaceable> /mnt/btrfs
+<prompt>root # </prompt>btrfs subvolume create /mnt/btrfs/var/lib/ceph
+<prompt>root # </prompt>umount /mnt/btrfs
+</screen>
+   <para>
+    A questo punto viene creato il sottovolume <filename>@/var/lib/ceph</filename> ed è possibile procedere come descritto nella <xref linkend="storage-tips-ceph-btrfs-subvol-automatic"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-manual">
+   <title>Installazione manuale</title>
+   <para>
+    La configurazione automatica del sottovolume Btrfs <filename>@/var/lib/ceph</filename> nei nodi di Ceph Monitor potrebbe non essere adatta a tutti gli scenari. Per eseguire la migrazione della directory <filename>/var/lib/ceph</filename> in un sottovolume <filename>@/var/lib/ceph</filename>, seguire i passaggi indicati di seguito:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Terminare i processi Ceph in esecuzione.
+     </para>
+    </step>
+    <step>
+     <para>
+      Smontare gli OSD sul nodo.
+     </para>
+    </step>
+    <step>
+     <para>
+      Andare alla sottodirectory di backup, sincronizzarne il contenuto con il nuovo sottovolume e rimuoverla:
+     </para>
+<screen><prompt>cephadm@mon &gt; </prompt>cd /var/lib/ceph-
+<prompt>cephadm@mon &gt; </prompt>rsync -av . ../ceph
+<prompt>cephadm@mon &gt; </prompt>cd ..
+<prompt>cephadm@mon &gt; </prompt>rm -rf ./ceph-
+</screen>
+    </step>
+    <step>
+     <para>
+      Rimontare gli OSD.
+     </para>
+    </step>
+    <step>
+     <para>
+      Riavviare i daemon Ceph.
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="var-lib-ceph-subvol-moreinfo">
+   <title>Per ulteriori informazioni</title>
+   <para>
+    Nel file <filename>/srv/salt/ceph/subvolume/README.md</filename> sul nodo Salt master, sono disponibili altri dettagli sulla configurazione manuale.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-srv-maint-fds-inc">
+  <title>Aumento dei descrittori di file</title>
+
+  <para>
+   Per i daemon OSD, le operazioni di lettura/scrittura sono critiche per mantenere bilanciato il cluster Ceph. Spesso sono richiesti numerosi file aperti per eseguire operazioni di lettura e scrittura contemporaneamente. A livello di sistema operativo, il numero massimo di file aperti simultaneamente è denominato "numero massimo di descrittori di file".
+  </para>
+
+  <para>
+   Per impedire che gli OSD esauriscano i descrittori di file, è possibile ignorare il valore di default del sistema operativo e specificare il numero in <filename>/etc/ceph/ceph.conf</filename>, ad esempio:
+  </para>
+
+<screen>max_open_files = 131072</screen>
+
+  <para>
+   Dopo che si modifica <option>max_open_files</option>, è necessario riavviare il servizio OSD sul nodo Ceph pertinente.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-admin-integration">
+  <title>Integrazione con il software di virtualizzazione</title>
+
+  <sect2 xml:id="storage-bp-integration-kvm">
+   <title>Memorizzazione dei dischi KVM nel cluster Ceph</title>
+   <para>
+    È possibile creare un'immagine disco per la macchina virtuale basata su KVM, memorizzarla in un pool Ceph, convertire facoltativamente il contenuto di un'immagine esistente in tale immagine disco ed eseguire quindi la macchina virtuale con <command>qemu-kvm</command> utilizzando l'immagine disco memorizzata nel cluster. Per informazioni dettagliate, vedere <xref linkend="cha-ceph-kvm"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-libvirt">
+   <title>Memorizzazione dei dischi <systemitem class="library">libvirt</systemitem> nel cluster Ceph</title>
+   <para>
+    Analogamente a KVM (vedere <xref linkend="storage-bp-integration-kvm"/>), è possibile utilizzare Ceph per memorizzare macchine virtuali basate su <systemitem class="library">libvirt</systemitem>. Il vantaggio è dato dalla possibilità di eseguire qualsiasi soluzione di virtualizzazione supportata da <systemitem class="library">libvirt</systemitem>, come KVM, Xen o LXC. Per ulteriori informazioni, consultare <xref linkend="cha-ceph-libvirt"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="storage-bp-integration-xen">
+   <title>Memorizzazione dei dischi Xen nel cluster Ceph</title>
+   <para>
+    Un modo per utilizzare Ceph per memorizzare i dischi Xen consiste nell'utilizzare <systemitem class="library">libvirt</systemitem> come descritto in <xref linkend="cha-ceph-libvirt"/>.
+   </para>
+   <para>
+    Un'altra opzione è di fare in modo che Xen comunichi direttamente con il driver del dispositivo di blocco <systemitem>rbd</systemitem>:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Se non si dispone di alcuna immagine disco preparata per Xen, crearne una nuova:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd create myimage --size 8000 --pool mypool</screen>
+    </step>
+    <step>
+     <para>
+      Elencare le immagini nel pool <literal>mypool</literal> e verificare la presenza dell'immagine nuova al suo interno:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd list mypool</screen>
+    </step>
+    <step>
+     <para>
+      Creare un nuovo dispositivo di blocco mappando <literal>myimage</literal> al modulo kernel <systemitem>rbd</systemitem>:
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool mypool myimage</screen>
+     <tip>
+      <title>nome e autenticazione utente</title>
+      <para>
+       Per specificare un nome utente, utilizzare <option>--id <replaceable>user-name</replaceable></option>. Inoltre, se si utilizza l'autenticazione <systemitem>cephx</systemitem>, è necessario specificare anche un segreto. Quest'ultimo potrebbe essere ricavato da un portachiavi o da un file contenente il segreto:
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+      <para>
+       oppure
+      </para>
+<screen><systemitem class="username">cephadm</systemitem>rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      Elencare tutti i dispositivi mappati:
+     </para>
+<screen><command>rbd showmapped</command>
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    </step>
+    <step>
+     <para>
+      Adesso è possibile configurare Xen per l'uso del dispositivo come disco per eseguire una macchina virtuale. Ad esempio, è possibile aggiungere la riga seguente al file di configurazione del dominio di stile <command>xl</command>:
+     </para>
+<screen>disk = [ '/dev/rbd0,,sda', '/dev/cdrom,,sdc,cdrom' ]</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-net-firewall">
+  <title>Impostazioni firewall per Ceph</title>
+
+  <warning>
+   <title>le fasi DeepSea si concludono con esito negativo con il firewall</title>
+   <para>
+    Le fasi di installazione di DeepSea non riescono se il firewall è attivo (e anche configurato). Per eseguire le fasi correttamente, occorre disattivare il firewall eseguendo
+   </para>
+<screen>
+<prompt>root # </prompt>systemctl stop SuSEfirewall2.service
+</screen>
+   <para>
+    o impostare l'opzione <option>FAIL_ON_WARNING</option> su "False" in <filename>/srv/pillar/ceph/stack/global.yml</filename>:
+   </para>
+<screen>
+FAIL_ON_WARNING: False
+</screen>
+  </warning>
+
+  <para>
+   Si consiglia di proteggere le comunicazioni del cluster di rete con SUSE Firewall. È possibile modificarne la configurazione selezionando <menuchoice><guimenu>YaST</guimenu><guimenu>Security and Users (Sicurezza e utenti)</guimenu><guimenu>Firewall</guimenu><guimenu>Allowed Services (Servizi consentiti)</guimenu></menuchoice>.
+  </para>
+
+  <para>
+   Di seguito è riportato un elenco di servizi correlati a Ceph e dei numeri di porte normalmente utilizzati da tali servizi:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>Ceph Monitor</term>
+    <listitem>
+     <para>
+      Abilitare il servizio <guimenu>Ceph MON</guimenu> o la porta 6789 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Ceph OSD o Metadata Server</term>
+    <listitem>
+     <para>
+      Abilitare il servizio <guimenu>Ceph OSD/MDS</guimenu> o le porte 6800-7300 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>iSCSI Gateway</term>
+    <listitem>
+     <para>
+      Aprire la porta 3260 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Object Gateway</term>
+    <listitem>
+     <para>
+      Aprire la porta di comunicazione di Object Gateway. È impostato in <filename>/etc/ceph.conf</filename> alla riga che inizia con <literal>rgw frontends =</literal>. Il valore di default è 80 per HTTP e 443 per HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NFS Ganesha</term>
+    <listitem>
+     <para>
+      Per default, NFS Ganesha utilizza le porte 2049 (servizio NFS, TCP) e 875 (supporto rquota, TCP). Fare rifermento a <xref linkend="ganesha-nfsport"/> per ulteriori informazioni su come modificare le porte NFS Ganesha di default.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Servizi basati su Apache, come SMT o SUSE Manager</term>
+    <listitem>
+     <para>
+      Aprire le porte 80 per HTTP e 443 per HTTPS (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>SSH</term>
+    <listitem>
+     <para>
+      Aprire la porta 22 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>NTP</term>
+    <listitem>
+     <para>
+      Aprire la porta 123 (UDP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Salt</term>
+    <listitem>
+     <para>
+      Aprire le porte 4505 e 4506 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Grafana</term>
+    <listitem>
+     <para>
+      Aprire la porta 3000 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>Prometheus</term>
+    <listitem>
+     <para>
+      Aprire la porta 9100 (TCP).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="storage-bp-network-test">
+  <title>Test delle prestazioni della rete</title>
+
+  <para>
+   Per testare le prestazioni della rete, nello strumento di esecuzione DeepSea <literal>net</literal> sono disponibili i seguenti comandi:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Ping semplice a tutti i nodi:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.ping
+Succeeded: 9 addresses from 9 minions average rtt 1.35 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Ping enorme a tutti i nodi:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.jumbo_ping
+Succeeded: 9 addresses from 9 minions average rtt 2.13 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Test della larghezza di banda:
+    </para>
+<screen><prompt>root@master # </prompt><command>salt-run</command> net.iperf
+Fastest 2 hosts:
+    |_
+      - 192.168.58.106
+      - 2981 Mbits/sec
+    |_
+      - 192.168.58.107
+      - 2967 Mbits/sec
+Slowest 2 hosts:
+    |_
+      - 192.168.58.102
+      - 2857 Mbits/sec
+    |_
+      - 192.168.58.103
+      - 2842 Mbits/sec</screen>
+    <tip>
+     <title>interruzione manuale dei processi "iperf3"</title>
+     <para>
+      Durante l'esecuzione di un test con lo strumento di esecuzione <command>net.iperf</command>, i processi del server "iperf3" già avviati non vengono interrotti automaticamente al completamento del test. Per interromperli, utilizzare lo strumento di esecuzione seguente:
+     </para>
+<screen><prompt>root@master # </prompt>salt '*' multi.kill_iperf_cmd</screen>
+    </tip>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="bp-flash-led-lights">
+  <title>Come individuare i dischi fisici tramite gli indicatori LED</title>
+
+  <para>
+   Questa sezione descrive come utilizzare <systemitem>libstoragemgmt</systemitem> e/o gli strumenti di terze parti per regolare gli indicatori LED sui dischi fisici. Questa funzionalità potrebbe non essere disponibile per tutte le piattaforme hardware.
+  </para>
+
+  <para>
+   Creare delle corrispondenze tra un disco OSD e un disco fisico può essere complicato, specialmente sui nodi con un'elevata densità di dischi. In alcuni ambienti hardware sono presenti degli indicatori LED che è possibile regolare tramite software per fare in modo che lampeggino o si accendano in colori diversi per agevolare l'identificazione. SUSE Enterprise Storage supporta questa funzionalità tramite Salt, <systemitem>libstoragemgmt</systemitem> e strumenti di terze parti specifici dell'hardware in uso. La configurazione di tale funzionalità è definita in salt pillar <filename>/srv/pillar/ceph/disk_led.sls</filename>:
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+# This is the default configuration for the storage enclosure LED blinking.
+# The placeholder {device_file} will be replaced with the device file of
+# the disk when the command is executed.
+#
+# Have a look into the /srv/pillar/ceph/README file to find out how to
+# customize this configuration per minion/host.
+
+disk_led:
+  cmd:
+    ident:
+      'on': lsmcli local-disk-ident-led-on --path '{device_file}'
+      'off': lsmcli local-disk-ident-led-off --path '{device_file}'
+    fault:
+      'on': lsmcli local-disk-fault-led-on --path '{device_file}'
+      'off': lsmcli local-disk-fault-led-off --path '{device_file}'</screen>
+
+  <para>
+   La configurazione di default per <filename>disk_led.sls</filename> offre il supporto degli indicatori LED del disco tramite il livello <systemitem>libstoragemgmt</systemitem>. Tuttavia, <systemitem>libstoragemgmt</systemitem> supporta tale funzionalità tramite un plug-in specifico dell'hardware e strumenti di terze parti. Se il plug-in <systemitem>libstoragemgmt</systemitem> e gli strumenti di terze parti appropriati per l'hardware non sono stati installati, <systemitem>libstoragemgmt</systemitem> non sarà in grado di regolare gli indicatori LED.
+  </para>
+
+  <para>
+   Indipendentemente dalla presenza di <systemitem>libstoragemgmt</systemitem>, potrebbero essere necessari degli strumenti di terze parti per regolare gli indicatori LED. Tali strumenti di terze parti sono disponibili presso diversi fornitori hardware. Alcuni dei fornitori e strumenti più comuni sono:
+  </para>
+
+  <table>
+   <title>Strumenti di storage di terze parti</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>Fornitore/controller del disco</entry>
+      <entry>Strumento</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>HPE SmartArray</entry>
+      <entry>hpssacli</entry>
+     </row>
+     <row>
+      <entry>LSI MegaRAID</entry>
+      <entry>storcli</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   SUSE Linux Enterprise Server fornisce inoltre il pacchetto <package>ledmon</package> e lo strumento <command>ledctl</command>. Questo strumento può essere utile anche per gli ambienti hardware in cui sono utilizzati alloggiamenti di storage Intel. La sintassi corretta durante l'uso di questo strumento è la seguente:
+  </para>
+
+<screen><prompt>root # </prompt> cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'
+    fault:
+      'on': ledctl locate='{device_file}'
+      'off': ledctl locate_off='{device_file}'</screen>
+
+  <para>
+   Se si utilizza un hardware supportato, con tutti gli strumenti di terze parti richiesti, è possibile abilitare o disabilitare gli indicatori LED tramite la sintassi di comando seguente dal nodo Salt master:
+  </para>
+
+<screen>
+<prompt>root # </prompt>salt-run disk_led.device <replaceable>NODE</replaceable> <replaceable>DISK</replaceable> <replaceable>fault|ident</replaceable> <replaceable>on|off</replaceable>
+</screen>
+
+  <para>
+   Ad esempio, per abilitare o disabilitare gli indicatori LED di identificazione o errore su <filename>/dev/sdd</filename> sul nodo OSD<filename>srv16.ceph</filename>, eseguire quanto riportato di seguito:
+  </para>
+
+<screen><prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd ident off
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault on
+<prompt>root # </prompt>salt-run disk_led.device srv16.ceph sdd fault off</screen>
+
+  <note>
+   <title>denominazione dei dispositivi</title>
+   <para>
+    Il nome del dispositivo utilizzato nel comando <command>salt-run</command> deve corrispondere al nome riconosciuto da Salt. È possibile utilizzare il comando seguente per visualizzare questi nomi:
+   </para>
+<screen><prompt>root@master # </prompt>salt '<replaceable>minion_name</replaceable>' grains.get disks
+</screen>
+  </note>
+
+  <para>
+   In molti ambienti, la configurazione <filename>/srv/pillar/ceph/disk_led.sls</filename> richiederà delle modifiche per regolare gli indicatori LED in base alle esigenze hardware specifiche. È possibile apportare modifiche semplici sostituendo <command>lsmcli</command> con un altro strumento o modificando i parametri della riga di comando. È possibile apportare modifiche complesse richiamando uno script esterno al posto del comando <filename>lsmcli</filename>. Quando si apportano modifiche a <filename>/srv/pillar/ceph/disk_led.sls</filename>, seguire la procedura indicata di seguito:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Apportare le modifiche richieste a <filename>/srv/pillar/ceph/disk_led.sls</filename> sul nodo Salt master.
+    </para>
+   </step>
+   <step>
+    <para>
+     Verificare che le modifiche siano state applicate correttamente nei dati del Pillar:
+    </para>
+<screen><prompt>root # </prompt>salt '<replaceable>SALT MASTER</replaceable>*' pillar.get disk_led</screen>
+   </step>
+   <step>
+    <para>
+     Aggiornare i dati del Pillar su tutti i nodi utilizzando:
+    </para>
+<screen><prompt>root # </prompt>salt '*' saltutil.pillar_refresh</screen>
+   </step>
+  </procedure>
+
+  <para>
+   Tramite uno script esterno, è possibile utilizzare direttamente gli strumenti di terze parti per regolare gli indicatori LED. Gli esempi seguenti illustrano come regolare <filename>/srv/pillar/ceph/disk_led.sls</filename> per supportare uno script esterno e due script di esempio per gli ambienti HP e LSI.
+  </para>
+
+  <para>
+   <filename>/srv/pillar/ceph/disk_led.sls</filename> modificato che richiama uno script esterno:
+  </para>
+
+<screen><prompt>root # </prompt>cat /srv/pillar/ceph/disk_led.sls
+disk_led:
+  cmd:
+    ident:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off
+    fault:
+      'on': /usr/local/bin/flash_led.sh '{device_file}' on
+      'off': /usr/local/bin/flash_led.sh '{device_file}' off</screen>
+
+  <para>
+   Script di esempio per indicatori LED lampeggianti su hardware HP tramite le utility <systemitem>hpssacli</systemitem>:
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_hp.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+FOUND=0
+MAX_CTRLS=10
+MAX_DISKS=50
+
+for i in $(seq 0 $MAX_CTRLS); do
+  # Search for valid controllers
+  if hpssacli ctrl slot=$i show summary &gt;/dev/null; then
+    # Search all disks on the current controller
+    for j in $(seq 0 $MAX_DISKS); do
+      if hpssacli ctrl slot=$i ld $j show | grep -q $1; then
+        FOUND=1
+        echo "Found $1 on ctrl=$i, ld=$j. Turning LED $2."
+        hpssacli ctrl slot=$i ld $j modify led=$2
+        break;
+      fi
+    done
+    [[ "$FOUND" = "1" ]] &amp;&amp; break
+  fi
+done</screen>
+
+  <para>
+   Script di esempio per indicatori LED lampeggianti su hardware LSI tramite le utility <systemitem>storcli</systemitem>:
+  </para>
+
+<screen><prompt>root # </prompt>cat /usr/local/bin/flash_led_lsi.sh
+#!/bin/bash
+# params:
+#   $1 device (e.g. /dev/sda)
+#   $2 on|off
+
+[[ "$2" = "on" ]] &amp;&amp; ACTION="start" || ACTION="stop"
+
+# Determine serial number for the disk
+SERIAL=$(lshw -class disk | grep -A2 $1 | grep serial | awk '{print $NF}')
+if [ ! -z "$SERIAL" ]; then
+  # Search for disk serial number across all controllers and enclosures
+  DEVICE=$(/opt/MegaRAID/storcli/storcli64 /call/eall/sall show all | grep -B6 $SERIAL | grep Drive | awk '{print $2}')
+  if [ ! -z "$DEVICE" ]; then
+    echo "Found $1 on device $DEVICE. Turning LED $2."
+    /opt/MegaRAID/storcli/storcli64 $DEVICE $ACTION locate
+  else
+    echo "Device not found!"
+    exit -1
+  fi
+else
+  echo "Disk serial number not found!"
+  exit -1
+fi</screen>
+ </sect1>
+</chapter>

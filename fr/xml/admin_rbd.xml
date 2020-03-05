@@ -1,0 +1,1240 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_rbd.xml" version="5.0" xml:id="ceph-rbd">
+ <title>Périphérique de bloc RADOS</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:translation>oui</dm:translation>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Un bloc est une séquence d'octets, par exemple un bloc de 4 Mo de données. Les interfaces de stockage basées sur des blocs constituent le moyen le plus courant de stocker des données sur des supports rotatifs, tels que des disques durs, des CD ou des disquettes. L'omniprésence des interfaces de périphériques de bloc fait d'un périphérique de bloc virtuel un candidat idéal pour interagir avec un système de stockage de données de masse, tel que Ceph.
+ </para>
+ <para>
+  Les périphériques de bloc Ceph permettent le partage de ressources physiques et sont redimensionnables. Ils stockent les données réparties sur plusieurs OSD dans une grappe Ceph. Les périphériques de bloc Ceph exploitent les fonctionnalités RADOS, telles que les instantanés, la réplication et la cohérence. Les périphériques de bloc RADOS (RADOS Block Devices, RBD) Ceph interagissent avec les OSD utilisant des modules de kernel ou la bibliothèque <systemitem>librbd</systemitem>.
+ </para>
+ <figure>
+  <title>Protocole RADOS</title>
+  <mediaobject>
+   <imageobject role="fo">
+    <imagedata fileref="ceph_rbd_schema.png" width="70%" format="PNG"/>
+   </imageobject>
+   <imageobject role="html">
+    <imagedata fileref="ceph_rbd_schema.png" width="70%" format="PNG"/>
+   </imageobject>
+  </mediaobject>
+ </figure>
+ <para>
+  Les périphériques de bloc Ceph offrent des performances exceptionnelles ainsi qu'une évolutivité infinie des modules de kernel. Ils prennent en charge des solutions de virtualisation, telles que QEMU, ou des systèmes basés sur le cloud, tels qu'OpenStack, qui reposent sur <systemitem class="library">libvirt</systemitem>. Vous pouvez utiliser la même grappe pour faire fonctionner Object Gateway, CephFS et les périphériques de bloc RADOS simultanément.
+ </para>
+ <sect1 xml:id="ceph-rbd-commands">
+  <title>Commandes de périphériques de bloc</title>
+
+  <para>
+   La commande <command>rbd</command> permet de créer, de répertorier, d'explorer et de supprimer des images de périphérique de bloc. Vous pouvez également l'utiliser, par exemple, pour cloner des images, créer des instantanés, restaurer une image dans un instantané ou afficher un instantané.
+  </para>
+
+  <sect2 xml:id="ceph-rbd-cmds-create">
+   <title>Création d'une image de périphérique de bloc dans une réserve répliquée</title>
+   <para>
+    Avant de pouvoir ajouter un périphérique de bloc à un client, vous devez créer une image associée dans une réserve existante (voir <xref linkend="ceph-pools"/>) :
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd create --size <replaceable>MEGABYTES</replaceable> <replaceable>POOL-NAME</replaceable>/<replaceable>IMAGE-NAME</replaceable>
+</screen>
+   <para>
+    Par exemple, pour créer une image de 1 Go nommée « myimage » qui stocke des informations dans une réserve nommée « mypool », exécutez la commande suivante :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd create --size 1024 mypool/myimage</screen>
+   <tip>
+    <title>unités de taille d'image</title>
+    <para>
+     Si vous n'indiquez pas de raccourci d'unité de taille (« G » ou « T »), la taille de l'image est en mégaoctets. Indiquez « G » ou « T » après le chiffre de la taille pour spécifier des gigaoctets ou des téraoctets.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-create-ec">
+   <title>Création d'une image de périphérique de bloc dans une réserve codée à effacement</title>
+   <para>
+    À partir de SUSE Enterprise Storage 5, il est possible de stocker les données d'une image de périphérique de bloc directement dans des réserves codées à effacement (Erasure Coded, EC). Une image de périphérique de bloc RADOS se compose de <emphasis>données</emphasis> et de <emphasis>métadonnées</emphasis>. Seule la partie « données » d'une image RBD peut être stockée dans une réserve EC. Le drapeau « overwrite » (remplacer) de la réserve doit être défini sur <emphasis>true</emphasis> (vrai), ce qui est possible uniquement si tous les OSD sur lesquels la réserve est stockée utilisent BlueStore.
+   </para>
+   <para>
+    La partie « métadonnées » de l'image ne peut pas être stockée dans une réserve EC. Vous devez spécifier la réserve répliquée pour stocker les métadonnées de l'image avec l'option <option>--pool=</option> dans la commande <command>rbd create</command>.
+   </para>
+   <para>
+    Procédez comme suit pour créer une image RBD dans une nouvelle réserve EC :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool create <replaceable>POOL_NAME</replaceable> 12 12 erasure
+<prompt>cephadm@adm &gt; </prompt><command>ceph</command> osd pool set <replaceable>POOL_NAME</replaceable> allow_ec_overwrites true
+
+#Metadata will reside in pool "<replaceable>OTHER_POOL</replaceable>", and data in pool "<replaceable>POOL_NAME</replaceable>"
+<prompt>cephadm@adm &gt; </prompt><command>rbd</command> create <replaceable>IMAGE_NAME</replaceable> --size=1G --data-pool <replaceable>POOL_NAME</replaceable> --pool=<replaceable>OTHER_POOL</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-list">
+   <title>Liste des images de périphériques de bloc</title>
+   <para>
+    Pour lister les périphériques de bloc dans une réserve nommée « mypool », exécutez la commande suivante :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd ls mypool</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-info">
+   <title>Récupération d'informations sur l'image</title>
+   <para>
+    Pour récupérer des informations à partir d'une image « myimage » dans une réserve nommée « mypool », exécutez la commande suivante :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd info mypool/myimage</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-resize">
+   <title>Redimensionnement d'une image de périphérique de bloc</title>
+   <para>
+    Les images de périphérique de bloc RADOS sont provisionnées dynamiquement : en effet, elles n'utilisent aucun stockage physique tant que vous n'y avez pas enregistré des données. Cependant, elles possèdent une capacité maximale que vous définissez à l'aide de l'option <option>--size</option>. Si vous souhaitez augmenter (ou diminuer) la taille maximale de l'image, exécutez la commande suivante :
+   </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd resize --size 2048 <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> # to increase
+<prompt>cephadm@adm &gt; </prompt>rbd resize --size 2048 <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> --allow-shrink # to decrease
+</screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-cmds-rm">
+   <title>Suppression d'une image de périphérique de bloc</title>
+   <para>
+    Pour supprimer un périphérique de bloc qui correspond à une image « myimage » dans une réserve nommée « mypool », exécutez la commande suivante :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd rm mypool/myimage</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="storage-bp-integration-mount-rbd">
+  <title>Montage et démontage</title>
+
+  <para>
+   Après avoir créé un périphérique de bloc RADOS, vous pouvez l'utiliser comme n'importe quel autre périphérique de disque et le formater, le monter pour pouvoir échanger des fichiers et le démonter une fois que vous avez terminé.
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Assurez-vous que votre grappe Ceph inclut une réserve avec l'image disque que vous souhaitez assigner. Supposons que la réserve soit appelée <literal>mypool</literal> et l'image <literal>myimage</literal>.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd list mypool</screen>
+   </step>
+   <step>
+    <para>
+     Assignez l'image à un nouveau périphérique de bloc.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool mypool myimage</screen>
+    <tip>
+     <title>nom d'utilisateur et authentification</title>
+     <para>
+      Pour indiquer un nom d'utilisateur, utilisez <option>--id <replaceable>nom-utilisateur</replaceable></option>. Si vous utilisez l'authentification <systemitem>cephx</systemitem>, vous devez également indiquer un secret. Il peut provenir d'un trousseau de clés ou d'un fichier contenant le secret :
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyring /path/to/keyring</screen>
+     <para>
+      ou
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --pool rbd myimage --id admin --keyfile /path/to/file</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Dressez la liste de tous les périphériques assignés :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd showmapped
+ id pool   image   snap device
+ 0  mypool myimage -    /dev/rbd0</screen>
+    <para>
+     Le périphérique sur lequel nous voulons travailler est <filename>/dev/rbd0</filename>.
+    </para>
+    <tip>
+     <title>chemin de périphérique RBD</title>
+     <para>
+      Au lieu de <filename>/dev/rbd<replaceable>NUMÉRO_PÉRIPHÉRIQUE</replaceable></filename>, vous pouvez utiliser <filename>/dev/rbd/<replaceable>NOM_RÉSERVE</replaceable>/<replaceable>NOM_IMAGE</replaceable></filename> comme chemin de périphérique persistant. Par exemple :
+     </para>
+<screen>
+/dev/rbd/mypool/myimage
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Créez un système de fichiers XFS sur le périphérique <filename>/dev/rbd0</filename>.
+    </para>
+<screen><prompt>root # </prompt>mkfs.xfs /dev/rbd0
+ log stripe unit (4194304 bytes) is too large (maximum is 256KiB)
+ log stripe unit adjusted to 32KiB
+ meta-data=/dev/rbd0              isize=256    agcount=9, agsize=261120 blks
+          =                       sectsz=512   attr=2, projid32bit=1
+          =                       crc=0        finobt=0
+ data     =                       bsize=4096   blocks=2097152, imaxpct=25
+          =                       sunit=1024   swidth=1024 blks
+ naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+ log      =internal log           bsize=4096   blocks=2560, version=2
+          =                       sectsz=512   sunit=8 blks, lazy-count=1
+ realtime =none                   extsz=4096   blocks=0, rtextents=0</screen>
+   </step>
+   <step>
+    <para>
+     Montez le périphérique et vérifiez qu'il est correctement monté. Remplacez <filename>/mnt</filename> par votre point de montage.
+    </para>
+<screen><prompt>root # </prompt>mount /dev/rbd0 /mnt
+<prompt>root # </prompt>mount | grep rbd0
+/dev/rbd0 on /mnt type xfs (rw,relatime,attr2,inode64,sunit=8192,...</screen>
+    <para>
+     Vous pouvez maintenant déplacer des données vers et depuis le périphérique comme s'il s'agissait d'un répertoire local.
+    </para>
+    <tip>
+     <title>Augmentation de la taille du périphérique RBD</title>
+     <para>
+      Si vous trouvez que la taille du périphérique RBD n'est plus suffisante, vous pouvez facilement l'augmenter.
+     </para>
+     <orderedlist spacing="normal">
+      <listitem>
+       <para>
+        Augmentez la taille de l'image RBD, par exemple jusqu'à 10 Go.
+       </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd resize --size 10000 mypool/myimage
+ Resizing image: 100% complete...done.</screen>
+      </listitem>
+      <listitem>
+       <para>
+        Développez le système de fichiers à la nouvelle taille du périphérique.
+       </para>
+<screen><prompt>root # </prompt>xfs_growfs /mnt
+ [...]
+ data blocks changed from 2097152 to 2560000</screen>
+      </listitem>
+     </orderedlist>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Après avoir accédé au périphérique, vous pouvez annuler son assignation et le démonter.
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd unmap /dev/rbd0
+<prompt>root # </prompt>unmount /mnt
+</screen>
+   </step>
+  </procedure>
+
+  <tip>
+   <title>montage et démontage manuels</title>
+   <para>
+    Comme il est fastidieux d'assigner et de monter manuellement les images RBD après leur démarrage, leur démontage et leur désassignation avant la fermeture, un script <command>rbdmap</command> et une unité <systemitem class="daemon">systemd</systemitem> sont fournis. Reportez-vous à la <xref linkend="ceph-rbd-rbdmap"/>.
+   </para>
+  </tip>
+
+  <sect2 xml:id="ceph-rbd-rbdmap">
+   <title>rbdmap : assignation de périphériques RBD au moment du démarrage</title>
+   <para>
+    <command>rbdmap</command> est un script shell qui automatise les opérations <command>rbd map</command> et <command>rbd unmap</command> sur une ou plusieurs images RBD. Bien que vous puissiez exécuter le script manuellement à tout moment, les principaux avantages sont l'assignation et le montage automatiques des images RBD au démarrage (ainsi que le démontage et la désassignation à l'arrêt) déclenchés par le système Init. À cet effet, un fichier unité <systemitem class="daemon">systemd</systemitem>, <filename>rbdmap.service</filename>, est fourni avec le paquetage <systemitem>ceph-common</systemitem>.
+   </para>
+   <para>
+    Le script accepte un argument unique, qui peut être <option>map</option> ou <option>unmap</option>. Dans les deux cas, le script analyse un fichier de configuration. Il pointe vers <filename>/etc/ceph/rbdmap</filename> par défaut, mais peut être remplacé par le biais d'une variable d'environnement <literal>RBDMAPFILE</literal>. Chaque ligne du fichier de configuration correspond à une image RBD qui doit être assignée ou dont l'assignation doit être annulée.
+   </para>
+   <para>
+    Le fichier de configuration possède le format suivant :
+   </para>
+<screen>image_specification rbd_options</screen>
+   <variablelist>
+    <varlistentry>
+     <term><option>image_specification</option></term>
+     <listitem>
+      <para>
+       Chemin d'accès à une image dans une réserve. Indiquez-le en tant que <replaceable>nom_réserve</replaceable>/<replaceable>nom_image</replaceable>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>rbd_options</option></term>
+     <listitem>
+      <para>
+       Liste facultative de paramètres à transmettre à la commande <command>rbd map</command> sous-jacente. Ces paramètres et leurs valeurs doivent être indiqués en tant que chaîne séparée par des virgules, par exemple :
+      </para>
+<screen>PARAM1=VAL1,PARAM2=VAL2,...</screen>
+      <para>
+       Dans cet exemple suivant, le script <command>rbdmap</command> exécute la commande suivante :
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> --PARAM1 VAL1 --PARAM2 VAL2</screen>
+      <para>
+       L'exemple suivant illustre comment spécifier un nom d'utilisateur et un trousseau de clés avec un secret correspondant :
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbdmap map mypool/myimage id=rbd_user,keyring=/etc/ceph/ceph.client.rbd.keyring
+</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    Lorsqu'il est exécuté en tant que <command>rdbmap map</command>, le script analyse le fichier de configuration et, pour chaque image RBD indiquée, tente d'abord d'assigner l'image (en utilisant la commande <command>rbd map</command>), puis de la monter.
+   </para>
+   <para>
+    Lorsqu'elles sont exécutées en tant que <command>rbdmap unmap</command>, les images répertoriées dans le fichier de configuration seront démontées et désassignées.
+   </para>
+   <para>
+    <command>rbdmap unmap-all</command> tente de démonter puis de désassigner toutes les images RBD actuellement assignées, qu'elles soient ou non répertoriées dans le fichier de configuration.
+   </para>
+   <para>
+    En cas de réussite, l'opération d'assignation rbd assigne l'image à un périphérique /dev/rbdX ; une règle udev est déclenchée afin de créer un lien symbolique de nom de périphérique convivial <filename>/dev/rbd/<replaceable>nom_réserve</replaceable>/<replaceable>nom_image</replaceable></filename> pointant vers le périphérique assigné réel.
+   </para>
+   <para>
+    Pour que le montage et le démontage réussissent, le nom de périphérique « convivial » doit être répertorié dans le fichier <filename>/etc/fstab</filename>. Lors de l'écriture d'entrées <filename>/etc/fstab</filename> pour les images RBD, indiquez l'option de montage « noauto » (ou « nofail »). Cela empêche le système Init d'essayer de monter le périphérique trop tôt, avant même que le périphérique en question existe, car <filename>rbdmap.service</filename> est généralement déclenché assez tard dans la séquence de démarrage.
+   </para>
+   <para>
+    Pour obtenir la liste complète des options de <command>rbd</command>, reportez-vous à la page de manuel <command>rbd</command> (<command>man 8 rbd</command>).
+   </para>
+   <para>
+    Pour obtenir des exemples de l'utilisation de <command>rbd</command>, reportez-vous à la page de manuel de <command>rbd</command> (<command>man 8 rbd</command>).
+   </para>
+  </sect2>
+
+  <sect2>
+   <title>augmentation de la taille du périphérique RBD</title>
+   <para>
+    Si vous trouvez que la taille du périphérique RBD n'est plus suffisante, vous pouvez facilement l'augmenter.
+   </para>
+   <orderedlist spacing="normal">
+    <listitem>
+     <para>
+      Augmentez la taille de l'image RBD, par exemple jusqu'à 10 Go.
+     </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd resize --size 10000 mypool/myimage
+ Resizing image: 100% complete...done.</screen>
+    </listitem>
+    <listitem>
+     <para>
+      Développez le système de fichiers à la nouvelle taille du périphérique.
+     </para>
+<screen><prompt>root # </prompt>xfs_growfs /mnt
+ [...]
+ data blocks changed from 2097152 to 2560000</screen>
+    </listitem>
+   </orderedlist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-snapshots-rbd">
+  <title>Images instantanées</title>
+
+  <para>
+   Un instantané RBD est un instantané d'une image de périphérique de bloc RADOS. Avec les instantanés, vous conservez l'historique de l'état de l'image. Ceph prend également en charge la superposition d'instantanés, ce qui vous permet de cloner des images de machine virtuelle rapidement et facilement. Ceph prend en charge les instantanés de périphériques de bloc en utilisant la commande <command>rbd</command> et de nombreuses interfaces de niveau supérieur, notamment QEMU, <systemitem>libvirt</systemitem>, OpenStack et CloudStack.
+  </para>
+
+  <note>
+   <para>
+    Arrêtez les opérations d'entrée et de sortie et videz toutes les écritures en attente avant de créer l'instantané d'une image. Si l'image contient un système de fichiers, celui-ci doit être cohérent lors de la création de l'instantané.
+   </para>
+  </note>
+
+  <sect2>
+   <title>Remarques sur Cephx</title>
+   <para>
+    Quand <systemitem>cephx</systemitem> est activé, vous devez spécifier un nom ou un ID d'utilisateur et un chemin d'accès au trousseau de clés contenant la clé correspondante pour l'utilisateur. Pour plus d'informations, reportez-vous au <xref linkend="cha-storage-cephx"/>. Vous pouvez également ajouter la variable d'environnement <systemitem>CEPH_ARGS</systemitem> pour ne pas avoir à saisir à nouveau les paramètres suivants.
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --id <replaceable>user-ID</replaceable> --keyring=/path/to/secret <replaceable>commands</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --name <replaceable>username</replaceable> --keyring=/path/to/secret <replaceable>commands</replaceable></screen>
+   <para>
+    Par exemple :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --id admin --keyring=/etc/ceph/ceph.keyring <replaceable>commands</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --name client.admin --keyring=/etc/ceph/ceph.keyring <replaceable>commands</replaceable></screen>
+   <tip>
+    <para>
+     Ajoutez l'utilisateur et le secret à la variable d'environnement <systemitem>CEPH_ARGS</systemitem> afin de ne pas avoir à les saisir à chaque fois.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2>
+   <title>Notions de base sur les instantanés</title>
+   <para>
+    Les procédures suivantes montrent comment créer, répertorier et supprimer des instantanés à l'aide de la commande <command>rbd</command> sur la ligne de commande.
+   </para>
+   <sect3>
+    <title>Création d'instantanés</title>
+    <para>
+     Pour créer un instantané avec <command>rbd</command>, indiquez l'option <option>snap create</option>, le nom de la réserve et le nom de l'image.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap create --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap create <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool rbd snap create --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap create rbd/image1@snapshot1</screen>
+   </sect3>
+   <sect3>
+    <title>Liste des instantanés</title>
+    <para>
+     Pour répertorier les instantanés d'une image, spécifiez le nom de la réserve et le nom de l'image.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap ls <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap ls <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool rbd snap ls image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap ls rbd/image1</screen>
+   </sect3>
+   <sect3>
+    <title>Retour d'un instantané à l'état initial</title>
+    <para>
+     Pour rétablir l'état initial d'un instantané avec <command>rbd</command>, indiquez l'option <option>snap rollback</option>, le nom de la réserve, le nom de l'image et le nom de l'instantané.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap rollback --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap rollback <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap rollback --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap rollback pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      Le retour à l'état initial d'une image dans un instantané revient à écraser la version actuelle de l'image avec les données d'un instantané. Le temps nécessaire à l'exécution d'un retour à l'état initial augmente avec la taille de l'image. Il est <emphasis>plus rapide de cloner</emphasis> à partir d'un instantané <emphasis>que de rétablir</emphasis> une image vers un instantané, cette méthode étant recommandée pour revenir à un état préexistant.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Suppression d'un instantané</title>
+    <para>
+     Pour supprimer un instantané avec <command>rbd</command>, indiquez l'option <option>snap rm</option>, le nom de la réserve, le nom de l'image et le nom de l'utilisateur.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap rm --snap <replaceable>snap-name</replaceable> <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap rm <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snap-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap rm --snap snapshot1 image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap rm pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      Les instances Ceph OSD suppriment les données de manière asynchrone de sorte que la suppression d'un instantané ne libère pas immédiatement l'espace disque.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Purge d'instantanés</title>
+    <para>
+     Pour supprimer tous les instantanés d'une image avec <command>rbd</command>, indiquez l'option <option>snap purge</option> et le nom de l'image.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap purge <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap purge <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap purge image1
+<prompt>cephadm@adm &gt; </prompt>rbd snap purge pool1/image1</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-snapshoti-layering">
+   <title>Création de couches</title>
+   <para>
+    Ceph prend en charge la possibilité de créer plusieurs clones de copie à l'écriture (COW) d'un instantané de périphérique de bloc. La création de couches d'instantanés donne aux clients de périphériques de bloc Ceph les moyens de créer des images très rapidement. Par exemple, vous pouvez créer une image de périphérique de bloc avec une machine virtuelle Linux écrite, puis capturer l'image, protéger l'instantané et créer autant de clones COW que vous le souhaitez. Un instantané étant en lecture seule, le clonage d'un instantané simplifie la sémantique et permet de créer rapidement des clones.
+   </para>
+   <note>
+    <para>
+     Dans les exemples de ligne de commande ci-dessous, les termes « parent » et « child » (enfant) désignent un instantané de périphérique de bloc Ceph (parent) et l'image correspondante clonée à partir de l'instantané (enfant).
+    </para>
+   </note>
+   <para>
+    Chaque image clonée (enfant) stocke une référence à son image parent, ce qui permet à l'image clonée d'ouvrir l'instantané parent et de le lire.
+   </para>
+   <para>
+    Un clone COW d'un instantané se comporte exactement comme n'importe quelle autre image de périphérique Ceph. Vous pouvez lire, écrire, cloner et redimensionner des images clonées. Il n'y a pas de restrictions spéciales avec les images clonées. Cependant, le clone copy-on-write d'un instantané fait référence à l'instantané, donc vous <emphasis>devez</emphasis> protéger l'instantané avant de le cloner.
+   </para>
+   <note>
+    <title><option>--image-format 1</option> non pris en charge</title>
+    <para>
+     Vous ne pouvez pas créer d'instantanés d'images créés avec l'option <command>rbd create ‑‑image-format 1</command> obsolète. Ceph ne prend en charge que le clonage des images <emphasis>format 2</emphasis> par défaut.
+    </para>
+   </note>
+   <sect3>
+    <title>Démarrage de la création de couches</title>
+    <para>
+     La création de couches de périphériques de bloc Ceph est un processus simple. Vous devez disposer d'une image. Vous devez créer un instantané de l'image. Vous devez protéger l'instantané. Après avoir effectué ces étapes, vous pouvez commencer le clonage de l'instantané.
+    </para>
+    <para>
+     L'image clonée contient une référence à l'instantané parent et inclut l'ID de la réserve, l'ID de l'image et l'ID de l'instantané. L'inclusion de l'ID de réserve signifie que vous pouvez cloner des instantanés d'une réserve vers des images d'une autre réserve.
+    </para>
+    <itemizedlist mark="bullet" spacing="normal">
+     <listitem>
+      <para>
+       <emphasis>Modèle d'image</emphasis> : un cas d'utilisation courant de la superposition de périphériques de bloc consiste à créer une image principale et un instantané servant de modèle aux clones. Par exemple, un utilisateur peut créer une image pour une distribution Linux (par exemple, SUSE Linux Enterprise Server (SLES)) et créer un instantané correspondant. Périodiquement, l'utilisateur peut mettre à jour l'image et créer un instantané (par exemple, <command>zypper ref &amp;&amp; zypper patch</command> suivi de <command>rbd snap create</command>). Au fur et à mesure que l'image mûrit, l'utilisateur peut cloner l'un des instantanés.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>Modèle étendu</emphasis> : un cas d'utilisation plus avancée inclut l'extension d'une image modèle fournissant plus d'informations qu'une image de base. Par exemple, un utilisateur peut cloner une image (un modèle de machine virtuelle) et installer d'autres logiciels (par exemple, une base de données, un système de gestion de contenu ou un système d'analyse), puis prendre un instantané de l'image agrandie, qui peut elle-même être mise à jour de la même manière que l'image de base.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>Réserve de modèles</emphasis> : une façon d'utiliser la superposition de périphériques de bloc consiste à créer une réserve contenant des images principales agissant comme des modèles et des instantanés de ces modèles. Vous pouvez ensuite étendre les privilèges de lecture seule aux utilisateurs afin qu'ils puissent cloner les instantanés sans possibilité d'écriture ou d'exécution dans la réserve.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <emphasis>Migration/récupération d'image</emphasis> : une façon d'utiliser la superposition de périphériques de bloc consiste à migrer ou récupérer des données d'une réserve vers une autre.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>Protection d'un instantané</title>
+    <para>
+     Les clones accèdent aux instantanés parents. Tous les clones seraient endommagés si un utilisateur supprimait par inadvertance l'instantané parent. Pour éviter toute perte de données, vous devez protéger l'instantané avant de pouvoir le cloner.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap protect \
+ --image <replaceable>image-name</replaceable> --snap <replaceable>snapshot-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap protect <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap protect --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd snap protect pool1/image1@snapshot1</screen>
+    <note>
+     <para>
+      Vous ne pouvez pas supprimer un instantané protégé.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Clonage d'un instantané</title>
+    <para>
+     Pour cloner un instantané, vous devez spécifier la réserve parent, l'image, l'instantané, la réserve enfant et le nom de l'image. Vous devez protéger l'instantané avant de pouvoir le cloner.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd clone --pool <replaceable>pool-name</replaceable> --image <replaceable>parent-image</replaceable> \
+ --snap <replaceable>snap-name</replaceable> --dest-pool <replaceable>pool-name</replaceable> \
+ --dest <replaceable>child-image</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd clone <replaceable>pool-name</replaceable>/<replaceable>parent-image</replaceable>@<replaceable>snap-name</replaceable> \
+<replaceable>pool-name</replaceable>/<replaceable>child-image-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd clone pool1/image1@snapshot1 pool1/image2</screen>
+    <note>
+     <para>
+      Vous pouvez cloner un instantané d'une réserve vers une image d'une autre réserve. Par exemple, vous pouvez gérer des images en lecture seule et des instantanés en tant que modèles dans une réserve, d'une part, et des clones inscriptibles dans une autre réserve, d'autre part.
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>Suppression de la protection d'un instantané</title>
+    <para>
+     Avant de pouvoir supprimer un instantané, vous devez d'abord le déprotéger. En outre, vous pouvez <emphasis>ne pas</emphasis> supprimer des instantanés contenant des références de clones. Vous devez fusionner chaque clone d'un instantané avant de pouvoir supprimer celui-ci.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> snap unprotect --image <replaceable>image-name</replaceable> \
+ --snap <replaceable>snapshot-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd snap unprotect <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 snap unprotect --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd snap unprotect pool1/image1@snapshot1</screen>
+   </sect3>
+   <sect3>
+    <title>Liste des enfants d'un instantané</title>
+    <para>
+     Pour dresser la liste des enfants d'un instantané, exécutez :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> children --image <replaceable>image-name</replaceable> --snap <replaceable>snap-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd children <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable>@<replaceable>snapshot-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 children --image image1 --snap snapshot1
+<prompt>cephadm@adm &gt; </prompt>rbd children pool1/image1@snapshot1</screen>
+   </sect3>
+   <sect3 xml:id="rbd-flatten">
+    <title>Mise à plat d'une image clonée</title>
+    <para>
+     Les images clonées conservent une référence à l'instantané parent. Lorsque vous supprimez la référence du clone enfant dans l'instantané parent, vous « aplatissez » (fusionnez) l'image en copiant les informations de l'instantané sur le clone. Le temps nécessaire à la fusion d'un clone augmente avec la taille de l'instantané. Pour supprimer un instantané, vous devez d'abord fusionner les images enfant.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool <replaceable>pool-name</replaceable> flatten --image <replaceable>image-name</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd flatten <replaceable>pool-name</replaceable>/<replaceable>image-name</replaceable></screen>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --pool pool1 flatten --image image1
+<prompt>cephadm@adm &gt; </prompt>rbd flatten pool1/image1</screen>
+    <note>
+     <para>
+      Comme une image fusionnée contient toutes les informations de l'instantané, elle occupe plus d'espace de stockage qu'un clone en couches.
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-rbd-mirror">
+  <title>Mise en miroir</title>
+
+  <para>
+   Les images RBD peuvent être mises en miroir de manière asynchrone entre deux grappes Ceph. Cette fonction utilise la fonctionnalité d'image de journalisation RBD afin de garantir une réplication cohérente entre grappes en cas de panne. La mise en miroir est configurée réserve par réserve au sein des grappes homologues et peut être configurée pour refléter automatiquement toutes les images d'une réserve ou uniquement un sous-ensemble spécifique d'images. La mise en miroir est configurée à l'aide de la commande <command>rbd</command>. Le daemon <systemitem>rbd-mirror</systemitem> est chargé d'extraire les mises à jour de l'image de la grappe homologue distante et de les appliquer à l'image dans la grappe locale.
+  </para>
+
+  <note>
+   <title>daemon rbd-mirror</title>
+   <para>
+    Pour utiliser la mise en miroir RBD, vous devez disposer de deux grappes Ceph, exécutant chacune le daemon <systemitem>rbd-mirror</systemitem>.
+   </para>
+  </note>
+
+  <important>
+   <title>périphériques de bloc RADOS exportés via iSCSI</title>
+   <para>
+    Vous ne pouvez pas mettre en miroir les périphériques RBD qui sont exportés via iSCSI à l'aide de la passerelle iSCSI basée sur le kernel.
+   </para>
+   <para>
+    Pour plus de détails sur iSCSI, reportez-vous au <xref linkend="cha-ceph-iscsi"/>.
+   </para>
+  </important>
+
+  <sect2 xml:id="rbd-mirror-daemon">
+   <title>daemon rbd-mirror</title>
+   <para>
+    Les deux daemons <systemitem>rbd-mirror</systemitem> sont chargés d'examiner les journaux d'images sur la grappe distante homologue et de relire les événements du journal sur la grappe locale. La fonction de journalisation d'image RBD enregistre toutes les modifications apportées à l'image dans l'ordre où elles se produisent. Cela garantit qu'un miroir cohérent de l'image distante est disponible localement.
+   </para>
+   <para>
+    Le daemon <systemitem>rbd-mirror</systemitem> est disponible dans le paquetage
+    <package>rbd-mirror</package> . Vous pouvez installer le paquetage sur les noeuds OSD, les noeuds de passerelle, voire sur les noeuds dédiés. Il est déconseillé d'installer <package>rbd-mirror</package> sur le noeud Admin. Pour installer, activer et démarrer <package>rbd-mirror</package> :
+   </para>
+<screen><prompt>root@minion &gt; </prompt>zypper install rbd-mirror
+<prompt>root@minion &gt; </prompt>systemctl enable ceph-rbd-mirror@<replaceable>server_name</replaceable>.service
+<prompt>root@minion &gt; </prompt>systemctl start ceph-rbd-mirror@<replaceable>server_name</replaceable>.service</screen>
+   <important>
+    <para>
+     Chaque daemon <systemitem>rbd-mirror</systemitem> doit pouvoir se connecter aux deux grappes simultanément.
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="ceph-rbd-mirror-poolconfig">
+   <title>Configuration de la réserve</title>
+   <para>
+    Les procédures suivantes montrent comment effectuer les tâches d'administration de base pour configurer la mise en miroir à l'aide de la commande <command>rbd</command>. La mise en miroir est configurée réserve par réserve au sein des grappes Ceph.
+   </para>
+   <para>
+    Vous devez effectuer les étapes de configuration de la réserve sur les deux grappes homologues. Ces procédures supposent que deux grappes, nommées « local » et « remote », sont accessibles depuis un seul hôte pour plus de clarté.
+   </para>
+   <para>
+    Reportez-vous à la page de manuel <command>rbd</command> (<command>man 8 rbd</command>) pour plus de détails sur la procédure de connexion à des grappes Ceph différentes.
+   </para>
+   <tip>
+    <title>grappes multiples</title>
+    <para>
+     Dans les exemples suivants, le nom de la grappe correspond à un fichier de configuration Ceph du même nom <filename>/etc/ceph/remote.conf</filename>.
+    </para>
+   </tip>
+   <sect3>
+    <title>Activation de la mise en miroir sur une réserve</title>
+    <para>
+     Pour activer la mise en miroir sur une grappe, indiquez la sous-commande <command>mirror pool enable</command>, le nom de la réserve et le mode de mise en miroir. Le mode de mise en miroir peut être pool ou image :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>pool</term>
+      <listitem>
+       <para>
+        Toutes les images de la réserve dont la fonctionnalité de journalisation est activée sont mises en miroir.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>image</term>
+      <listitem>
+       <para>
+        La mise en miroir doit être explicitement activée sur chaque image. Pour plus d'informations, reportez-vous à la <xref linkend="rbd-mirror-enable-image-mirroring"/>.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Par exemple :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool enable <replaceable>POOL_NAME</replaceable> pool
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool enable <replaceable>POOL_NAME</replaceable> pool</screen>
+   </sect3>
+   <sect3>
+    <title>Désactivation de la mise en miroir</title>
+    <para>
+     Pour désactiver la mise en miroir sur une grappe, indiquez la sous-commande <command>mirror pool disable</command> et le nom de la réserve. Lorsque la mise en miroir est désactivée sur une réserve de cette manière, la mise en miroir est également désactivée sur toutes les images (dans la réserve) pour lesquelles la mise en miroir a été explicitement activée.
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool disable <replaceable>POOL_NAME</replaceable>
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool disable <replaceable>POOL_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>Ajout d'un homologue de grappe</title>
+    <para>
+     Pour que le daemon <systemitem>rbd-mirror</systemitem> découvre sa grappe homologue, l'homologue doit être enregistré dans la réserve. Pour ajouter une grappe homologue de mise en miroir, indiquez la sous-commande <command>mirror pool peer add</command>, le nom de la réserve et une spécification de grappe :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool peer add <replaceable>POOL_NAME</replaceable> client.remote@remote
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool peer add <replaceable>POOL_NAME</replaceable> client.local@local</screen>
+   </sect3>
+   <sect3>
+    <title>Suppression d'un homologue de grappe</title>
+    <para>
+     Pour supprimer une grappe homologue de mise en miroir, indiquez la sous-commande <command>mirror pool peer remove</command>, le nom de la réserve et l'UUID de l'homologue (disponible dans le résultat de la commande <command>rbd mirror pool info</command>) :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool peer remove <replaceable>POOL_NAME</replaceable> \
+ 55672766-c02b-4729-8567-f13a66893445
+<prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror pool peer remove <replaceable>POOL_NAME</replaceable> \
+ 60c0e299-b38f-4234-91f6-eed0a367be08</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="rbd-mirror-imageconfig">
+   <title>Configuration d'image</title>
+   <para>
+    Contrairement à la configuration de réserve, la configuration d'image ne doit être effectuée que par rapport à une seule grappe Ceph homologue de mise en miroir.
+   </para>
+   <para>
+    Les images RBD en miroir sont désignées comme étant soit <emphasis>primaires</emphasis>, soit <emphasis>non primaires</emphasis>. Il s'agit d'une propriété de l'image et non pas de la réserve. Les images qui sont désignées comme non primaires ne sont pas modifiables.
+   </para>
+   <para>
+    Les images sont automatiquement promues au rang d'images primaires lorsque la mise en miroir est activée pour la première fois sur une image (soit implicitement si le mode de mise en miroir de la réserve était « pool » et que la fonctionnalité de journalisation de l'image a été activée, soit explicitement – reportez-vous à la <xref linkend="rbd-mirror-enable-image-mirroring"/> – à l'aide de la commande <command>rbd</command>).
+   </para>
+   <sect3>
+    <title>Prise en charge de la journalisation d'images</title>
+    <para>
+     La mise en miroir RBD utilise la fonctionnalité de journalisation RBD pour garantir que l'image répliquée est préservée en cas de panne. Avant qu'une image puisse être mise en miroir sur une grappe homologue, la fonctionnalité de journalisation doit être activée. La fonctionnalité peut être activée au moment de la création d'image en fournissant l'option <option>--image-feature exclusive-lock,journaling</option> à la commande <command>rbd</command>.
+    </para>
+    <para>
+     Le cas échéant, la fonction de journalisation peut être dynamiquement activée sur des images RBD préexistantes. Pour activer la journalisation, indiquez la sous-commande <command>feature enable</command>, le nom de la réserve et de l'image, et le nom de l'entité :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local feature enable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable> journaling</screen>
+    <note>
+     <title>dépendance d'options</title>
+     <para>
+      La fonctionnalité <option>journaling</option> dépend de la fonctionnalité <option>exclusive-lock</option>. Si la fonctionnalité <option>exclusive-lock</option> n'est pas encore activée, vous devez l'activer avant la fonctionnalité <option>journaling</option>.
+     </para>
+    </note>
+    <warning>
+     <title>journalisation sur toutes les nouvelles images</title>
+     <para>
+      Vous pouvez activer la journalisation de toutes les nouvelles images par défaut en annexant la valeur <literal>journaling</literal> à l'option <option>rbd default features</option> dans le fichier de configuration Ceph. Par exemple :
+     </para>
+<screen>rbd default features = layering,exclusive-lock,object-map,deep-flatten,journaling</screen>
+     <para>
+      Avant d'appliquer une telle modification, demandez-vous si l'activation de la journalisation de toutes les nouvelles images est adaptée à votre déploiement, car elle peut avoir des effets négatifs sur les performances.
+     </para>
+    </warning>
+   </sect3>
+   <sect3 xml:id="rbd-mirror-enable-image-mirroring">
+    <title>Activation de la mise en miroir d'image</title>
+    <para>
+     Si la mise en miroir est configurée en mode « image », il est nécessaire d'activer explicitement la mise en miroir pour chaque image de la réserve. Pour activer la mise en miroir d'une image en particulier, indiquez la sous-commande <command>mirror image enable</command> avec le nom de la réserve et le nom de l'image :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image enable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>Désactivation de la mise en miroir d'image</title>
+    <para>
+     Pour désactiver la mise en miroir d'une image en particulier, indiquez la sous-commande <command>mirror image disable</command> avec le nom de la réserve et le nom de l'image :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image disable <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+   <sect3>
+    <title>Promotion et rétrogradation de l'image</title>
+    <para>
+     Dans un scénario de basculement où la désignation principale doit être déplacée sur l'image dans la grappe homologue, vous devez arrêter l'accès à l'image primaire, rétrograder l'image primaire actuelle, promouvoir la nouvelle image primaire et reprendre l'accès à l'image sur la grappe alternative.
+    </para>
+    <note>
+     <title>promotion forcée</title>
+     <para>
+      La promotion peut être forcée à l'aide de l'option <option>--force</option>. La promotion forcée est nécessaire lorsque la rétrogradation ne peut pas être propagée à la grappe homologue (par exemple, en cas d'échec de la grappe ou de panne de communication). Cela se traduira par un scénario de divergence entre les deux homologues, et l'image ne sera plus synchronisée jusqu'à l'émission de la sous-commande <command>resync</command>.
+     </para>
+    </note>
+    <para>
+     Pour rétrograder une image non primaire spécifique, indiquez la sous-commande <command>mirror image demote</command> ainsi que le nom de la réserve et le nom de l'image :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror image demote <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     Pour rétrograder toutes les images primaires, indiquez la sous-commande <command>mirror image demote</command> ainsi que le nom de la réserve :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool demote <replaceable>POOL_NAME</replaceable></screen>
+    <para>
+     Pour promouvoir une image spécifique au rang d'image primaire, indiquez la sous-commande <command>mirror image promote</command> ainsi que le nom de la réserve et le nom de l'image :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster remote mirror image promote <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     Pour promouvoir toutes les images non primaires d'une réserve au rang d'images primaires, indiquez la sous-commande <command>mirror image promote</command> ainsi que le nom de la réserve :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd --cluster local mirror pool promote <replaceable>POOL_NAME</replaceable></screen>
+    <tip>
+     <title>division de la charge d'E/S</title>
+     <para>
+      Comme l'état primaire ou non primaire s'applique au niveau de l'image, il est possible que deux grappes divisent le chargement des E/S et le basculement ou la restauration par phases.
+     </para>
+    </tip>
+   </sect3>
+   <sect3>
+    <title>Forcer la resynchronisation de l'image</title>
+    <para>
+     Si le daemon <systemitem>rbd-mirror</systemitem> détecte un événement de divergence, il n'y aura pas de tentative de mettre en miroir l'image concernée jusqu'à ce que celle-ci soit corrigée. Pour reprendre la mise en miroir d'une image, commencez par rétrograder l'image jugée obsolète, puis demandez une resynchronisation avec l'image principale. Pour demander une resynchronisation de l'image, indiquez la sous-commande <command>mirror image resync</command> avec le nom de la réserve et le nom de l'image :
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror image resync <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="rbd-mirror-status">
+   <title>État miroir</title>
+   <para>
+    L'état de réplication de la grappe homologue est stocké pour chaque image en miroir principale. Cet état peut être récupéré à l'aide des sous-commandes <command>mirror image status</command> et <command>mirror pool status</command> :
+   </para>
+   <para>
+    Pour demander l'état de l'image miroir, indiquez la sous-commande <command>mirror image status</command> avec le nom de la réserve et le nom de l'image :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror image status <replaceable>POOL_NAME</replaceable>/<replaceable>IMAGE_NAME</replaceable></screen>
+   <para>
+    Pour demander l'état du résumé de la réserve miroir, indiquez la sous-commande <command>mirror pool status</command> avec le nom de la réserve :
+   </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd mirror pool status <replaceable>POOL_NAME</replaceable></screen>
+   <tip>
+    <title/>
+    <para>
+     L'option <option>--verbose</option> de la sous-commande <command>mirror pool status</command> permet d'afficher des informations détaillées sur l'état de chaque image de mise en miroir présente dans la réserve.
+    </para>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="rbd-cache-settings">
+  <title>Paramètres de cache</title>
+
+  <para>
+   L'implémentation de l'espace utilisateur du périphérique de bloc Ceph (<systemitem>librbd</systemitem>) ne peut pas profiter du cache de page Linux. Il comprend donc son propre caching en mémoire. Le caching RBD se comporte comme le caching de disque dur. Lorsque le système d'exploitation envoie une demande de barrière ou de vidage, toutes les données altérées (« dirty ») sont écrites sur l'OSD. Cela signifie que l'utilisation du caching à écriture différée est tout aussi sûre que celle d'un disque dur physique correct avec une machine virtuelle qui envoie correctement des demandes de vidage. Le cache utilise un algorithme <emphasis>Moins récemment utilisée</emphasis> (LRU) et peut, en mode d'écriture différée, fusionner les demandes adjacentes pour un meilleur débit.
+  </para>
+
+  <para>
+   Ceph prend en charge le caching à écriture différée pour RBD. Pour l'activer, ajoutez
+  </para>
+
+<screen>
+[client]
+...
+rbd cache = true
+</screen>
+
+  <para>
+   à la section <literal>[client]</literal> de votre fichier <filename>ceph.conf</filename>. Par défaut, <systemitem>librbd</systemitem> n'effectue aucun caching. Les écritures et les lectures sont envoyées directement à la grappe de stockage, et les écritures ne reviennent que lorsque les données sont sur disque sur toutes les répliques. Lorsque le caching est activé, les écritures reviennent immédiatement sauf si le volume d'octets non vidés est supérieur à celui défini par l'option <option>rbd cache max dirty</option>. Dans un tel cas, l'écriture déclenche l'écriture différée et les blocs jusqu'à ce que suffisamment d'octets soient vidés.
+  </para>
+
+  <para>
+   Ceph prend en charge le caching à écriture immédiate pour RBD. Vous pouvez définir la taille du cache ainsi que des objectifs et des limites pour passer du caching à écriture différée au caching à écriture immédiate. Pour activer le mode d'écriture immédiate, définissez ceci :
+  </para>
+
+<screen>
+rbd cache max dirty = 0
+</screen>
+
+  <para>
+   Cela signifie que les écritures ne reviennent que lorsque les données sont sur disque sur toutes les répliques, mais que les lectures peuvent provenir du cache. Le cache est en mémoire sur le client, et chaque image RBD a son propre cache. Étant donné que le cache est en local sur le client, il n'y a pas de cohérence s'il y a d'autres accès à l'image. L'exécution de GFS ou d'OCFS sur RBD ne fonctionnera pas avec le caching activé.
+  </para>
+
+  <para>
+   Les paramètres de fichier <filename>ceph.conf</filename> pour RBD doivent être définis dans la section <literal>[client]</literal> de votre fichier de configuration. Les paramètres incluent :
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd cache</option></term>
+    <listitem>
+     <para>
+      Permet d'activer le caching pour le périphérique de bloc RADOS (RBD). La valeur par défaut est « true ».
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache size</option></term>
+    <listitem>
+     <para>
+      Taille du cache RBD en octets. La valeur par défaut est 32 Mo.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache max dirty</option></term>
+    <listitem>
+     <para>
+      Limite « dirty » en octets à laquelle le cache déclenche l'écriture différée. <option>rbd cache max dirty</option> doit être inférieur à <option>rbd cache size</option>. Si la valeur est définie sur 0, le caching à écriture immédiate est utilisé. La valeur par défaut est 24 Mo.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache target dirty</option></term>
+    <listitem>
+     <para>
+      Valeur « dirty target » avant que le cache commence à écrire des données sur le stockage de données. Ne bloque pas les écritures dans le cache. La valeur par défaut est 16 Mo.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache max dirty age</option></term>
+    <listitem>
+     <para>
+      Temps en secondes pendant lequel les données altérées sont dans le cache avant le début de l'écriture différée. La valeur par défaut est 1.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd cache writethrough until flush</option></term>
+    <listitem>
+     <para>
+      Indique de commencer en mode d'écriture immédiate et de passer à l'écriture différée après la réception de la première demande de vidage. Cette configuration classique est judicieuse lorsque les machines virtuelles qui s'exécutent sur <systemitem>rbd</systemitem> sont trop anciennes pour envoyer des vidages (par exemple, le pilote virtio dans Linux avant le kernel 2.6.32). La valeur par défaut est « true ».
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-qos">
+  <title>Paramètres QoS</title>
+
+  <para>
+   En règle générale, la qualité de service (QoS) fait référence aux méthodes de priorisation du trafic et de réservation des ressources. Elle est particulièrement importante pour le transport du trafic avec des exigences spéciales.
+  </para>
+
+  <important>
+   <title>non pris en charge par iSCSI</title>
+   <para>
+    Les paramètres QoS suivants sont utilisés uniquement par l'implémentation RBD de l'espace utilisateur <systemitem class="daemon">librbd</systemitem>, et <emphasis>pas</emphasis> par l'implémentation <systemitem>kRBD</systemitem>. Étant donné qu'iSCSI utilise <systemitem>kRBD</systemitem>, il n'emploie pas les paramètres QoS. Toutefois, pour iSCSI, vous pouvez configurer la qualité de service sur la couche des périphériques de bloc du kernel à l'aide des fonctionnalités standard du kernel.
+   </para>
+  </important>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd qos iops limit</option></term>
+    <listitem>
+     <para>
+      Limite souhaitée des opérations d'E/S par seconde. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos bps limit</option></term>
+    <listitem>
+     <para>
+      Limite souhaitée d'octets en E/S par seconde. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read iops limit</option></term>
+    <listitem>
+     <para>
+      Limite souhaitée des opérations de lecture par seconde. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write iops limit</option></term>
+    <listitem>
+     <para>
+      Limite souhaitée des opérations d'écriture par seconde. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read bps limit</option></term>
+    <listitem>
+     <para>
+      Limite souhaitée des octets en lecture par seconde. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write bps limit</option></term>
+    <listitem>
+     <para>
+      Limite souhaitée des octets en écriture par seconde. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos iops burst</option></term>
+    <listitem>
+     <para>
+      Limite de rafales souhaitée des opérations d'E/S. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos bps burst</option></term>
+    <listitem>
+     <para>
+      Limite de rafales souhaitée des octets en E/S. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read iops burst</option></term>
+    <listitem>
+     <para>
+      Limite de rafales souhaitée des opérations de lecture. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write iops burst</option></term>
+    <listitem>
+     <para>
+      Limite de rafales souhaitée des opérations d'écriture. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos read bps burst</option></term>
+    <listitem>
+     <para>
+      Limite de rafales souhaitée des octets en lecture. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos write bps burst</option></term>
+    <listitem>
+     <para>
+      Limite de rafales souhaitée des octets en écriture. La valeur par défaut est 0 (pas de limite).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd qos schedule tick min</option></term>
+    <listitem>
+     <para>
+      Cycle d'horloge de planification minimal (en millisecondes) pour la qualité de service. La valeur par défaut est 50.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-readahead-settings">
+  <title>Paramètres de la lecture anticipée</title>
+
+  <para>
+   Le périphérique de bloc RADOS prend en charge la lecture anticipée/la prérécupération pour optimiser les petites lectures séquentielles. Ces opérations devraient normalement être gérées par le système d'exploitation invité dans le cas d'une machine virtuelle, mais les chargeurs de démarrage peuvent ne pas émettre des lectures efficaces. La lecture anticipée est automatiquement désactivée si le caching est désactivé.
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>rbd readahead trigger requests</option></term>
+    <listitem>
+     <para>
+      Nombre de demandes de lecture séquentielle nécessaires pour déclencher la lecture anticipée. La valeur par défaut est 10.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd readahead max bytes</option></term>
+    <listitem>
+     <para>
+      Taille maximale d'une demande de lecture anticipée. Lorsque la valeur est 0, la lecture anticipée est désactivée. La valeur par défaut est 512 Ko.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>rbd readahead disable after bytes</option></term>
+    <listitem>
+     <para>
+      Après la lecture de tous ces octets à partir d'une image RBD, la lecture anticipée est désactivée pour cette image jusqu'à ce qu'elle soit fermée. Cela permet à l'OS invité de prendre en charge la lecture anticipée quand il est démarré. Lorsque la valeur est 0, la lecture anticipée reste activée. La valeur par défaut est 50 Mo.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-features">
+  <title>Fonctions évoluées</title>
+
+  <para>
+   Le périphérique de bloc RADOS prend en charge les fonctions avancées qui améliorent la fonctionnalité des images RBD. Vous pouvez spécifier les fonctions sur la ligne de commande lors de la création d'une image RBD ou dans le fichier de configuration Ceph à l'aide de l'option <option>rbd_default_features</option>.
+  </para>
+
+  <para>
+   Vous pouvez spécifier les valeurs de l'option <option>rbd_default_features</option> de deux façons :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Comme une somme de valeurs internes des fonctions. Chaque fonction a sa propre valeur interne, par exemple 1 pour « layering » et 16 pour « fast-diff ». Par conséquent, pour activer ces deux fonctions par défaut, incluez la ligne suivante :
+    </para>
+<screen>
+rbd_default_features = 17
+</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Comme une liste de fonctions séparées par des virgules. L'exemple précédent se présentera comme suit :
+    </para>
+<screen>
+rbd_default_features = layering,fast-diff
+</screen>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <title>fonctions non prises en charge par iSCSI</title>
+   <para>
+    Les images RBD avec les fonctions suivantes ne seront pas prises en charge par iSCSI : <option>deep-flatten</option>, <option>object-map</option>, <option>journaling</option>, <option>fast-diff</option> et <option>striping</option>.
+   </para>
+  </note>
+
+  <para>
+   Voici une liste de fonctions RBD avancées :
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>layering</option></term>
+    <listitem>
+     <para>
+      La création de couche, ou superposition (layering), permet d'utiliser le clonage.
+     </para>
+     <para>
+      La valeur interne est 1, la valeur par défaut est « yes ».
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>striping</option></term>
+    <listitem>
+     <para>
+      La segmentation (striping) propage les données sur plusieurs objets et contribue au parallélisme pour les workloads séquentiels de lecture/écriture. Elle empêche les goulots d'étranglement de noeud unique pour les périphériques de bloc RADOS volumineux ou fort occupés.
+     </para>
+     <para>
+      La valeur interne est 2, la valeur par défaut est « yes ».
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>exclusive-lock</option></term>
+    <listitem>
+     <para>
+      Lorsque cette fonction est activée, il faut qu'un client obtienne un verrouillage sur un objet avant d'effectuer une écriture. Activez le verrouillage exclusif uniquement lorsqu'un seul client accède à une image en même temps. La valeur interne est 4. La valeur par défaut est « yes ».
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>object-map</option></term>
+    <listitem>
+     <para>
+      La prise en charge de l'assignation d'objet dépend de la prise en charge du verrouillage exclusif. Les périphériques de bloc sont provisionnés dynamiquement, ce qui signifie qu'ils ne stockent que les données qui existent réellement. La prise en charge de l'assignation d'objet permet de suivre quels objets existent réellement (ont des données stockées sur un disque). L'activation de la prise en charge de l'assignation d'objet permet d'accélérer les opérations d'E/S pour le clonage, l'importation et l'exportation d'une image peu peuplée, et pour la suppression.
+     </para>
+     <para>
+      La valeur interne est 8, la valeur par défaut est « yes ».
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>fast-diff</option></term>
+    <listitem>
+     <para>
+      La prise en charge de la fonction fast-diff dépend de la prise en charge de l'assignation d'objet et du verrouillage exclusif. Elle ajoute une propriété à l'assignation d'objet, ce qui la rend beaucoup plus rapide pour générer des différentiels entre les instantanés d'une image et l'utilisation réelle des données d'un instantané.
+     </para>
+     <para>
+      La valeur interne est 16, la valeur par défaut est « yes ».
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>deep-flatten</option></term>
+    <listitem>
+     <para>
+      La fonction deep-flatten rend <command>rbd flatten</command> (voir la <xref linkend="rbd-flatten"/>) opérationnel sur tous les instantanés d'une image, en plus de l'image elle-même. Sans elle, les instantanés d'une image s'appuieront toujours sur le parent, et vous ne pourrez pas supprimer l'image parent avant que les instantanés soient supprimés. La fonction deep-flatten rend un parent indépendant de ses clones, même s'ils ont des instantanés.
+     </para>
+     <para>
+      La valeur interne est 32, la valeur par défaut est « yes ».
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>journaling</option></term>
+    <listitem>
+     <para>
+      La prise en charge de la fonction de journalisation (journaling) dépend de la prise en charge du verrouillage exclusif. La journalisation enregistre toutes les modifications d'une image dans l'ordre où elles se produisent. La mise en miroir RBD (voir la <xref linkend="ceph-rbd-mirror"/>) utilise le journal pour répliquer une image cohérente sur une grappe distante en cas de panne.
+     </para>
+     <para>
+      La valeur interne est 64, la valeur par défaut est « no ».
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+ <sect1 xml:id="rbd-old-clients-map">
+  <title>Assignation RBD à l'aide d'anciens clients de kernel</title>
+
+  <para>
+   Les anciens clients (par exemple, SLE 11 SP4) peuvent ne pas être en mesure d'assigner les images RBD parce qu'une grappe déployée avec SUSE Enterprise Storage 6 force certaines fonctions (à la fois les fonctions de niveau image RBD et celles de niveau RADOS) que ces anciens clients ne prennent pas en charge. Dans ce cas, les journaux OSD afficheront des messages semblables à ce qui suit :
+  </para>
+
+<screen>2019-05-17 16:11:33.739133 7fcb83a2e700  0 -- 192.168.122.221:0/1006830 &gt;&gt; \
+192.168.122.152:6789/0 pipe(0x65d4e0 sd=3 :57323 s=1 pgs=0 cs=0 l=1 c=0x65d770).connect \
+protocol feature mismatch, my 2fffffffffff &lt; peer 4010ff8ffacffff missing 401000000000000
+</screen>
+
+  <warning>
+   <title>changer les types de compartiment de carte CRUSH provoque un rééquilibrage massif</title>
+   <para>
+    Si vous avez l'intention de commuter les types de compartiment de carte CRUSH « straw » et « straw2 », procédez de manière méthodique. Attendez-vous à un impact significatif sur la charge de la grappe, car un tel changement provoque un rééquilibrage massif des grappes.
+   </para>
+  </warning>
+
+  <procedure>
+   <step>
+    <para>
+     Désactivez toutes les fonctions d'image RBD qui ne sont pas prises en charge. Par exemple :
+    </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>rbd feature disable pool1/image1 object-map
+<prompt>cephadm@adm &gt; </prompt>rbd feature disable pool1/image1 exclusive-lock
+</screen>
+   </step>
+   <step>
+    <para>
+     Remplacez les types de compartiment de carte CRUSH « straw2 » par « straw » :
+    </para>
+    <substeps>
+     <step>
+      <para>
+       Enregistrez la carte CRUSH :
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd getcrushmap -o crushmap.original
+</screen>
+     </step>
+     <step>
+      <para>
+       Décompilez la carte CRUSH :
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>crushtool -d crushmap.original -o crushmap.txt
+</screen>
+     </step>
+     <step>
+      <para>
+       Modifiez la carte CRUSH et remplacez « straw2 » par « straw ».
+      </para>
+     </step>
+     <step>
+      <para>
+       Recompilez la carte CRUSH :
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>crushtool -c crushmap.txt -o crushmap.new
+</screen>
+     </step>
+     <step>
+      <para>
+       Définissez la nouvelle carte CRUSH :
+      </para>
+<screen>
+<prompt>cephadm@adm &gt; </prompt>ceph osd setcrushmap -i crushmap.new
+</screen>
+     </step>
+    </substeps>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

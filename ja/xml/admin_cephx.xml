@@ -1,0 +1,590 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_cephx.xml" version="5.0" xml:id="cha-storage-cephx">
+ <title><systemitem class="service">cephx</systemitem>を使用した認証</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/maintenance/ses6/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>編集</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  クライアントを識別して中間者攻撃を防御するため、Cephは<systemitem class="service">cephx</systemitem>認証システムを提供します。このコンテキストの「クライアント」<emphasis/>とは、人間のユーザ(管理者ユーザなど)またはCeph関連サービス/デーモン(たとえば、OSD、Monitor、Object Gateway)のどちらかです。
+ </para>
+ <note>
+  <para>
+   <systemitem class="service">cephx</systemitem>プロトコルは、TLS/SSLと異なり、転送中のデータ暗号化には対応していません。
+  </para>
+ </note>
+ <sect1 xml:id="storage-cephx-arch">
+
+
+  <title>認証アーキテクチャ</title>
+
+  <para>
+   <systemitem class="service">cephx</systemitem>は、認証に共有秘密鍵を使用します。つまり、クライアントとCeph Monitorの両方がクライアントの秘密鍵のコピーを持ちます。この認証プロトコルでは、実際に鍵を公開することなく、両者が鍵のコピーを持っていることをお互いに証明できます。これによって相互認証が提供されます。つまり、クラスタはユーザが秘密鍵を所有していることを信頼し、ユーザはクラスタが秘密鍵を持っていることを信頼します。
+  </para>
+
+  <para>
+   Cephの重要なスケーラビリティ機能は、Ceph Object Storeへの中央インタフェースの必要がないところです。つまり、CephクライアントはOSDと直接対話できます。データを保護するため、Cephは<systemitem class="service">cephx</systemitem>認証システムを備えており、これによってCephクライアントを認証します。
+  </para>
+
+  <para>
+   各Monitorでクライアントを認証して鍵を配布することができ、この結果<systemitem class="service">cephx</systemitem>の使用時にSPOF (single point of failure)やボトルネックがなくなります。Monitorは、Cephサービスを利用する際に使用するセッションキーが含まれる認証データ構造を返します。このセッションキー自体がクライアントの永続的な秘密鍵で暗号化されているため、そのクライアントのみがCeph Monitorにサービスを要求できます。その後、クライアントはセッションキーを使用して必要なサービスをMonitorに要求し、Monitorは、データを実際に処理するOSDに対してクライアントを認証するチケットをクライアントに提供します。CephのMonitorとOSDは秘密を共有するので、クライアントは、Monitorが提供するチケットをクラスタ内の任意のOSDまたはMetadata Serverで使用できます。<systemitem class="service">cephx</systemitem>チケットは期限切れになるため、攻撃者が不正に入手した期限切れのチケットやセッションキーを使用することはできません。
+  </para>
+
+  <para>
+   <systemitem class="service">cephx</systemitem>を使用するには、まず管理者がクライアント/ユーザをセットアップする必要があります。次の図では、<systemitem class="username">client.admin</systemitem>ユーザがコマンドラインから<command>ceph auth get-or-create-key</command>を呼び出して、ユーザ名と秘密鍵を生成します。Cephの<command>auth</command>サブシステムは、ユーザ名と鍵を生成してMonitorにコピーを保存し、ユーザの秘密を<systemitem class="username">client.admin</systemitem>ユーザに戻します。つまり、クライアントとMonitorが秘密鍵を共有します。
+  </para>
+
+  <figure>
+   <title>基本的な<systemitem class="service">cephx</systemitem>認証</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   Monitorで認証する場合、クライアントはMonitorにユーザ名を渡します。Monitorは、セッションキーを生成して、それをユーザ名に関連付けられている秘密鍵で暗号化し、暗号化されたチケットをクライアントに戻します。その後、クライアントは共有秘密鍵でデータを復号化して、セッションキーを取得します。このセッションキーは、現在のセッション中、ユーザを識別します。次にクライアントは、このセッションキーによって署名された、ユーザに関連するチケットを要求します。Monitorはチケットを生成し、ユーザの秘密鍵で暗号化してクライアントに戻します。クライアントはチケットを復号化し、そのチケットを使用して、クラスタ全体のOSDとMetadata Serverに対する要求に署名します。
+  </para>
+
+  <figure>
+   <title><systemitem class="service">cephx</systemitem>認証</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring2.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <systemitem class="service">cephx</systemitem>プロトコルは、クライアントマシンとCephサーバとの間で進行中の通信を認証します。初期認証後にクライアントとサーバとの間で送信される各メッセージは、Monitor、OSD、およびMetadata Serverがその共有秘密で検証できるチケットを使用して署名されます。
+  </para>
+
+  <figure>
+   <title><systemitem class="service">cephx</systemitem>認証 - MDSとOSD</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="cephx_keyring3.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <important>
+   <para>
+    この認証は、CephクライアントとCephクラスタホストとの間の保護を提供します。Cephクライアントより先は認証されません。ユーザがリモートホストからCephクライアントにアクセスする場合、ユーザのホストとクライアントホストとの間の接続にはCeph認証は適用されません。
+   </para>
+  </important>
+ </sect1>
+ <sect1 xml:id="storage-cephx-keymgmt">
+
+
+  <title>キー管理</title>
+
+  <para>
+   このセクションでは、Cephクライアントユーザ、およびCeph Storage Clusterでの認証と権限付与について説明します。「ユーザ」<emphasis/>とは、個人、またはCephクライアントを使用してCeph Storage Clusterデーモンと対話するシステムアクタ(アプリケーションなど)のいずれかです。
+  </para>
+
+  <para>
+   認証と権限付与を有効にして(デフォルトで有効)Cephを実行している場合、ユーザ名と、指定したユーザの秘密鍵が含まれるキーリングを指定する必要があります(通常はコマンドラインを使用)。ユーザ名を指定しない場合、<systemitem class="username">client.admin</systemitem>がデフォルトのユーザ名として使用されます。キーリングを指定しない場合、Ceph設定ファイルのキーリング設定を使用してキーリングが検索されます。たとえば、ユーザ名またはキーリングを指定せずに<command>ceph health</command>コマンドを実行すると、Cephはコマンドを次のように解釈します。
+  </para>
+
+<screen><prompt>cephadm@adm &gt; </prompt>ceph -n client.admin --keyring=/etc/ceph/ceph.client.admin.keyring health</screen>
+
+  <para>
+   または、<literal>CEPH_ARGS</literal>環境変数を使用して、ユーザ名と秘密の再入力を避けることができます。
+  </para>
+
+  <sect2 xml:id="storage-cephx-keymgmt-backgrnd">
+   <title>予備知識</title>
+   <para>
+    Cephクライアントのタイプ(たとえば、Block Device、Object Storage、File System、ネイティブAPI)に関係なく、Cephはすべてのデータを「プール」<emphasis/>内にオブジェクトとして保存します。Cephユーザがデータを読み書きするには、プールに対するアクセスが必要です。さらに、Cephの管理コマンドを使用するための実行許可も必要です。Cephのユーザ管理を理解するには、次の概念が役立ちます。
+   </para>
+   <sect3 xml:id="cephx-user">
+    <title>ユーザ</title>
+    <para>
+     ユーザとは、個人またはシステムアクタ(アプリケーションなど)のいずれかです。ユーザを作成することによって、誰が(または何が)Ceph Storage Cluster、そのプール、およびプール内のデータにアクセスできるかを制御できます。
+    </para>
+    <para>
+     Cephでは、ユーザの「タイプ」<emphasis/>を使用します。ユーザ管理の目的では、タイプは常に<literal>client</literal>です。Cephは、ユーザタイプとユーザIDで構成される、ピリオド(.)区切り形式でユーザを識別します。たとえば、<literal>TYPE.ID</literal>、<literal>client.admin</literal>、<literal>client.user1</literal>などです。ユーザタイプを使用する理由は、Ceph Monitor、OSD、およびMetadata Serverもcephxプロトコルを使用しますが、これらはクライアントではないためです。ユーザタイプを区別すると、クライアントユーザと他のユーザを容易に区別でき、アクセス制御、ユーザのモニタリング、および追跡可能性が効率化されます。
+    </para>
+    <para>
+     場合によっては、Cephのユーザタイプがわかりにくいことがあります。Cephのコマンドラインでは、コマンドラインの使用法に応じて、タイプを指定しても指定しなくてもユーザを指定できるためです。<option>--user</option>または<option>--id</option>を指定する場合は、タイプを省略できます。そのため、<literal>client.user1</literal>を単に<literal>user1</literal>として入力できます。<option>--name</option>または<option>-n</option>を指定する場合は、<literal>client.user1</literal>のようにタイプと名前を指定する必要があります。ベストプラクティスとして、可能な限りタイプと名前を使用することをお勧めします。
+    </para>
+    <note>
+     <para>
+      Ceph Storage Clusterユーザは、Ceph Object StorageユーザやCeph File Systemユーザと同じではありません。Ceph Object Gatewayは、ゲートウェイデーモンとStorage Clusterとの間の通信にCeph Storage Clusterユーザを使用しますが、ゲートウェイにはエンドユーザ向けの独自のユーザ管理機能があります。Ceph File SystemはPOSIXセマンティクスを使用します。そこに関連付けられているユーザスペースは、Ceph Storage Clusterユーザと同じでありません。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>権限付与とケーパビリティ</title>
+    <para>
+     Cephでは、認証ユーザにMonitor、OSD、およびMetadata Serverの機能を実行する権限を付与することを説明するために、「ケーパビリティ(cap)」という用語を使用します。ケーパビリティはプールまたはプールネームスペース内のデータへのアクセスを制限することもできます。ユーザの作成または更新時にCeph管理者ユーザがユーザのケーパビリティを設定します。
+    </para>
+    <para>
+     ケーパビリティの構文は次の形式に従います。
+    </para>
+<screen><replaceable>daemon-type</replaceable> 'allow <replaceable>capability</replaceable>' [...]</screen>
+    <para>
+     次に、各サービスタイプのケーパビリティのリストを示します。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>Monitorのケーパビリティ</term>
+      <listitem>
+       <para>
+        <literal>r</literal>、<literal>w</literal>、<literal>x</literal>、および<literal>allow profile <replaceable>cap</replaceable></literal>を含めます。
+       </para>
+<screen>mon 'allow rwx'
+mon 'allow profile osd'</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>OSDのケーパビリティ</term>
+      <listitem>
+       <para>
+        <literal>r</literal>、<literal>w</literal>、<literal>x</literal>、<literal>class-read</literal>、<literal>class-write</literal>、および<literal>profile osd</literal>を含めます。さらに、プールとネームスペースも設定できます。
+       </para>
+<screen>osd 'allow <replaceable>capability</replaceable>' [pool=<replaceable>poolname</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>MDSのケーパビリティ</term>
+      <listitem>
+       <para>
+        <literal>allow</literal>または空白のみが必要です。
+       </para>
+<screen>mds 'allow'</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     次のエントリで各ケーパビリティについて説明します。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>allow</term>
+      <listitem>
+       <para>
+        デーモンのアクセス設定の前に付けます。MDSの場合にのみ、暗黙的に<literal>rw</literal>を示します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>r</term>
+      <listitem>
+       <para>
+        ユーザに読み込みアクセスを付与します。CRUSHマップを取得するためにMonitorで必要です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>w</term>
+      <listitem>
+       <para>
+        ユーザにオブジェクトへの書き込みアクセスを付与します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>x</term>
+      <listitem>
+       <para>
+        クラスメソッドを呼び出すためのケーパビリティ(読み込みと書き込みの両方)、およびMonitorで<literal>auth</literal>操作を実行するためのケーパビリティをユーザに付与します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-read</term>
+      <listitem>
+       <para>
+        クラス読み込みメソッドを呼び出すためのケーパビリティをユーザに付与します。<literal>x</literal>のサブセットです。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>class-write</term>
+      <listitem>
+       <para>
+        クラス書き込みメソッドを呼び出すためのケーパビリティをユーザに付与します。<literal>x</literal>のサブセットです。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>*</term>
+      <listitem>
+       <para>
+        特定のデーモン/プールに対する読み込み、書き込み、および実行の許可と、管理コマンドの実行機能をユーザに付与します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile osd</term>
+      <listitem>
+       <para>
+        他のOSDまたはMonitorにOSDとして接続するための許可をユーザに付与します。OSDがレプリケーションハートビートトラフィックと状態レポートを処理できるようにするために、OSDに付与されます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile mds</term>
+      <listitem>
+       <para>
+        他のMDSまたはMonitorにMDSとして接続するための許可をユーザに付与します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-osd</term>
+      <listitem>
+       <para>
+        OSDをブートするための許可をユーザに付与します。展開ツールに対して委任され、OSDのブート時にキーを追加するための許可を展開ツールに付与します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>profile bootstrap-mds</term>
+      <listitem>
+       <para>
+        Metadata Serverをブートするための許可をユーザに付与します。展開ツールに対して委任され、Metadata Serverのブート時にキーを追加するための許可を展開ツールに付与します。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>プール</title>
+    <para>
+     プールは、ユーザがデータを保存する論理パーティションです。Cephの展開環境では、一般的に、類似するデータタイプ用の論理パーティションとしてプールを作成します。たとえば、CephをOpenStackのバックエンドとして展開する場合、標準的な展開には、ボリューム、イメージ、バックアップ、および仮想マシン用のプールと、<systemitem class="username">client.glance</systemitem>や<systemitem class="username">client.cinder</systemitem>などのユーザが存在します。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage-cephx-keymgmt-usermgmt">
+   <title>ユーザの管理</title>
+   <para>
+    ユーザ管理機能により、Cephクラスタ管理者は、Cephクラスタ内でユーザを直接作成、更新、および削除できます。
+   </para>
+   <para>
+    Cephクラスタ内でユーザを作成または削除する場合、キーをクライアントに配布して、キーリングに追加できるようにする必要があります。詳細については、<xref linkend="storage-cephx-keymgmt-keyringmgmt"/>を参照してください。
+   </para>
+   <sect3>
+    <title>ユーザの一覧</title>
+    <para>
+     クラスタ内のユーザを一覧にするには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth list</screen>
+    <para>
+     クラスタ内のすべてのユーザが一覧にされます。たとえば、2ノードのクラスタでは、<command>ceph auth list</command>の出力は次のようになります。
+    </para>
+<screen>installed auth entries:
+
+osd.0
+        key: AQCvCbtToC6MDhAATtuT70Sl+DymPCfDSsyV4w==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+osd.1
+        key: AQC4CbtTCFJBChAAVq5spj0ff4eHZICxIOVZeA==
+        caps: [mon] allow profile osd
+        caps: [osd] allow *
+client.admin
+        key: AQBHCbtT6APDHhAA5W00cBchwkQjh3dkKsyPjw==
+        caps: [mds] allow
+        caps: [mon] allow *
+        caps: [osd] allow *
+client.bootstrap-mds
+        key: AQBICbtTOK9uGBAAdbe5zcIGHZL3T/u2g6EBww==
+        caps: [mon] allow profile bootstrap-mds
+client.bootstrap-osd
+        key: AQBHCbtT4GxqORAADE5u7RkpCN/oo4e5W0uBtw==
+        caps: [mon] allow profile bootstrap-osd</screen>
+    <note>
+     <title>TYPE.ID表記</title>
+     <para>
+      ユーザの<literal>TYPE.ID</literal>表記は、<literal>osd.0</literal>の場合、タイプが<literal>osd</literal>のユーザを指定し、そのIDが<literal>0</literal>になるように適用されることに注意してください。<literal>client.admin</literal>の場合は、タイプが<literal>client</literal>のユーザで、そのIDは<literal>admin</literal>です。さらに、各エントリに<literal>key: <replaceable>value</replaceable></literal>のエントリと1つ以上の<literal>caps:</literal>エントリもあることにも注意してください。
+     </para>
+     <para>
+      <option>-o <replaceable>filename</replaceable></option>オプションと<command>ceph auth list</command>を使用して、出力をファイルに保存できます。
+     </para>
+    </note>
+   </sect3>
+   <sect3>
+    <title>ユーザに関する情報の取得</title>
+    <para>
+     特定のユーザ、キー、およびケーパビリティを取得するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth get <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth get client.admin
+exported keyring for client.admin
+[client.admin]
+	key = AQA19uZUqIwkHxAAFuUwvq0eJD4S173oFRxe0g==
+	caps mds = "allow"
+	caps mon = "allow *"
+ caps osd = "allow *"</screen>
+    <para>
+     開発者の場合は次のコマンドを実行することもできます。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth export <replaceable>TYPE.ID</replaceable></screen>
+    <para>
+     <command>auth export</command>コマンドは<command>auth get</command>と同じですが、内部の認証IDも出力します。
+    </para>
+   </sect3>
+   <sect3 xml:id="storage-cephx-keymgmt-usermgmt-useradd">
+    <title>ユーザの追加</title>
+    <para>
+     ユーザを追加すると、ユーザの作成に使用するコマンドで指定したユーザ名(<literal>TYPE.ID</literal>)、秘密鍵、およびケーパビリティが作成されます。
+    </para>
+    <para>
+     ユーザのキーにより、ユーザはCeph Storage Clusterで認証できます。ユーザのケーパビリティは、Ceph Monitor (mon)、Ceph OSD (osd)、またはCeph Metadata Server (mds)に対する読み込み、書き込み、および実行の各権限をユーザに付与します。
+    </para>
+    <para>
+     次のように、ユーザを追加する場合、いくつかのコマンドを利用できます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>ceph auth add</command></term>
+      <listitem>
+       <para>
+        ユーザを追加する場合の標準の方法です。ユーザを作成してキーを生成し、指定したケーパビリティを追加します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create</command></term>
+      <listitem>
+       <para>
+        このコマンドはユーザ名(かっこ内)とキーが含まれるキーファイルフォーマットを返すため、多くの場合、ユーザを作成する場合に最も便利な方法です。ユーザがすでに存在する場合は、単にユーザ名とキーをキーファイルフォーマットで返します。<option>-o <replaceable>filename</replaceable></option>オプションを使用して、出力をファイルに保存できます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>ceph auth get-or-create-key</command></term>
+      <listitem>
+       <para>
+        ユーザを作成して、そのユーザのキー(のみ)を返す場合に便利です。キーのみが必要なクライアント(たとえば、<systemitem class="library">libvirt</systemitem>)で役立ちます。ユーザがすでに存在する場合は、単にキーを返します。<option>-o <replaceable>filename</replaceable></option>オプションを使用して、出力をファイルに保存できます。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     クライアントユーザを作成する際に、ケーパビリティを持たないユーザを作成できます。ケーパビリティを持たないユーザは、認証はできますが、それ以上の操作は実行できません。このようなクライアントはMonitorからクラスタマップを取得できません。ただし、ケーパビリティの追加を延期する場合、後で<command>ceph auth caps</command>コマンドを使用して、ケーパビリティを持たないユーザを作成できます。
+    </para>
+    <para>
+     通常のユーザは、少なくともCeph Monitorに対する読み込みケーパビリティと、Ceph OSDに対する読み込みおよび書き込みのケーパビリティを持ちます。さらに、ほとんどの場合、ユーザのOSD許可は特定のプールへのアクセスに制限されます。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth add client.john mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>cephadm@adm &gt; </prompt>ceph auth get-or-create client.paul mon 'allow r' osd \
+ 'allow rw pool=liverpool'
+<prompt>cephadm@adm &gt; </prompt>ceph auth get-or-create client.george mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o george.keyring
+<prompt>cephadm@adm &gt; </prompt>ceph auth get-or-create-key client.ringo mon 'allow r' osd \
+ 'allow rw pool=liverpool' -o ringo.key</screen>
+    <important>
+     <para>
+      OSDに対するケーパビリティをユーザに提供しながら、特定のプールにアクセスを制限「しない」<emphasis/>場合、そのユーザはクラスタ内の「すべて」<emphasis/>のプールへのアクセスを持ちます。
+     </para>
+    </important>
+   </sect3>
+   <sect3>
+    <title>ユーザのケーパビリティの変更</title>
+    <para>
+     <command>ceph auth caps</command>コマンドを使用して、ユーザを指定してそのユーザのケーパビリティを変更できます。新しいケーパビリティを設定すると、現在のケーパビリティは上書きされます。現在のケーパビリティを表示するには、<command>ceph auth get <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable></command>を実行します。ケーパビリティを追加するには、次の形式を使用する際に既存のケーパビリティを指定する必要もあります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth caps <replaceable>USERTYPE</replaceable>.<replaceable>USERID</replaceable> <replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]' [<replaceable>daemon</replaceable> 'allow [r|w|x|*|...] \
+     [pool=<replaceable>pool-name</replaceable>] [namespace=<replaceable>namespace-name</replaceable>]']</screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth get client.john
+<prompt>cephadm@adm &gt; </prompt>ceph auth caps client.john mon 'allow r' osd 'allow rw pool=prague'
+<prompt>cephadm@adm &gt; </prompt>ceph auth caps client.paul mon 'allow rw' osd 'allow r pool=prague'
+<prompt>cephadm@adm &gt; </prompt>ceph auth caps client.brian-manager mon 'allow *' osd 'allow *'</screen>
+    <para>
+     ケーパビリティを削除する場合、ケーパビリティをリセットできます。すでに設定されている、特定のデーモンへのアクセスをユーザに付与しない場合、空の文字列を指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth caps client.ringo mon ' ' osd ' '</screen>
+   </sect3>
+   <sect3>
+    <title>ユーザの削除</title>
+    <para>
+     ユーザを削除するには、<command>ceph auth del</command>を使用します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth del <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     ここで、<replaceable>TYPE</replaceable>は<literal>client</literal>、<literal>osd</literal>、<literal>mon</literal>、または<literal>mds</literal>のいずれかで、<replaceable>ID</replaceable>はデーモンのユーザ名またはIDです。
+    </para>
+    <para>
+     存在しなくなったプール専用の許可を持つユーザを作成した場合は、それらのユーザの削除も検討することをお勧めします。
+    </para>
+   </sect3>
+   <sect3>
+    <title>ユーザのキーの出力</title>
+    <para>
+     ユーザの認証キーを標準出力に出力するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth print-key <replaceable>TYPE</replaceable>.<replaceable>ID</replaceable></screen>
+    <para>
+     ここで、<replaceable>TYPE</replaceable>は<literal>client</literal>、<literal>osd</literal>、<literal>mon</literal>、または<literal>mds</literal>のいずれかで、<replaceable>ID</replaceable>はデーモンのユーザ名またはIDです。
+    </para>
+    <para>
+     ユーザのキーを出力すると、クライアントソフトウェアにユーザのキー(<systemitem class="library">libvirt</systemitem>など)を入力する必要がある場合に便利です。次に例を示します。
+    </para>
+<screen><prompt>root # </prompt>mount -t ceph host:/ mount_point \
+-o name=client.user,secret=`ceph auth print-key client.user`</screen>
+   </sect3>
+   <sect3 xml:id="storage-cephx-keymgmt-usermgmt-userimp">
+    <title>ユーザのインポート</title>
+    <para>
+     1人以上のユーザをインポートするには、<command>ceph auth import</command>を使用し、キーリングを指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <note>
+     <para>
+      Ceph Storage Clusterは、新しいユーザ、キー、およびケーパビリティを追加し、既存のユーザ、キー、およびケーパビリティを更新します。
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage-cephx-keymgmt-keyringmgmt">
+   <title>キーリングの管理</title>
+   <para>
+    CephクライアントでCephにアクセスすると、クライアントはローカルキーリングを検索します。Cephにより、デフォルトで次の4つのキーリング名を使用してキーリング設定が事前設定されるため、デフォルトを上書きする場合を除き、ユーザがCeph設定ファイルでキーリングを設定する必要はありません。
+   </para>
+<screen>/etc/ceph/<replaceable>cluster</replaceable>.<replaceable>name</replaceable>.keyring
+/etc/ceph/<replaceable>cluster</replaceable>.keyring
+/etc/ceph/keyring
+/etc/ceph/keyring.bin</screen>
+   <para>
+    <replaceable>cluster</replaceable>メタ変数は、Ceph設定ファイルの名前で定義されているCephクラスタ名です。<filename>ceph.conf</filename>は、クラスタ名が<literal>ceph</literal>であるため、<literal>ceph.keyring</literal>になることを意味します。<replaceable>name</replaceable>メタ変数は、ユーザタイプとユーザID(たとえば、<literal>client.admin</literal>)であるため、<literal>ceph.client.admin.keyring</literal>になります。
+   </para>
+   <para>
+    ユーザ(たとえば、<systemitem class="username">client.ringo</systemitem>)を変更した後、キーを取得してCephクライアント上のキーリングに追加し、ユーザがCeph Storage Clusterにアクセスできるようにする必要があります。
+   </para>
+   <para>
+    Ceph Storage Cluster内でユーザを直接一覧、取得、追加、変更、および削除する方法の詳細については、<xref linkend="storage-cephx-keymgmt"/>を参照してください。ただし、Cephには、Cephクライアントからキーリングを管理できる<command>ceph-authtool</command>ユーティリティも用意されています。
+   </para>
+   <sect3>
+    <title>キーリングの作成</title>
+    <para>
+     <xref linkend="storage-cephx-keymgmt"/>の手順を使用してユーザを作成した場合、ユーザのキーをCephクライアントに提供し、クライアントが指定のユーザのキーを取得してCeph Storage Clusterで認証できるようにする必要があります。Cephクライアントは、キーリングにアクセスしてユーザ名を検索し、ユーザのキーを取得します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool --create-keyring /path/to/keyring</screen>
+    <para>
+     複数のユーザが含まれるキーリングを作成する場合は、キーリングのファイル名にクラスタ名(たとえば、<replaceable>cluster</replaceable>.keyring)を使用して、<filename>/etc/ceph</filename>ディレクトリに保存することをお勧めします。これにより、Ceph設定ファイルのローカルコピーで指定しなくても、キーリング設定のデフォルト設定でこのファイル名が選択されます。たとえば、次のコマンドを実行して、<filename>ceph.keyring</filename>を作成します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool -C /etc/ceph/ceph.keyring</screen>
+    <para>
+     1人のユーザが含まれるキーリングを作成する場合は、クラスタ名、ユーザタイプ、およびユーザ名を指定して、<filename>/etc/ceph</filename>ディレクトリに保存することをお勧めします。たとえば、ユーザが<systemitem class="username">client.admin</systemitem>の場合は、<filename>ceph.client.admin.keyring</filename>とします。
+    </para>
+   </sect3>
+   <sect3>
+    <title>キーリングへのユーザの追加</title>
+    <para>
+     Ceph Storage Clusterにユーザを追加する場合(<xref linkend="storage-cephx-keymgmt-usermgmt-useradd"/>を参照)、ユーザ、キー、およびケーパビリティを取得して、そのユーザをキーリングに保存できます。
+    </para>
+    <para>
+     1つのキーリングにつき1人のユーザのみを使用する場合は、<command>ceph auth get</command>コマンドを<option>-o</option>オプションと共に使用して、出力をキーリングファイルフォーマットで保存します。たとえば、<systemitem class="username">client.admin</systemitem>ユーザのキーリングを作成するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth get client.admin -o /etc/ceph/ceph.client.admin.keyring</screen>
+    <para>
+     キーリングにユーザをインポートする場合は、<command>ceph-authtool</command>を使用して、インポート先のキーリングとインポート元のキーリングを指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool /etc/ceph/ceph.keyring \
+  --import-keyring /etc/ceph/ceph.client.admin.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>ユーザの作成</title>
+    <para>
+     Cephでは、Ceph Storage Cluster内でユーザを直接作成するための<command>ceph auth add</command>コマンドが提供されています。ただし、Cephクライアントのキーリング上でユーザ、キー、およびケーパビリティを直接作成することもできます。その後、ユーザをCeph Storage Clusterにインポートできます。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool -n client.ringo --cap osd 'allow rwx' \
+  --cap mon 'allow rwx' /etc/ceph/ceph.keyring</screen>
+    <para>
+     キーリングの作成と、そのキーリングに新しいユーザを追加する操作を同時に行うこともできます。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool -C /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx' --gen-key</screen>
+    <para>
+     前のシナリオでは、新しいユーザ<systemitem class="username">client.ringo</systemitem>はキーリング内にのみ存在します。新しいユーザをCeph Storage Clusterに追加するには、同じようにクラスタに新しいユーザを追加する必要があります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth add client.ringo -i /etc/ceph/ceph.keyring</screen>
+   </sect3>
+   <sect3>
+    <title>ユーザの変更</title>
+    <para>
+     キーリング内のユーザレコードのケーパビリティを変更するには、キーリングとユーザ、およびその後にケーパビリティを指定します。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph-authtool /etc/ceph/ceph.keyring -n client.ringo \
+  --cap osd 'allow rwx' --cap mon 'allow rwx'</screen>
+    <para>
+     変更したユーザをCephクラスタ環境内で更新するには、Cephクラスタ内でキーリングからユーザエントリに変更をインポートする必要があります。
+    </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph auth import -i /etc/ceph/ceph.keyring</screen>
+    <para>
+     キーリングからCeph Storage Clusterユーザを更新する方法の詳細については、<xref linkend="storage-cephx-keymgmt-usermgmt-userimp"/>を参照してください。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="storage-cephx-keymgmt-cmdline">
+   <title>コマンドラインの使用法</title>
+   <para>
+    <command>ceph</command>コマンドは、ユーザ名と秘密の操作に関連する次のオプションをサポートします。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><option>--id</option>または<option>--user</option></term>
+     <listitem>
+      <para>
+       Cephは、ユーザをタイプとIDで識別します(<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>。たとえば、<systemitem class="username">client.admin</systemitem>や<systemitem class="username">client.user1</systemitem>)。<option>id</option>、<option>name</option>、および<option>-n</option>のオプションを使用して、ユーザ名のID部分を指定できます(たとえば、<systemitem class="username">admin</systemitem>や<systemitem class="username">user1</systemitem>)。--idでユーザを指定して、タイプを省略できます。たとえば、ユーザclient.fooを指定するには、次のコマンドを入力します。
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph --id foo --keyring /path/to/keyring health
+<prompt>cephadm@adm &gt; </prompt>ceph --user foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--name</option>または<option>-n</option></term>
+     <listitem>
+      <para>
+       Cephは、ユーザをタイプとIDで識別します(<replaceable>TYPE</replaceable>.<replaceable>ID</replaceable>。たとえば、<systemitem class="username">client.admin</systemitem>や<systemitem class="username">client.user1</systemitem>)。<option>--name</option>および<option>-n</option>のオプションを使用して、完全修飾ユーザ名を指定できます。ユーザタイプ(通常は<literal>client</literal>)とユーザIDを指定する必要があります。
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>ceph --name client.foo --keyring /path/to/keyring health
+<prompt>cephadm@adm &gt; </prompt>ceph -n client.foo --keyring /path/to/keyring health</screen>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>--keyring</option></term>
+     <listitem>
+      <para>
+       1つ以上のユーザ名と秘密が含まれるキーリングのパス。<option>--secret</option>オプションも同じ機能を提供しますが、Object Gatewayでは動作しません。Object Gatewayでは、<option>--secret</option>は別の目的で使用されます。<command>ceph auth get-or-create</command>を使用してキーリングを取得し、ローカルに保存できます。キーリングのパスを切り替えずにユーザ名を切り替えることができるため、お勧めの方法です。
+      </para>
+<screen><prompt>cephadm@adm &gt; </prompt>rbd map --id foo --keyring /path/to/keyring mypool/myimage</screen>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+</chapter>

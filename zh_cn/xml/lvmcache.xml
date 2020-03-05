@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="lvmcache.xml" version="5.0" xml:id="lvmcache">
+
+ <title>使用 LVM 缓存提升性能</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>编辑</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <warning>
+  <title>技术预览</title>
+  <para>
+   LVM 缓存当前为技术预览功能。
+  </para>
+ </warning>
+ <para>
+  LVM 缓存是一种用于提升逻辑卷 (LV) 性能的缓存机制。通常会使用较小较快的设备来提升较大较慢的 LV 的 I/O 性能。请参见其手册页 (<command>man 7 lvmcache</command>) 了解有关 LVM 缓存的更多详细信息。
+ </para>
+ <para>
+  在 SUSE Enterprise Storage 中，LVM 缓存可提升 OSD 的性能。通过 <command>ceph-volume</command> 插件来提供 LVM 缓存支持。您可以运行 <command>ceph-volume lvmcache</command> 来了解有关其用法的详细信息。
+ </para>
+ <sect1 xml:id="lvmcache-prerequisites">
+  <title>先决条件</title>
+
+  <para>
+   要使用 LVM 缓存特性提升 Ceph 集群的性能，您需要有以下资源：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     处于稳定状态（“HEALTH_OK”）的运行中 Ceph 集群。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     已部署 BlueStore 和 LVM 的 OSD。如果使用 SUSE Enterprise Storage 6 或更高版本部署 OSD，则默认会为 OSD 部署这两项。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     用于缓存的空磁盘或分区。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-planning">
+  <title>需考虑的要点</title>
+
+  <para>
+   在将 OSD 配置为使用 LVM 缓存之前，请注意以下事项：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis role="bold">确认 LVM 缓存适合您的使用情形。</emphasis>如果您只有几个<emphasis role="bold">不</emphasis>用于 OSD 的快速驱动器，一般建议将它们用作 OSD 的 WAL/DB 设备。在此情况下，系统会在快速驱动器上应用 WAL 和 DB 操作（较小且少见的操作），而在慢速 OSD 驱动器上应用数据操作。
+    </para>
+    <tip>
+     <para>
+      如果对您的部署而言，降低延迟比提升 IOPS 或吞吐量更重要，则您可将快速驱动器用作 LVM 缓存而非 WAL/DB 分区。
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     如果您计划将快速驱动器用作多个 OSD 的 LVM 缓存，请注意，<emphasis role="bold">所有 OSD 操作（包括复制）都将经过缓存设备</emphasis>。所有读取的查询操作都将从缓存设备进行，仅当在缓存中未查找到目标时才会从慢速设备查询。写入始终先应用于缓存设备，稍后才会刷新到慢速设备（默认的缓存模式为“writeback”)。
+    </para>
+    <para>
+     在决定是否要使用 LVM 缓存时，请确认快速驱动器在充当多个 OSD 的前端的同时，是否仍能提供可接受的 IOPS 量。您可以通过下面的方法来测试：先测量快速设备可提供的最大 IOPS 量，然后将所得结果除以快速设备后面的 OSD 数量。如果结果低于或接近 OSD 在不使用缓存的情况下可提供的最大 IOPS 量，则 LVM 缓存很可能不适用于此设置。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis role="bold">LVM 缓存设备与 OSD 的交互十分重要。</emphasis>系统会定期将写入从缓存设备刷新到慢速设备。如果传入流量持续进入且数量很大，缓存设备会努力跟上传入请求及刷新进程的速度，因而会导致性能下降。除非快速设备能够比慢速设备提供高得多的 IOPS 且延迟更低，否则请勿对持续的大容量工作负载使用 LVM 缓存。突发模式的流量更适合 LVM 缓存，因为这种模式会给缓存留出刷新脏数据的时间，且不会干扰客户端流量。对于持续的低流量工作负载，很难提前预估使用 LVM 缓存是否能提升性能。最佳测试方法是对照 WAL/DB 设置确定 LVM 缓存设置的基准并将两种设置进行比较。此外，由于 WAL 分区上的较小写入非常多，建议将快速设备用于 DB 和/或 WAL，而非 LVM 缓存。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果您不确定是否使用 LVM 缓存，请将快速设备用作 WAL 和/或 DB 设备。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-preparation">
+  <title>准备</title>
+
+  <para>
+   您需要将快速设备分割成多个分区。每个 OSD 需要有两个缓存分区，一个用于缓存数据，另一个用于缓存元数据。每个分区的最小大小为 2 GB。您可以使用单个快速设备来缓存多个 OSD。只需对其进行相应的分区即可。
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-configuring">
+  <title>配置 LVM 缓存</title>
+
+  <para>
+   要了解有关添加、删除和配置 LVM 缓存的详细信息，请运行 <command>ceph-volume lvmcache</command> 命令。
+  </para>
+
+  <sect2 xml:id="lvmcache-adding">
+   <title>添加 LVM 缓存</title>
+   <para>
+    要向现有 OSD 添加 LVM 缓存，请使用以下命令：
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache add
+ --cachemetadata <replaceable>METADATA-PARTITION</replaceable>
+ --cachedata <replaceable>DATA-PARTITION</replaceable>
+ --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    可选的 <option>--data</option>、<option>--db</option> 或 <option>--wal</option> 用于指定要缓存的分区。默认为 <option>--data</option>。
+   </para>
+   <tip>
+    <title>指定逻辑卷 (LV)</title>
+    <para>
+     或者，您可以使用 <option>--origin</option> 而非 <option>--osd-id</option> 选项来指定要缓存的 LV：
+    </para>
+<screen>
+[...]
+--origin <replaceable>VOLUME-GROUP</replaceable>/<replaceable>LOGICAL-VOLUME</replaceable>
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-removing">
+   <title>删除 LVM 缓存</title>
+   <para>
+    要从 OSD 中删除现有 LVM 缓存，请使用以下命令：
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache rm --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-mode">
+   <title>设置 LVM 缓存模式</title>
+   <para>
+    要指定缓存模式，请使用以下命令：
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache mode --set <replaceable>CACHING-MODE</replaceable> --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    <replaceable>CACHING-MODE</replaceable> 为“writeback”（默认值）或“writethrough”
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="lvmcache-failures">
+  <title>处理故障</title>
+
+  <para>
+   如果缓存设备发生故障，则需要从集群中删除缓存设备后面的所有 OSD（请参见<xref linkend="salt-removing-osd"/>）、将它们清除，然后重新部署。如果 OSD 驱动器发生故障，虽然 OSD 的 LV 及其缓存的 LV 将会处于活跃状态，但却无法工作。使用 <command>pvremove <replaceable>PARTITION</replaceable></command> 可清除用于 OSD 缓存数据和元数据分区的分区（物理卷）。您可以使用 <command>pvs</command> 列出所有物理卷。
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-faq">
+  <title>常见问题 (FAQ)</title>
+
+  <qandaset>
+   <qandaentry>
+    <question>
+     <para>
+      如果删除 OSD，会发生什么情况？
+     </para>
+    </question>
+    <answer>
+     <para>
+      使用 <command>lvremove</command> 删除 OSD 的 LV 时，会一并删除缓存 LV。不过，您仍需要在分区上调用 <command>pvremove</command>，以确保所有标签都已擦除。
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      如果使用 <command>ceph-volume zap</command> 清除 OSD，会发生什么情况？
+     </para>
+    </question>
+    <answer>
+     <para>
+      此问题的答案与<emphasis role="bold">如果删除 OSD，会发生什么情况？</emphasis>问题的答案相同。
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      如果原始驱动器出现故障，会发生什么情况？
+     </para>
+    </question>
+    <answer>
+     <para>
+      缓存 LV 仍存在，<command>cache info</command> 仍会将它们显示为可用状态。您将无法取消缓存，因为 LVM 会由于原始 LV 的设备已不存在而无法刷新缓存。现在的情况是原始 LV 存在，但其后备设备不存在。您可以通过使用 <command>pvs</command> 命令并找到与原始 LV 相关联的设备来修复此问题。然后，便可以使用以下命令将它们删除：
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo pvremove /dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      您可对缓存分区执行相同操作。此过程将会使原始 LV 以及缓存 LV 消失。您也可以使用
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo dd if=/dev/zero of=/dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      将它们擦除，然后再使用 <command>pvremove</command>。
+     </para>
+    </answer>
+   </qandaentry>
+  </qandaset>
+ </sect1>
+</chapter>
