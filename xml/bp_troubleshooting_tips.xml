@@ -1066,4 +1066,402 @@ fi</screen>
      TBD
    </para>
  </sect1>
+ <sect1 xml:id="storage-bp-report-bug">
+  <title>Reporting Software Problems</title>
+
+  <para>
+   If you come across a problem when running &productname; &productnumber;
+   related to some of its components, such as &ceph; or &rgw;, report the
+   problem to SUSE Technical Support. The recommended way is with the
+   <command>supportconfig</command> utility.
+  </para>
+
+  <tip>
+   <para>
+    Because <command>supportconfig</command> is modular software, make sure
+    that the <systemitem>supportutils-plugin-ses</systemitem> package is
+    installed.
+   </para>
+<screen>&prompt.user;rpm -q supportutils-plugin-ses</screen>
+   <para>
+    If it is missing on the &ceph; server, install it with
+   </para>
+<screen>&prompt.root;zypper ref &amp;&amp; zypper in supportutils-plugin-ses</screen>
+  </tip>
+
+  <para>
+   Although you can use <command>supportconfig</command> on the command line,
+   we recommend using the related &yast; module. Find more information about
+   <command>supportconfig</command> in
+   <link xlink:href="https://documentation.suse.com/sles/15-SP1/single-html/SLES-admin/#sec-admsupport-supportconfig"/>.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-cluster-mntc-rados-striping">
+  <title>Sending Large Objects with <command>rados</command> Fails with Full OSD</title>
+
+  <para>
+   <command>rados</command> is a command line utility to manage RADOS object
+   storage. For more information, see <command>man 8 rados</command>.
+  </para>
+
+  <para>
+   If you send a large object to a &ceph; cluster with the
+   <command>rados</command> utility, such as
+  </para>
+
+<screen>&prompt.cephuser;rados -p mypool put myobject /file/to/send</screen>
+
+  <para>
+   it can fill up all the related OSD space and cause serious trouble to the
+   cluster performance.
+  </para>
+ </sect1>
+ <sect1 xml:id="ceph-xfs-corruption">
+  <title>Corrupted XFS File system</title>
+
+  <para>
+   In rare circumstances like kernel bug or broken/misconfigured hardware, the
+   underlying file system (XFS) in which an OSD stores its data might be
+   damaged and unmountable.
+  </para>
+
+  <para>
+   If you are sure there is no problem with your hardware and the system is
+   configured properly, raise a bug against the XFS subsystem of the &sls;
+   kernel and mark the particular OSD as down:
+  </para>
+
+<screen>&prompt.cephuser;ceph osd down <replaceable>OSD_ID</replaceable></screen>
+
+  <warning>
+   <title>Do Not Format or Otherwise Modify the Damaged Device</title>
+   <para>
+    Even though using <command>xfs_repair</command> to fix the problem in the
+    file system may seem reasonable, do not use it as the command modifies the
+    file system. The OSD may start but its functioning may be influenced.
+   </para>
+  </warning>
+
+  <para>
+   Now zap the underlying disk and re-create the OSD by running:
+  </para>
+
+<screen>
+&prompt.cephuser.osd;ceph-volume lvm zap --data /dev/<replaceable>OSD_DISK_DEVICE</replaceable>
+&prompt.cephuser.osd;ceph-volume lvm prepare --bluestore --data /dev/<replaceable>OSD_DISK_DEVICE</replaceable>
+</screen>
+ </sect1>
+ <sect1 xml:id="storage-bp-recover-toomanypgs">
+  <title>'Too Many PGs per OSD' Status Message</title>
+
+  <para>
+   If you receive a <literal>Too Many PGs per OSD</literal> message after
+   running <command>ceph status</command>, it means that the
+   <option>mon_pg_warn_max_per_osd</option> value (300 by default) was
+   exceeded. This value is compared to the number of PGs per OSD ratio. This
+   means that the cluster setup is not optimal.
+  </para>
+
+  <para>
+   The number of PGs cannot be reduced after the pool is created. Pools that do
+   not yet contain any data can safely be deleted and then re-created with a
+   lower number of PGs. Where pools already contain data, the only solution is
+   to add OSDs to the cluster so that the ratio of PGs per OSD becomes lower.
+  </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-recover-stuckinactive">
+  <title>'<emphasis>nn</emphasis> pg stuck inactive' Status Message</title>
+
+  <para>
+   If you receive a <literal>stuck inactive</literal> status message after
+   running <command>ceph status</command>, it means that &ceph; does not know
+   where to replicate the stored data to fulfill the replication rules. It can
+   happen shortly after the initial &ceph; setup and fix itself automatically.
+   In other cases, this may require a manual interaction, such as bringing up a
+   broken OSD, or adding a new OSD to the cluster. In very rare cases, reducing
+   the replication level may help.
+  </para>
+
+  <para>
+   If the placement groups are stuck perpetually, you need to check the output
+   of <command>ceph osd tree</command>. The output should look tree-structured,
+   similar to the example in <xref linkend="storage-bp-recover-osddown"/>.
+  </para>
+
+  <para>
+   If the output of <command>ceph osd tree</command> is rather flat as in the
+   following example
+  </para>
+
+<screen>&prompt.cephuser;ceph osd tree
+ID WEIGHT TYPE NAME    UP/DOWN REWEIGHT PRIMARY-AFFINITY
+-1      0 root default
+ 0      0 osd.0             up  1.00000          1.00000
+ 1      0 osd.1             up  1.00000          1.00000
+ 2      0 osd.2             up  1.00000          1.00000</screen>
+
+  <para>
+   You should check that the related CRUSH map has a tree structure. If it is
+   also flat, or with no hosts as in the above example, it may mean that host
+   name resolution is not working correctly across the cluster.
+  </para>
+
+  <para>
+   If the hierarchy is incorrect&mdash;for example the root contains hosts, but
+   the OSDs are at the top level and are not themselves assigned to
+   hosts&mdash;you will need to move the OSDs to the correct place in the
+   hierarchy. This can be done using the <command>ceph osd crush move</command>
+   and/or <command>ceph osd crush set</command> commands. For further details
+   see <xref linkend="op-crush"/>.
+  </para>
+ </sect1>
+
+ <sect1 xml:id="storage-bp-recover-clockskew">
+  <title>Fixing Clock Skew Warnings</title>
+
+  <para>
+   The time information in all cluster nodes must be synchronized. If a node's
+   time is not fully synchronized, you may get clock skew warnings when
+   checking the state of the cluster.
+  </para>
+
+  <para>
+   By default, &deepsea; uses the &adm; as the time server for other
+   cluster nodes. Therefore, if the &adm; is not virtualized, select one or
+   more time servers or pools, and synchronize the local time against them.
+   Verify that the time synchronization service is enabled on each system
+   start-up. Find more information on setting up time synchronization in
+   <link
+    xlink:href="https://www.suse.com/documentation/sles-15/book_sle_admin/data/sec_ntp_yast.html"/>.
+  </para>
+  <para>
+   If the &adm; is a virtual machine, provide better time sources
+   for the cluster nodes by overriding the default NTP client configuration:
+  </para>
+  <orderedlist>
+   <listitem>
+    <para>
+     Edit <filename>/srv/pillar/ceph/stack/global.yml</filename> on the
+     &smaster; node and add the following line:
+    </para>
+<screen>time_server: <replaceable>CUSTOM_NTP_SERVER</replaceable></screen>
+<para>
+ To add multiple time servers, the format is as follows:
+</para>
+<screen>time_server:
+ - <replaceable>CUSTOM_NTP_SERVER1</replaceable>
+ - <replaceable>CUSTOM_NTP_SERVER2</replaceable>
+ - <replaceable>CUSTOM_NTP_SERVER3</replaceable>
+ [...]</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Refresh the &spillar;:
+    </para>
+    <screen>&prompt.smaster;salt '*' saltutil.pillar_refresh</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Verify the changed value:
+    </para>
+    <screen>&prompt.smaster;salt '*' pillar.items</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Apply the new setting:
+    </para>
+    <screen>&prompt.smaster;salt '*' state.apply ceph.time</screen>
+   </listitem>
+  </orderedlist>
+  <para>
+   If the time skew still occurs on a node, follow these steps to fix it:
+  </para>
+
+<screen>&prompt.root;systemctl stop chronyd.service
+&prompt.root;systemctl stop ceph-mon.target
+&prompt.root;systemctl start chronyd.service
+&prompt.root;systemctl start ceph-mon.target</screen>
+
+  <para>
+   You can then check the time offset with <command>chronyc
+   sourcestats</command>.
+  </para>
+
+  <para>
+   The &ceph; monitors need to have their clocks synchronized to within 0.05
+   seconds of each other. Refer to <xref linkend="Cluster-Time-Setting"/> for
+   more information.
+  </para>
+ </sect1>
+ <sect1 xml:id="cluster-health">
+   <title>Determining Cluster Health</title>
+   <para>
+     TBD
+   </para>
+ </sect1>
+ <sect1 xml:id="storage-bp-performance-net-issues">
+  <title>Poor Cluster Performance Caused by Network Problems</title>
+
+  <para>
+   There are more reasons why the cluster performance may become weak. One of
+   them can be network problems. In such case, you may notice the cluster
+   reaching quorum, OSD and monitor nodes going offline, data transfers taking
+   a long time, or a lot of reconnect attempts.
+  </para>
+
+  <para>
+   To check whether cluster performance is degraded by network problems,
+   inspect the &ceph; log files under the <filename>/var/log/ceph</filename>
+   directory.
+  </para>
+
+  <para>
+   To fix network issues on the cluster, focus on the following points:
+  </para>
+
+  <itemizedlist mark="bullet" spacing="normal">
+   <listitem>
+    <para>
+     Basic network diagnostics. Try &deepsea; diagnostics tools runner
+     <literal>net.ping</literal> to ping between cluster nodes to see if
+     individual interface can reach to specific interface and the average
+     response time. Any specific response time much slower then average will
+     also be reported. For example:
+    </para>
+<screen>&prompt.smaster;salt-run net.ping
+  Succeeded: 8 addresses from 7 minions average rtt 0.15 ms</screen>
+    <para>
+     Try validating all interface with JumboFrame enable:
+    </para>
+<screen>&prompt.smaster;salt-run net.jumbo_ping
+  Succeeded: 8 addresses from 7 minions average rtt 0.26 ms</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Network performance benchmark. Try &deepsea;'s network performance runner
+     <literal>net.iperf</literal> to test intern-node network bandwidth. On a
+     given cluster node, a number of <command>iperf</command> processes
+     (according to the number of CPU cores) are started as servers. The
+     remaining cluster nodes will be used as clients to generate network
+     traffic. The accumulated bandwidth of all per-node
+     <command>iperf</command> processes is reported. This should reflect the
+     maximum achievable network throughput on all cluster nodes. For example:
+    </para>
+<screen>&prompt.smaster;salt-run net.iperf cluster=ceph output=full
+192.168.128.1:
+    8644.0 Mbits/sec
+192.168.128.2:
+    10360.0 Mbits/sec
+192.168.128.3:
+    9336.0 Mbits/sec
+192.168.128.4:
+    9588.56 Mbits/sec
+192.168.128.5:
+    10187.0 Mbits/sec
+192.168.128.6:
+    10465.0 Mbits/sec</screen>
+   </listitem>
+   <listitem>
+    <para>
+     Check firewall settings on cluster nodes. Make sure they do not block
+     ports/protocols required by &ceph; operation. See
+     <xref linkend="storage-bp-net-firewall"/> for more information on firewall
+     settings.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Check the networking hardware, such as network cards, cables, or switches,
+     for proper operation.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <tip>
+   <title>Separate Network</title>
+   <para>
+    To ensure fast and safe network communication between cluster nodes, set up
+    a separate network used exclusively by the cluster OSD and monitor nodes.
+   </para>
+  </tip>
+ </sect1>
+ <sect1 xml:id="trouble-jobcache">
+  <title><filename>/var</filename> Running Out of Space</title>
+
+  <para>
+   By default, the &smaster; saves every minion's return for every job in its
+   <emphasis>job cache</emphasis>. The cache can then be used later to look up
+   results from previous jobs. The cache directory defaults to
+   <filename>/var/cache/salt/master/jobs/</filename>.
+  </para>
+
+  <para>
+   Each job return from every minion is saved in a single file. Over time this
+   directory can grow very large, depending on the number of published jobs and
+   the value of the <option>keep_jobs</option> option in the
+   <filename>/etc/salt/master</filename> file. <option>keep_jobs</option> sets
+   the number of hours (24 by default) to keep information about past minion
+   jobs.
+  </para>
+
+<screen>keep_jobs: 24</screen>
+
+  <important>
+   <title>Do Not Set <option>keep_jobs: 0</option></title>
+   <para>
+    Setting <option>keep_jobs</option> to '0' will cause the job cache cleaner
+    to <emphasis>never</emphasis> run, possibly resulting in a full partition.
+   </para>
+  </important>
+
+  <para>
+   If you want to disable the job cache, set <option>job_cache</option> to
+   'False':
+  </para>
+
+<screen>job_cache: False</screen>
+
+  <tip>
+   <title>Restoring Partition Full because of Job Cache</title>
+   <para>
+    When the partition with job cache files gets full because of wrong
+    <option>keep_jobs</option> setting, follow these steps to free disk space
+    and improve the job cache settings:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Stop the &smaster; service:
+     </para>
+<screen>&prompt.smaster;systemctl stop salt-master</screen>
+    </step>
+    <step>
+     <para>
+      Change the &smaster; configuration related to job cache by editing
+      <filename>/etc/salt/master</filename>:
+     </para>
+<screen>job_cache: False
+keep_jobs: 1</screen>
+    </step>
+    <step>
+     <para>
+      Clear the &smaster; job cache:
+     </para>
+<screen>&prompt.root;rm -rfv /var/cache/salt/master/jobs/*</screen>
+    </step>
+    <step>
+     <para>
+      Start the &smaster; service:
+     </para>
+<screen>&prompt.smaster;systemctl start salt-master</screen>
+    </step>
+   </procedure>
+  </tip>
+ </sect1>
+ <sect1 xml:id="large-omap-issues">
+   <title>Large omap Issues</title>
+   <para>
+     Abhi to provide content
+   </para>
+ </sect1>
 </chapter>
