@@ -14,5 +14,412 @@
   </dm:docmanager>
  </info>
  <para>
+   A significant amount of the performance tuning for &ceph; clusters can be
+   done at the operating system (OS) layer. This tuning involves ensuring that
+   unneeded services are not running and extends down to ensuring buffers
+   are not being overrun, and interrupts being spread properly. There are
+   many additional tuning options for the OS that are not included here
+   either due to statistically insignificant performance changes, or not
+   deemed a candidate for significant performance improvement at the time
+   of this work.
  </para>
+ <sect1 xml:id="tuning-sles">
+   <title>&sle; Install and Validation of Base Performance</title>
+   <para>
+     During the OS installation, do <emphasis>not</emphasis> select an install
+     pattern that includes an <literal>X</literal> server. Doing so utilizes RAM and CPU
+     resources that are better allocated to tuning storage related daemons.
+     We recommend a pattern that includes a minimal pattern with the
+     addition of the YaST management pattern.
+     After the OS is installed, it is proper to evaluate the various
+     individual components that are critical to the overall performance
+     of the storage cluster.
+   </para>
+   <note>
+     <para>
+       Check performance of individual components before &productname;
+       is setup to ensure they are performing as desired.
+     </para>
+   </note>
+   <sect2>
+     <title>Network Performance</title>
+     <para>
+       To perform iperf3 tests for network performance, consider
+       increasing the window size (<option>-w</option>) and running multiple streams to
+       fully test the bandwidth capability. If at standard MTU, the NIC
+       should be capable of running at approximately 70-80 percent of
+       the advertised bandwidth. Move up to jumbo-frames, and the NIC
+       should be able to saturate the line.
+     </para>
+     <para>
+       This is not necessarily true for faster topologies like 100Gb. In
+       those topologies, saturating the NIC can take a substantial
+       amount of OS and driver tuning in combination with ensuring the
+       hardware has the appropriate CPU clock speeds and settings.
+     </para>
+     <para>
+       This is a sample of the iperf3 commands used on a 100Gb network.
+       In the command line, the <option>-N</option> disables Nagle’s buffering algorithm
+       and the <option>-l</option> sets the buffer length to higher than the default 128k,
+       resulting in slightly higher throughput.
+     </para>
+<screen>
+  server# iperf3 -s
+
+  client# iperf3   -c server -N -l 256k
+  Connecting to host sr650-1, port 5201
+  [  4] local 172.16.227.22 port 36628 connected to 172.16.227.21 port 5201
+  [ ID] Interval           Transfer     Bandwidth       Retr  Cwnd
+  [  4]   0.00-1.00   sec  4.76 GBytes  40.9 Gbits/sec    0   1.48 MBytes
+  [  4]   1.00-2.00   sec  4.79 GBytes  41.1 Gbits/sec    0   2.52 MBytes
+  [  4]   2.00-3.00   sec  4.73 GBytes  40.6 Gbits/sec    0   2.52 MBytes
+  [  4]   3.00-4.00   sec  4.73 GBytes  40.6 Gbits/sec    0   2.52 MBytes
+  [  4]   4.00-5.00   sec  4.74 GBytes  40.7 Gbits/sec    0   2.52 MBytes
+  [  4]   5.00-6.00   sec  4.73 GBytes  40.6 Gbits/sec    0   2.52 MBytes
+  [  4]   6.00-7.00   sec  4.72 GBytes  40.6 Gbits/sec    0   2.52 MBytes
+  [  4]   7.00-8.00   sec  4.72 GBytes  40.6 Gbits/sec    0   2.52 MBytes
+  [  4]   8.00-9.00   sec  4.73 GBytes  40.7 Gbits/sec    0   2.52 MBytes
+  [  4]   9.00-10.00  sec  4.73 GBytes  40.6 Gbits/sec    0   2.52 MBytes
+  - - - - - - - - - - - - - - - - - - - - - - - - -
+  [ ID] Interval           Transfer     Bandwidth       Retr
+  [  4]   0.00-10.00  sec  47.4 GBytes  40.7 Gbits/sec    0             sender
+  [  4]   0.00-10.00  sec  47.4 GBytes  40.7 Gbits/sec                  receiver
+</screen>
+   </sect2>
+   <sect2>
+     <title>Storage Performance</title>
+     <para>
+       Use fio to test individual storage devices to understand the per
+       device performance maximums. Do this for all devices to ensure there
+       are not any that are out of spec or are connected to expanders that
+       lower bandwidth. Doing an exhaustive study of different I/O sizes
+       and patterns would provide the most information about performance
+       expectations, but is beyond the scope of this document.
+     </para>
+     <para>
+       We recommend to test at least random 4k, random 64k, and sequential
+       64k and 1MB. This gives a reasonable overall view of the device’s
+       performance characteristics. When testing, it is important to use
+       the raw device (<literal>/dev/sdX</literal>) and to use the direction
+       option with multiple jobs to maximize device performance under stress.
+     </para>
+     <para>
+       Make sure that the test size (dataset) is large enough to over-run
+       any caches that may apply. We recommend to use the ramp-time
+       parameter to allow for enough time for the cache overrun to occur
+       before performance measurements are made, helping to ensure
+       that performance numbers are not tainted by cache-only performance.
+     </para>
+     <para>
+       Run fio against all devices in an OSD simultaneously to identify
+       bottlenecks. It should scale very near linearly, if not, check
+       controller firmware, slot placement, and if necessary, split devices
+       across multiple controllers. This is simulating the node under heavy load.
+     </para>
+     <para>
+       We recommend to use the same I/O patterns and block sizes that
+       the individual devices were tested with. The job count should be a
+       multiple of the total number of devices in the system to allow for
+       even distribution across all devices and busses.
+     </para>
+     <sect3>
+       <title>Latency Bound and Maximum</title>
+       <para>
+         There is value in performing both latency bound and worst case
+         scenario tests. Changing a particular value may not improve latency,
+         but rather enable the cluster to handle even more total load,
+         even though latencies continue to rise. The inverse may also be
+         true where a change affects latency of operations in a measurable way.
+         To identify both possibilities, we recommend that tests be
+         performed that represent both positions. Latency bounded tests
+         in fio have the following set:
+       </para>
+<screen>
+  latency_target=10ms
+  latency_window=5s
+  latency_percentile=99
+</screen>
+       <para>
+         The settings above cause fio to increase the I/O queue depth
+         until 1% or more of IOPS during a sliding 5 second window no longer
+         maintain a 10ms average. It then backs down the queue depth
+         until the latency average is maintained.
+       </para>
+     </sect3>
+   </sect2>
+ </sect1>
+ <sect1 xml:id="tuning-kernel-tuning">
+   <title>Kernel Tuning</title>
+   <para>
+     There are several aspects of the kernel that can be tuned on both
+     the cluster and some of the clients. It is important to understand
+     that most tuning is about gaining very small incremental improvements
+     that in aggregate represent a measureable, and hopefully, meaningful
+     improvement in performance.
+     Information on tuning comes from a variety of sources for this work.
+     The primary source is <link xlink:href="https://documentation.suse.com/sles/15-SP1/html/SLES-all/book-sle-tuning.html"/>.
+     Numerous other references were utilized, including documentation
+     from hardware vendors.
+   </para>
+   <sect2>
+     <title>CPU Mitigations</title>
+     <para>
+       One key area of kernel for performance tuning is to disable the
+       side-channel attack mitigations present in the kernel. The
+       bulk of the benefits from this tuning occur with smaller I/Os
+       ranging in size from 4k to 64k. In particular, 64K random read
+       and sequential writes doubled in performance in a limited test
+       environment using only two client nodes.
+     </para>
+     <para>
+       Changing these options requires a clear understanding of the security
+       implications as they involve disabling mitigations for side-chanel
+       attacks on some CPUs. The need to disable these mitigations may
+       be minimized with newer processors. Evaluate carefully whether
+       this is something needed for the particular hardware being utilized.
+       In the test configuration, a salt state was utilized to apply these
+       changes. The salt state should be in a subdirectory of <filename>/srv/salt</filename>
+       on the &smaster; and is applied by using a <command>salt state.apply</command> command
+       similar to below:
+     </para>
+<screen>
+salt '*' state.apply my_kerntune
+</screen>
+     <para>
+       The salt state and steps used in this testing can be found
+       in Appendix A. This needs to be adjusted to work in each
+       customer environment.
+     </para>
+   </sect2>
+   <sect2>
+     <title>I/O tuning - Multiqueue Block I/O</title>
+     <para>
+       The first aspect to tune is to ensure that I/O if flowing in the
+       most optimal pattern. For the test cluster used in this test,
+       that means enable multi-queue block I/O. This is done through
+       adding a boot-time kernel parameter as found in the Section 12.4
+       <link xlink:href="https://documentation.suse.com/sles/15-SP1/html/SLES-all/cha-tuning-io.html#cha-tuning-io-barrier"/>.
+       This is not an action that should be taken unilaterally on clusters
+       that contain spinning media devices due to potential performance
+       degradation for those devices. The general result is that there are
+       multiple I/O queues assigned to the device, allowing more jobs to be
+       handled simultaneously by those high performance device such as NVMe
+       and SSD that can service large numbers of requests.
+     </para>
+   </sect2>
+   <sect2>
+     <title>SSD Tuning</title>
+     <para>
+       To get the best read performance, it may be necessary to adjust
+       the <option>read_ahead</option> and write cache settings for the SSD devices.
+       In our particular testing environment, disabling write cache
+       and forcing <option>read_ahead</option> to 2MB resulted in the best
+       overall performance.
+       Before tuning, it is important to check the default values and
+       measure the differences in performance compared to the baseline.
+     </para>
+     <para>
+       By placing the following file in <filename>/etc/udev/rules.d</filename>
+       the device is detected by the model name shown in
+       <filename>/sys/block/{devname}/device/model</filename> and assigned to
+       disable write caching and setting the <option>read_ahead_kb</option> to 2MB.
+     </para>
+<screen>
+  /etc/udev/rules.d/99-ssd.rules
+
+  # Setting specific kernel parameters for a subset of block devices (Intel SSDs)
+  SUBSYSTEM=="block", ATTRS{model}=="INTEL SSDS*", ACTION=="add|change", ATTR{queue/read_ahead_kb}="2048"
+  SUBSYSTEM=="block", ATTRS{model}=="INTEL SSDS*", ACTION=="add|change", RUN+="/sbin/hdparm -W 0 /dev/%k"
+</screen>
+   </sect2>
+   <sect2>
+     <title>Network Stack and Device Tuning</title>
+     <para>
+       Proper tuning of the network stack can substantially add to improving the
+       latency and throughput of the cluster. A full script for the testing
+       we performed can be found in Appendix C.
+     </para>
+     <para>
+       The first and most impactful tuning is to utilize jumbo
+       frame packets. For this to be done, all interfaces utilizing
+       the cluster must be set to the same setting with an MTU of 9000.
+       Network switches often have the ports set to 9100 or higher.
+       This is suitable as they are only passing packets, not creating them.
+     </para>
+     <para>
+       The following salt command ensures the bonded interfaces
+       on all nodes under control (including the test load generation nodes)
+       were utilizing a 9k MTU:
+     </para>
+<screen>
+salt '*' cmd.run 'ip link set bond0 mtu 9000'
+</screen>
+     <para>
+       To set this persistently, utilize YaST to set the MTU for the bonded interface.
+     </para>
+     <para>
+       Adjusting the PCIe max read request size can provide a slight
+       boost to performance. Be aware that this tuning is card and slot
+       specific and needs to only be done in conjunction with the
+       conditions and instructions supplied by the manufacturer. The
+       maximum PCIe read request size was set with the following salt commands:
+     </para>
+     <warning>
+       <para>
+         This should only be done with guidance from the NIC manufacturer
+         and is specific to bus location, driver version and hardware.
+       </para>
+     </warning>
+<screen>
+  salt '*' cmd.run 'setpci -s 5b:00.0 68.w=5936'
+  salt '*' cmd.run 'setpci -s 5b:00.1 68.w=5936'
+</screen>
+     <para>
+       The next item on the tuning list is helpful in ensuring that a
+       single CPU core is not responsible for all packet processing.
+       A small script is used to spread the I/O across multiple local
+       (from a NUMA perspective) cores.
+     </para>
+     <note>
+       <para>
+         This is not necessary if the number of queues returned by
+         <command>ls /sys/class/net/{ifname}/queues/rx-*|wc -l</command>
+         is equal to the number of physical cores in a single CPU socket.
+       </para>
+     </note>
+<screen>
+salt '*' cmd.run 'for j in `cat /sys/class/net/bond0/bonding/slaves`;do \
+LOCAL_CPUS=`cat /sys/class/net/$j/device/local_cpus`;echo $LOCAL_CPUS > \
+/sys/class/net/$j/queues/rx-0/rps_cpus;done'
+</screen>
+     <para>
+       Many NIC drivers start with a defult value for the RX and
+       TX buffers that is not optimal for high throughput scenarios and
+       does not allow enough time for the kernel to drain the buffer before
+       it fills up.
+       The current and maximum settings can be revealed by issuing
+       the following command to the proper nics:
+     </para>
+<screen>
+ethtool -g eth4
+</screen>
+     <para>
+       The output from this command should look similar to this:
+     </para>
+<screen>
+  Ring parameters for eth4:
+  Pre-set maximums:
+  RX:		8192
+  RX Mini:	0
+  RX Jumbo:	0
+  TX:		8192
+  Current hardware settings:
+  RX:		1024
+  RX Mini:	0
+  RX Jumbo:	0
+  TX:		1024
+</screen>
+     <para>
+       Here we can see that the NIC can allocate up to 8k, but is
+       only currently using 1k buffers. To adjust this for the
+       cluster, issue the following command:
+     </para>
+<screen>
+  salt '*' cmd.run 'ethtool -G eth4 rx 8192 tx 8192'
+  salt '*' cmd.run 'ethtool -G eth5 rx 8192 tx 8192'
+</screen>
+     <para>
+       Setting this value persistently can be achieved via the YaST
+       configuration module:
+     </para>
+     <figure xml:id="yast-config-module">
+      <title>YaST Configuration Module</title>
+      <mediaobject>
+       <imageobject role="html">
+        <imagedata fileref="yast_ring_buffers.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+       Additionally, the settings can be made persistent by editing the
+       configuration files for the physical interfaces found in
+       <filename>/etc/sysconfig/network</filename>. A script can be
+       found in Appendix B that will change all interfaces to the
+       maximum ring buffer value.
+     </para>
+     <para>
+       The following settings can all be made persistent by modifying
+       <filename>/etc/sysctl.conf</filename>. They are represented as
+       arguments in a salt command to allow testing and validation
+       in your environment before making them permanent.
+     </para>
+     <para>
+       Setting the TCP low latency option disables IPV4 TCP pre-queue
+       processing and improves latency. We recommend experimenting
+       with this setting at both zero and one. In the lab testing that
+       was performed, setting the value to one provided slightly better performance:
+     </para>
+<screen>
+  salt '*' cmd.run 'sysctl -w net.ipv4.tcp_low_latency=1'
+</screen>
+     <para>
+       The TCP <option>fastopen</option> option allows the sending of data in the
+       first syn packet, resulting in a slight improvement in latency:
+     </para>
+<screen>
+salt '*' cmd.run 'sysctl -w net.ipv4.tcp_fastopen=1'
+</screen>
+     <para>
+       Ensure that the TCP stack has sufficent buffer space
+       to queue both inbound and outbound traffic:
+     </para>
+<screen>
+salt '*' cmd.run 'sysctl -w net.ipv4.tcp_rmem="10240 87380 2147483647"'
+salt '*' cmd.run 'sysctl -w net.ipv4.tcp_wmem="10240 87380 2147483647"'
+</screen>
+     <para>
+       In fast networks, TCP sequence numbers can be re-used in a very
+       short timeframe. The result is that the system thinks a packet
+       has been received out of order, resulting in a drop. TCP timestamps
+       were added to help ensure that packet sequence could be better tracked:
+     </para>
+<screen>
+salt '*' cmd.run 'sysctl -w net.ipv4.tcp_timestamps=1'
+</screen>
+     <para>
+       <literal>TCP Selective Acknowledgement</literal> is a feature that is primarily useful
+       for WAN or lower speed networks. However, disabling may have negative
+       effects in other ways:
+     </para>
+<screen>
+salt '*' cmd.run 'sysctl -w net.ipv4.tcp_sack=1'
+</screen>
+     <para>
+       Providing plenty of buffer space is a recurring theme in tuning
+       networks for high performance. The <literal>netdev_max_backlog</literal> is where
+       traffic is queued after it has been received by the NIC, but
+       before it is processed by the protocol stack (IP, TCP, etc):
+     </para>
+<screen>
+salt '*' cmd.run 'sysctl -w net.core.netdev_max_backlog=250000'
+</screen>
+     <para>
+       Other preventative measures for the system and application nodes
+       include ensuring that the maximum connection count is high enough
+       to prevent the generation of syn cookies. This is useful to set
+       on all nodes involved:
+     </para>
+<screen>
+salt '*' cmd.run 'sysctl -w net.core.somaxconn=2048'
+</screen>
+     <para>
+       Increasing the network stack buffers is useful to ensure that
+       sufficient buffers exist for all transactions:
+     </para>
+<screen>
+salt '*' cmd.run 'sysctl -w net.core.rmem_max=2147483647'
+salt '*' cmd.run 'sysctl -w net.core.wmem_max=2147483647'
+</screen>
+   </sect2>
+ </sect1>
 </chapter>
