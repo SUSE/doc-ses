@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="tuning-architecture">
+ <title>Architecture and Hardware Tuning</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+   Architectural tuning includes aspects that range from the low-level design
+   of the systems being deployed, up to macro-level decisions about network
+   topology and cooling. Not all of these can be covered in this work, but
+   guidance will be given where possible.
+ </para>
+ <para>
+   From the top-down view, it is important to think about the physical
+   location of nodes, the connectivity available between them, and
+   implications of such items as power routing and fire compartments.
+   However, from a performance perspective, it is most important to
+   think in terms of the connectivity and what a write actually looks like
+   from the cluster perspective.
+ </para>
+ <para>
+   The intention of architectural tuning is to take control of where the
+   performance bottlenecks lie. In most cases, it is preferable for the
+   bottleneck to lie with the storage device, as that creates a predictable
+   pattern of performance degradation and associated limitations. Placing
+   the bottleneck in other areas, such as CPU or network, may create
+   inconsistent behavior when resources are stressed. This is due to the
+   possibility of other processes running, whether recovery, rebalancing,
+   garbage collection, and causing inconsistent behavior due to being
+   network or CPU bound. When storage is the bottleneck, the degradation
+   results in longer response times to queued requests, making this the most
+   desireable point at which to place the bottleneck.
+ </para>
+ <sect1 xml:id="tuning-network">
+   <title>Network</title>
+   <para>
+     The network is the backbone of the cluster, and a failure to implement
+     it in a robust manner can cripple the performance of the cluster, no
+     matter what other steps are taken. From a best practices perspective,
+     this entails implementing a fault-tolerant switching infrastructure that
+     can scale the aggregate core bandwidth as the cluster grows. For very
+     large clusters, this may entail a leaf and spine architecture, while for
+     smaller clusters, it may look like a more familiar hub-and-spoke or
+     mesh network.
+   </para>
+   <para>
+     No matter which network architecture is chosen, it is important to
+     carefully examine each hop along the path and consider the maximum
+     network traffic that could occur during adverse conditions.
+   </para>
+   <para>
+     An example of a bad decision here would be to have a multi-rack cluster
+     where each rack contains 16 storage nodes of 24&times; 7200rpm drives where each
+     node is connected to a pair of stacked Top-of-Rack (TOR) switches via
+     2x25Gb connections. This connectivity is sufficient for 3&nbsp;GB/s per
+     connection or 6&nbsp;GB/s total for the node, which is near the maximum that a
+     7200rpm drive will sustain. The bad decision comes in <emphasis>only</emphasis> using 4&times; of
+     the 25&nbsp;GB interfaces for the uplink. While 100&nbsp;Gb may seem like a
+     substantial amount of bandwidth, it translates into only about 10&nbsp;GB/s,
+     while the rack is capable of an aggregate of around 48&nbsp;GB/s.
+   </para>
+   <para>
+     During an adverse situation, it is possible that network congestion
+     will result in dramatically increased latency, packet delays, drops,
+     etc. A simple rememdy would have been to select switches with 4&times; 100&nbsp;Gb
+     uplink ports, resulting in each switch being able to transmit the
+     complete, aggregate bandwidth load to the network core.
+   </para>
+   <para>
+     In reality, some level of over-subscription is going to happen in most
+     networks, but the smaller the ratio, the better the resulting cluster
+     will be able to handle adverse conditions.
+   </para>
+   <sect2>
+     <title>Network Tuning</title>
+     <para>
+       Here are some general principals to follow when planning
+       a &ceph; cluster network:
+     </para>
+     <itemizedlist>
+       <listitem>
+         <para>
+           Utilize 25/50/100&nbsp;GbE connections - The signaling rate is 2.5
+           times faster than 10/40&nbsp;GbE resulting in lower latency over
+           the wire. The impact from the faster signaling rate would be
+           minimal with spinning media and more impactful with faster
+           technologies such as NVMe.
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           Network bandwidth should be at least the total bandwidth of all
+           storage devices present in the storage node
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           Usage of VLANs on LACP-bonded Ethernet provides the best
+           balance of bandwidth aggregation + fault tolerance
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           The network should utilize jumbo-frame Ethernet if all nodes
+           connecting to the storage are able to do so, otherwise use the
+           standard MTU.
+         </para>
+       </listitem>
+     </itemizedlist>
+   </sect2>
+ </sect1>
+ <sect1 xml:id="tuning-node-hw-recommendations">
+   <title>Node Hardware Recommendations</title>
+   <sect2>
+     <title>CPU</title>
+     <para>
+       There are a lot of options when it comes to processor selection in
+       the market today. There are multiple varieties available from the
+       major vendors in the &x86; space and a wide array of options in the
+       64-bit &arm; space as well. Without regard to the core architecture,
+       there is one rule that is always true, and that is that higher
+       clockspeed allows more work to be done in the same amount of time.
+       This consideration is most important when working with higher speed
+       storage and network devices.
+     </para>
+     <para>
+       CPU selection is also an important consideration for specific services.
+       Some services, such as metadata servers, NFS, Samba, and ISCSI
+       gateways benefit from a smaller number of much faster cores, while
+       the OSD nodes need a more core dense solution.
+     </para>
+     <para>
+       A second consideration is whether to use a single socket or multiple
+       sockets. The answer to this will depend on the device density,
+       type of network hardware being utilized, etc. In many nodes, a single
+       socket will provide better performance as the processor interlink is
+       a bottleneck, though this would most likely be noticed in an all
+       NVMe based node type. The general recommendation is to use a single
+       socket whenever possible.
+     </para>
+     <para>
+       When considering which processor to choose, there are several
+       considerations aside from clock-speed that should be taken into
+       consideration. They include:
+     </para>
+     <itemizedlist>
+       <listitem>
+         <para>
+           <emphasis>Memory bandwidth</emphasis>: &ceph; is a heavy user of RAM, thus the more
+           memory bandwidth available, the more performant the node can be.
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           <emphasis>Memory layout</emphasis>: Even if the memory selected is fast, if all
+           memory channels are not leveraged, performance is being left
+           untapped. It is advantageous to ensure that RAM is distributed
+           evenly across all channels.
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           <emphasis>Offload capabilities</emphasis>: For example, Intel CPUs offer <literal>zlib</literal> and
+           Reed-Solomon offloads, the latter being used with erasure
+           coding when the ISA plugin is specified.
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           <emphasis>PCIe bus speed and lanes</emphasis>: This is particularly important when
+           looking at devices with a large number of PCIe devices, like
+           NVMe. The bus speed also affects the performance of network
+           devices as well.
+         </para>
+       </listitem>
+     </itemizedlist>
+   </sect2>
+   <sect2>
+     <title>Storage Device</title>
+     <para>
+       Storage device selection can dramatically affect the performance and
+       reliability of a &ceph; cluster. When building for performance, it
+       is important to understand the nature of the device in regard to
+       reads/writes and the workloads that will be applied. This is
+       particularly true with flash media.
+     </para>
+     <sect3>
+       <title>Device Type</title>
+       <para>
+         The first recommendation is to ensure that systems utilize
+         Enterprise-class storage media. With NVMe and SSD devices,
+         this implies a few key items.
+       </para>
+       <itemizedlist>
+         <listitem>
+           <para>
+             More spare cells to deal with media wear-out
+           </para>
+         </listitem>
+         <listitem>
+           <para>
+             Battery/capacitor to allow completion of buffer dumps
+             during unexpected power events
+           </para>
+         </listitem>
+       </itemizedlist>
+       <para>
+         It is also important to ensure the media being utilized will
+         support the workloads of the cluster. For example, if the
+         applications using the cluster have a read/write mix of 90:10,
+         it is likely acceptable to utilize a read-intensive NVMe device.
+         However, if the ratio is flipped or even 50:50, it is a better
+         choice to at least consider mixed-use, or write
+         intensive media. This selection goes beyond just the media
+         durability, but also includes considerations around the design.
+         Write-intensive media typically allocate more PCIe lanes to
+         handling write requests to the media, ensuring faster commits
+         than a read-intensive device would provide under load. Also,
+         write intensive devices will most often use faster classes of
+         non-volitaile memory technology and/or have large, supercap backed caches.
+       </para>
+     </sect3>
+   </sect2>
+   <sect2>
+     <title>Device Buses</title>
+     <para>
+       It is also important to understand the impact of the storage bus and
+       hardware pieces along the way. Clearly, 6&nbsp;Gb/s is slower than 12&nbsp;Gb/s,
+       and 12&nbsp;Gb/s is slower than PCIe Gen3 (8&nbsp;Gb/s per lane), but what about
+       mixing SATA 3&nbsp;Gb/s and SATA 6&nbsp;Gb/s, or mixing 6&nbsp;Gb/s and 12&nbsp;Gb/s SAS?
+     </para>
+     <para>
+       The general rule is not to mix. When a 6&nbsp;Gb/s device is introduced to
+       a 12&nbsp;Gb/s bus, the entire bus slows down to 6&nbsp;Gb/s, greatly reducing
+       the overall throughput capability. Where this really would hurt is
+       in a dense SAS SSD system. If there are 24 SAS SSDs on a two-channel,
+       12&nbsp;Gb/s bus and one of the devices is only 6&nbsp;Gb/s, then the 12&nbsp;Gb/s
+       SAS drives that can push 850&nbsp;MB/s now oversubscribe the bus due to
+       the reduced data rate.
+     </para>
+     <para>
+       Another consideration is the presence of bus expanders. Bus expanders
+       allow a system to multiplex multiple devices on a single channel.
+       The result is higher density at lower performance maximum. In some
+       cases, the expanders may work acceptably, such as with HDDs, but
+       with SSDs, they are likely to quickly become a bottleneck.
+     </para>
+   </sect2>
+   <sect2>
+     <title>General Recommendations</title>
+     <para>
+       Below are some generic tuning options applicable to performance
+       tuning for server platforms:
+     </para>
+     <itemizedlist>
+       <listitem>
+         <para>
+           Set firmware Power/Performance controls to the performance profile.
+           This should eliminate frequency scaling and ensure that there
+           is no added latency caused by it.
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           Enable multi-threading on SMT-capable CPUs. This extra processing
+           power is utilized effectively by &ceph;.
+         </para>
+       </listitem>
+       <listitem>
+         <para>
+           Ensure all add-in cards are in the optimal slots for performance.
+         </para>
+       </listitem>
+     </itemizedlist>
+   </sect2>
+ </sect1>
+ <sect1 xml:id="tuning-cpeh-rocksdb-wal">
+   <title>&ceph;</title>
+   <sect2>
+     <title>RocksDB and WAL</title>
+     <para>
+       &ceph; makes use of both a Write-Ahead-Log (WAL) and <literal>RocksDB</literal>. The WAL
+       is the internal journal where small writes are queued before commiting
+       to the backend storage. RocksDB is where &ceph; stores metadata
+       associated with the objects written to &bluestore;. When using spinning
+       media, or perhaps even SSDs, it generally makes sense to locate the
+       RocksDB and WAL on a faster device, such as NVMe. When doing so,
+       proper sizing of these is critical to ensuring a stable performance
+       profile of the cluster over time.
+     </para>
+     <para>
+       From a performance perspective, the rule of thumb is to divide the
+       write performance of the WAL/RocksDB device by the write performance
+       of the data device. This yields what should be considered to be the
+       maximum ratio of data devices per WAL/RocksDB device.
+     </para>
+     <sect3>
+       <title>WAL</title>
+       <para>
+         The WAL maxes out a bit under two gigabytes. In order to leave
+         room for maintenance activities, having about four gigabytes of
+         space allocated/allowed is optimal.
+       </para>
+     </sect3>
+     <sect3>
+       <title>RocksDB</title>
+       <para>
+         RocksDB operates with a series of tiered levels, each being an order
+         of magnitude larger than the last. Levels one through four are
+         256&nbsp;MB, 2.56&nbsp;GB, 25.6&nbsp;GB, 256&nbsp;GB respectively. Allocating appropriate
+         space for these is an act of aggregation. Given that few installations
+         utilize enough metadata to require the fourth tier, allocating for
+         the first three and associated maintenance is sufficient.
+         25.6+2.56+.256&nbsp;GB = 28.416&nbsp;GB. Rounding up to 30&nbsp;GB and providing
+         100% overhead to allow for maintenance takes the space allocation
+         suggested for the first three tiers to 60&nbsp;GB.
+       </para>
+       <para>
+         Making the decision to provision fast space for the fourth tier of
+         RocksDB is something completely related to the expected metadata
+         load. Protocols like RBD use little metadata, while CephFS is
+         somewhere in a mild to moderate amount. S3 and native RADOS can
+         utilize the highest amounts of metadata and are generally the
+         cases where it starts making sense to evaluate whether the
+         fourth tier makes sense to move to faster media.
+       </para>
+     </sect3>
+   </sect2>
+ </sect1>
+</chapter>
