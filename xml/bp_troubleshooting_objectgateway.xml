@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="bp-troubleshooting-objectgateway">
+ <title>Troubleshooting &ogw;</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <sect1 xml:id="bp-troubleshooting-gateway">
+   <title>The Gateway Will Not Start</title>
+   <para>
+     If you cannot start the gateway, check to see if there is an existing
+     <filename>.asok</filename> file from another user. If an <filename>.asok</filename>
+     file from another user exists and there is no running pid, remove the
+     <filename>.asok</filename> file and try to start the process again.
+     This may occur when you start the process as a root user and the
+     startup script is trying to start the process as a <literal>www-data</literal> or
+     <literal>apache</literal> user and an existing <filename>.asok</filename> is
+     preventing the script from starting the daemon.
+   </para>
+   <para>
+     The &rgw; init script (<filename>/etc/init.d/radosgw</filename>) also has a verbose argument
+     that can provide some insight as to what could be the issue:
+   </para>
+<screen>
+/etc/init.d/radosgw start -v
+</screen>
+   <para>
+     Or:
+   </para>
+<screen>
+/etc/init.d radosgw start --verbose
+</screen>
+ </sect1>
+ <sect1 xml:id="bp-troubleshooting-http-request">
+   <title>HTTP Request Errors</title>
+   <para>
+     Examining the access and error logs for the web server itself is
+     probably the first step in identifying what is going on. If there is
+     a 500 error, that usually indicates a problem communicating with
+     the radosgw daemon. Ensure the daemon is running, its socket path
+     is configured, and that the web server is looking for it in the
+     proper location.
+   </para>
+   <para>
+     Check a cluster's status:
+   </para>
+<screen>
+&prompt.cephuser;ceph status
+</screen>
+    <para>
+      &ceph; will print the cluster status. For more information on monitoring
+      the cluster, see <xref linkend="monitor-monstatus"/>.
+    </para>
+ </sect1>
+ <sect1 xml:id="bp-troubleshooting-crashed-ragosgw">
+   <title>Crashed &rgw; Process</title>
+   <para>
+     If the radosgw process dies, you will normally see a 500 error from
+     the web server. In that situation, restarting radosgw will restore service:
+   </para>
+<screen>
+&prompt.cephuser;sudo systemctl restart ceph-radosgw.service
+</screen>
+   <para>
+     To diagnose the cause of the crash, check the log in <filename>/var/log/ceph</filename>
+     or the core file (if one was generated).
+   </para>
+ </sect1>
+ <sect1 xml:id="bp-troubleshooting-blocked-ragosgw">
+   <title>Blocked &rgw; Process</title>
+   <para>
+     If some (or all) radosgw requests appear to be blocked, you can get
+     some insight into the internal state of the radosgw daemon via its
+     admin socket. By default, there will be a socket configured to reside
+     in <filename>/var/run/ceph</filename>, and the daemon can be queried with:
+   </para>
+<screen>
+&prompt.cephuser;ceph daemon /var/run/ceph/client.rgw help
+
+help                list available commands
+objecter_requests   show in-progress osd requests
+perfcounters_dump   dump perfcounters value
+perfcounters_schema dump perfcounters schema
+version             get protocol version
+</screen>
+   <para>
+     To view information about current in-progess requests with the
+     &rados; cluster, run the following:
+   </para>
+<screen>
+&prompt.cephuser;ceph daemon /var/run/ceph/client.rgw objecter_requests
+  ...
+</screen>
+   <para>
+     This allows one to identify if any requests are blocked by a non-responsive
+     OSD. For example:
+   </para>
+<screen>
+  { "ops": [
+        { "tid": 1858,
+          "pg": "2.d2041a48",
+          "osd": 1,
+          "last_sent": "2012-03-08 14:56:37.949872",
+          "attempts": 1,
+          "object_id": "fatty_25647_object1857",
+          "object_locator": "@2",
+          "snapid": "head",
+          "snap_context": "0=[]",
+          "mtime": "2012-03-08 14:56:37.949813",
+          "osd_ops": [
+                "write 0~4096"]},
+        { "tid": 1873,
+          "pg": "2.695e9f8e",
+          "osd": 1,
+          "last_sent": "2012-03-08 14:56:37.970615",
+          "attempts": 1,
+          "object_id": "fatty_25647_object1872",
+          "object_locator": "@2",
+          "snapid": "head",
+          "snap_context": "0=[]",
+          "mtime": "2012-03-08 14:56:37.970555",
+          "osd_ops": [
+                "write 0~4096"]}],
+  "linger_ops": [],
+  "pool_ops": [],
+  "pool_stat_ops": [],
+  "statfs_ops": []}
+</screen>
+   <para>
+     In this example, two requests are in progress. The <literal>last_sent</literal>
+     field is the time the &rados; request was sent. If this is a while ago,
+     it suggests that the OSD is not responding. For example, for request
+     1858, you could check the OSD status by executing the following:
+   </para>
+<screen>
+&prompt.cephuser;ceph pg map 2.d2041a48
+osdmap e9 pg 2.d2041a48 (2.0) -> up [1,0] acting [1,0]
+</screen>
+   <para>
+     The output tells ut to review <literal>osd.1</literal>, the primary
+     copy for this placement group:
+   </para>
+<screen>
+&prompt.cephuser;ceph daemon osd.1 ops
+  { "num_ops": 651,
+   "ops": [
+         { "description": "osd_op(client.4124.0:1858 fatty_25647_object1857 [write 0~4096] 2.d2041a48)",
+           "received_at": "1331247573.344650",
+           "age": "25.606449",
+           "flag_point": "waiting for sub ops",
+           "client_info": { "client": "client.4124",
+               "tid": 1858}},
+  ...
+</screen>
+   <para>
+     The <literal>flag_point</literal> field indicates that the OSD is
+     currently waiting for replicas to respond, in this case <literal>osd.0</literal>.
+   </para>
+ </sect1>
+ <sect1 xml:id="bp-troubleshooting-java-s3-api">
+   <title>Java S3 API Troubleshooting</title>
+   <sect2 xml:id="peer-not-auth">
+     <title>Peer Not Authenticated</title>
+     <para>
+       You may receive an error that looks like this:
+     </para>
+<screen>
+[java] INFO: Unable to execute HTTP request: peer not authenticated
+</screen>
+     <para>
+       The Java SDK for S3 requires a valid certificate from a recognized
+       certificate authority, because it uses HTTPS by default. If you are
+       just testing the &ceph; &objstore; services, you can resolve this
+       problem in a few ways:
+     </para>
+     <itemizedlist>
+       <listitem>
+         <para>
+           Prepend the IP address or hostname with <literal>http://</literal>.
+           For example, change the following:
+         </para>
+<screen>
+conn.setEndpoint("myserver");
+</screen>
+         <para>
+           To:
+         </para>
+<screen>
+conn.setEndpoint("http://myserver")
+</screen>
+       </listitem>
+       <listitem>
+         <para>
+           After setting your credentials, add a client configuration and
+           set the protocol to <literal>Protocol.HTTP</literal>:
+         </para>
+<screen>
+  AWSCredentials credentials = new BasicAWSCredentials(accessKey, secretKey);
+
+  ClientConfiguration clientConfig = new ClientConfiguration();
+  clientConfig.setProtocol(Protocol.HTTP);
+
+  AmazonS3 conn = new AmazonS3Client(credentials, clientConfig);
+</screen>
+       </listitem>
+     </itemizedlist>
+   </sect2>
+   <sect2 xml:id="method-not-allowed">
+     <title>Error 405: Method Not Allowed</title>
+     <para>
+       If you receive an 405 error, check to see if you have the S3 subdomain
+       set up correctly. You will need to have a wild card setting in
+       your DNS record for subdomain functionality to work properly.
+     </para>
+     <para>
+       Also, check to ensure that the default site is disabled.
+     </para>
+<screen>
+[java] Exception in thread "main" Status Code: 405, AWS Service: Amazon S3, \
+AWS Request ID: null, AWS Error Code: MethodNotAllowed, AWS Error Message: null, S3 Extended Request ID: null
+</screen>
+   </sect2>
+ </sect1>
+ <sect1 xml:id="bp-troubleshooting-numerous-objects">
+   <title>Numerous Objects in Default RGW Meta Pool</title>
+   <para>
+     Clusters created prior to <emphasis>Jewel</emphasis> have a metadata archival feature
+     enabled by default, using the <literal>default.rgw.meta</literal> pool. This archive
+     keeps all old versions of user and bucket metadata, resulting in
+     large numbers of objects in the <literal>default.rgw.meta</literal> pool.
+   </para>
+   <sect2 xml:id="disabling-metadata-heap">
+     <title>Disabling the Metdata Heap</title>
+     <para>
+       Users who want to disable this feature going forward should set the
+       <literal>metadata_heap</literal> field to an empty string <literal>""</literal>:
+     </para>
+<screen>
+&prompt.cephuser.ogw;radosgw-admin zone get --rgw-zone=default > zone.json
+  [edit zone.json, setting "metadata_heap": ""]
+&prompt.cephuser.ogw;radosgw-admin zone set --rgw-zone=default --infile=zone.json
+&prompt.cephuser.ogw;radosgw-admin period update --commit
+</screen>
+     <para>
+       This stops new metadata from being written to the
+       <literal>default.rgw.meta</literal> pool, but does not remove any existing objects or pool.
+     </para>
+   </sect2>
+   <sect2 xml:id="cleaning-metadata-pool-heap">
+     <title>Cleaning the Metadata Heap Pool</title>
+     <para>
+       Clusters created prior to <emphasis>Jewel</emphasis> normally use
+       the <literal>default.rgw.meta</literal> only for the metadata archival feature.
+     </para>
+     <para>
+       However, from <emphasis>Luminous</emphasis> onwards, radosgw uses pool
+       namespaces within <literal>default.rgw.meta</literal> for an entirely
+       different purpose. For example, to store <literal>user_keys</literal> and
+       other critical metadata.
+     </para>
+     <para>
+       Users should check zone configuration before proceeding any cleanup procedures:
+     </para>
+<screen>
+&prompt.cephuser.ogw;radosgw-admin zone get --rgw-zone=default | grep default.rgw.meta
+[should not match any strings]
+</screen>
+     <para>
+       Having confirmed that the pool is not used for any purpose, users may
+       safely delete all objects in the <literal>default.rgw.meta</literal> pool,
+       or optionally, delete the entire pool itself.
+     </para>
+   </sect2>
+ </sect1>
+</chapter>
