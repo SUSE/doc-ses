@@ -7,6 +7,9 @@ assignees: ''
 
 ---
 
+**Link To Section**
+Please provide a link to the section or chapter you are reporting this bug for.
+
 **Summary**
 A clear and concise description of what the bug is.
 

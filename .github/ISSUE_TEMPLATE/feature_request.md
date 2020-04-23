@@ -7,6 +7,9 @@ assignees: ''
 
 ---
 
+**Link To Section**
+Please provide a link to the section or chapter you are requesting this feature for.
+
 **Summary**
 A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
 
