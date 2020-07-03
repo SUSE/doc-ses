@@ -14,13 +14,17 @@
   </dm:docmanager>
  </info>
  <para>
+  &productname; &productnumber; uses the &salt;-based &cephsalt; tool to prepare
+  the operating system on each participating cluster node for the deployment via
+  &cephadm;.
+  
   &cephadm; deploys and manages a &ceph; cluster by connecting to hosts from
   the &mgr; daemon via SSH. &cephadm; manages the full lifecycle of a &ceph;
   cluster. It starts by bootstrapping a tiny cluster on a single node (one MON
   and MGR service) and then uses the orchestration interface to expand the
   cluster to include all hosts and to provision all &ceph; services. You can
-  perform this via the &ceph; command line interface (CLI) or &dashboard;
-  (GUI).
+  perform this via the &ceph; command line interface (CLI) or (partially) via
+  &dashboard; (GUI).
  </para>
  <para>
   To deploy a &ceph; cluster by using &cephadm;, you need to complete the
@@ -35,18 +39,19 @@
   </listitem>
   <listitem>
    <para>
-    Deploy the &salt; infrastructure over all cluster nodes so that you can
-    orchestrate them effectively.
+    Deploy the &salt; infrastructure on all cluster nodes for performing the
+    initial deployment preparations via &cephsalt;.
    </para>
   </listitem>
   <listitem>
    <para>
-    Configure the basic properties of the cluster and deploy it.
+    Configure the basic properties of the cluster via &cephsalt; and deploy it.
    </para>
   </listitem>
   <listitem>
    <para>
-    Add new nodes to the cluster and deploy services to them.
+    Add new nodes and roles to the cluster and deploy services to them using
+    &cephadm;.
    </para>
   </listitem>
  </orderedlist>
@@ -109,25 +114,24 @@
   <title>Deploy &salt;</title>
 
   <para>
-   &productname; uses &salt; as a cluster orchestrator. &salt; helps you
-   configure and run commands on multiple cluster nodes simultaneously from one
-   dedicated host called the <emphasis>&smaster;</emphasis>. Before deploying
-   &salt;, consider the following important points:
+   &productname; uses &salt; and &cephsalt; for the initial cluster preparation.
+   &salt; helps you configure and run commands on multiple cluster nodes
+   simultaneously from one dedicated host called the
+   <emphasis>&smaster;</emphasis>. Before deploying &salt;, consider the
+   following important points:
   </para>
 
   <itemizedlist>
    <listitem>
     <para>
      <emphasis>&sminion;s</emphasis> are the nodes controlled by a dedicated
-     node called &smaster;. &sminion;s have roles, for example &osd;, &mon;,
-     &mgr;, &ogw;, &igw;, or &ganesha;.
+     node called &smaster;.
     </para>
    </listitem>
    <listitem>
     <para>
-     A &smaster; runs its own &sminion;. It is required for running privileged
-     tasks&mdash;for example creating, authorizing, and copying keys to
-     minions&mdash;so that remote minions never need to run privileged tasks.
+     If the &smaster; host should be part of the &ceph; cluster, it needs to run
+     its own &sminion;, but this is not a requirement.
     </para>
     <tip>
      <title>Sharing Multiple Roles per Server</title>
@@ -153,10 +157,9 @@
   <procedure>
    <step>
     <para>
-     Install the <literal>salt-master</literal> and
-     <literal>salt-minion</literal> packages on the &smaster; node:
+     Install the <literal>salt-master</literal> on the &smaster; node:
     </para>
-<screen>&prompt.smaster;zypper in salt-master salt-minion</screen>
+<screen>&prompt.smaster;zypper in salt-master</screen>
     <para>
      Check that the <systemitem>salt-master</systemitem> service is enabled and
      started, and enable and start it if needed:
@@ -185,8 +188,8 @@
    </step>
    <step>
     <para>
-     Configure all minions (including the master minion) to connect to the
-     master. If your &smaster; is not reachable by the host name
+     Configure all minions to connect to the master. If your &smaster; is not
+     reachable by the host name
      <literal>salt</literal>, edit the file
      <filename>/etc/salt/minion</filename> or create a new file
      <filename>/etc/salt/minion.d/master.conf</filename> with the following
@@ -249,7 +252,7 @@ minion1:
     <para>
      Test whether all &sminion;s respond:
     </para>
-<screen>&prompt.smaster;salt '*' test.ping</screen>
+<screen>&prompt.smaster;salt-run manage.status</screen>
    </step>
   </procedure>
  </sect1>
@@ -312,24 +315,30 @@ o- / ............................................................... [...]
   |   o- admin .............................................. [no minions]
   |   o- bootstrap ........................................... [no minion]
   |   o- cephadm ............................................ [no minions]
-  o- cephadm_bootstrap ......................................... [enabled]
+  o- cephadm_bootstrap ............................................. [...]
   | o- advanced .................................................... [...]
   | o- ceph_conf ................................................... [...]
   | o- dashboard ................................................... [...]
-  |   o- password ................................... [randomly generated]
-  |   o- username ................................................ [admin]
-  | o- mon_ip ............................................. [10.100.25.51]
+  | | o- force_password_update ................................. [enabled]
+  | | o- password ................................................ [admin]
+  | | o- ssl_certificate ....................................... [not set]
+  | | o- ssl_certificate_key ................................... [not set]
+  | | o- username ................................................ [admin]
+  | o- mon_ip .................................................. [not set]
   o- containers .................................................... [...]
+  | o- auth ........................................................ [...]
+  | | o- registries .............................................. [empty]
   | o- images ...................................................... [...]
-  |   o- ceph ............................................ [no image path]
-  | o- registries ................................................ [empty]
+  | | o- ceph ............................................ [no image path]
+  | o- registries_conf ......................................... [enabled]
+  |   o- registries .............................................. [empty]
   o- ssh ............................................... [no key pair set]
   | o- private_key .................................. [no private key set]
   | o- public_key .................................... [no public key set]
   o- system_update ................................................. [...]
   | o- packages ................................................ [enabled]
   | o- reboot .................................................. [enabled]
-  o- time_server ............................................... [enabled]
+  o- time_server ........................... [enabled, no server host set]
     o- external_servers .......................................... [empty]
     o- server_hostname ......................................... [not set]
     o- subnet .................................................. [not set]
@@ -343,29 +352,35 @@ o- / ............................................................... [...]
     <itemizedlist>
      <listitem>
       <para>
-       Change to the path whose property you need to configure and run the
-       command:
-      </para>
-<screen>
-<prompt>/></prompt> cd /ceph_cluster/minions/
-<prompt>/ceph_cluster/minions></prompt> ls
-o- minions .................................................. [Minions: 5]
-  o- ses-master.example.com ................................... [no roles]
-  o- ses-min1.example.com ..................................... [no roles]
-[...]
-</screen>
-     </listitem>
-     <listitem>
-      <para>
        Run the command from the current position and enter the absolute path to
        the property as the first argument:
       </para>
 <screen>
-<prompt>/></prompt> /ceph_cluster/minions/ ls
-o- minions .................................................. [Minions: 5]
-  o- ses-master.example.com ................................... [no roles]
-  o- ses-min1.example.com ..................................... [no roles]
-[...]
+<prompt>/></prompt> /cephadm_bootstrap/dashboard ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username .................................................... [admin]
+<prompt>/> /cephadm_bootstrap/dashboard/username set ceph-admin</prompt>
+Value set.
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Change to the path whose property you need to configure and run the
+       command:
+      </para>
+<screen>
+<prompt>/></prompt> cd /cephadm_bootstrap/dashboard/
+<prompt>/ceph_cluster/minions></prompt> ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username ................................................[ceph-admin]
 </screen>
      </listitem>
     </itemizedlist>
