@@ -5,13 +5,356 @@
     %entities;
 ]>
 <chapter xmlns="http://docbook.org/ns/docbook"
- xmlns:xi="http://www.w3.org/2001/XInclude"
- xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0"
- xml:id="admin-caasp-cephfs">
-<!-- ============================================================== -->
- <title>&cephfs;</title>
- <para>
-   Content from: https://rook.io/docs/rook/v1.4/ceph-filesystem.html
-   Ignore "Flex Driver" section
- </para>
- </chapter>
+  xmlns:xi="http://www.w3.org/2001/XInclude"
+  xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0"
+  xml:id="admin-caasp-cephfs">
+  <!-- ============================================================== -->
+  <title>&cephfs;</title>
+  <remark>
+    Content from: https://rook.io/docs/rook/v1.4/ceph-filesystem.html
+    Ignore "Flex Driver" section
+  </remark>
+  <section xml:id="shared-filesystem">
+    <title>Shared Filesystem</title>
+    <para>
+      A shared filesystem can be mounted with read/write permission from
+      multiple pods. This may be useful for applications which can be
+      clustered using a shared filesystem.
+    </para>
+    <para>
+      This example runs a shared filesystem for the
+      <link xlink:href="https://github.com/kubernetes/kubernetes/tree/master/cluster/addons/registry">kube-registry</link>.
+    </para>
+    <section xml:id="prerequisites">
+      <title>Prerequisites</title>
+      <para>
+        This guide assumes you have created a Rook cluster as explained in
+        the main <link xlink:href="ceph-quickstart.md">Kubernetes
+          guide</link>
+      </para>
+      <section xml:id="multiple-filesystems-not-supported">
+        <title>Multiple Filesystems Not Supported</title>
+        <para>
+          By default only one shared filesystem can be created with Rook.
+          Multiple filesystem support in Ceph is still considered
+          experimental and can be enabled with the environment variable
+          <literal>ROOK_ALLOW_MULTIPLE_FILESYSTEMS</literal> defined in
+          <literal>operator.yaml</literal>.
+        </para>
+        <para>
+          Please refer to
+          <link xlink:href="http://docs.ceph.com/docs/master/cephfs/experimental-features/#multiple-filesystems-within-a-ceph-cluster">cephfs
+            experimental features</link> page for more information.
+        </para>
+      </section>
+    </section>
+    <section xml:id="create-the-filesystem">
+      <title>Create the Filesystem</title>
+      <para>
+        Create the filesystem by specifying the desired settings for the
+        metadata pool, data pools, and metadata server in the
+        <literal>CephFilesystem</literal> CRD. In this example we create
+        the metadata pool with replication of three and a single data pool
+        with replication of three. For more options, see the documentation
+        on <link xlink:href="ceph-filesystem-crd.md">creating shared
+          filesystems</link>.
+      </para>
+      <para>
+        Save this shared filesystem definition as
+        <literal>filesystem.yaml</literal>:
+      </para>
+      <programlisting language="yaml">
+        apiVersion: ceph.rook.io/v1
+        kind: CephFilesystem
+        metadata:
+        name: myfs
+        namespace: rook-ceph
+        spec:
+        metadataPool:
+        replicated:
+        size: 3
+        dataPools:
+        - replicated:
+        size: 3
+        preservePoolsOnDelete: true
+        metadataServer:
+        activeCount: 1
+        activeStandby: true
+      </programlisting>
+      <para>
+        The Rook operator will create all the pools and other resources
+        necessary to start the service. This may take a minute to
+        complete.
+      </para>
+      <programlisting>
+        ## Create the filesystem
+        $ kubectl create -f filesystem.yaml
+        [...]
+        ## To confirm the filesystem is configured, wait for the mds pods to start
+        $ kubectl -n rook-ceph get pod -l app=rook-ceph-mds
+        NAME                                      READY     STATUS    RESTARTS   AGE
+        rook-ceph-mds-myfs-7d59fdfcf4-h8kw9       1/1       Running   0          12s
+        rook-ceph-mds-myfs-7d59fdfcf4-kgkjp       1/1       Running   0          12s
+      </programlisting>
+      <para>
+        To see detailed status of the filesystem, start and connect to the
+        <link xlink:href="ceph-toolbox.md">Rook toolbox</link>. A new line
+        will be shown with <literal>ceph status</literal> for the
+        <literal>mds</literal> service. In this example, there is one
+        active instance of MDS which is up, with one MDS instance in
+        <literal>standby-replay</literal> mode in case of failover.
+      </para>
+      <programlisting>
+        $ ceph status
+        ...
+        services:
+        mds: myfs-1/1/1 up {[myfs:0]=mzw58b=up:active}, 1 up:standby-replay
+      </programlisting>
+    </section>
+    <section xml:id="provision-storage">
+      <title>Provision Storage</title>
+      <para>
+        Before Rook can start provisioning storage, a StorageClass needs
+        to be created based on the filesystem. This is needed for
+        Kubernetes to interoperate with the CSI driver to create
+        persistent volumes.
+      </para>
+      <blockquote>
+        <para>
+          <emphasis role="strong">NOTE</emphasis>: This example uses the
+          CSI driver, which is the preferred driver going forward for K8s
+          1.13 and newer. Examples are found in the
+          <link xlink:href="https://github.com/rook/rook/tree/%7B%7B%20branchName%20%7D%7D/cluster/examples/kubernetes/ceph/csi/cephfs">CSI
+            CephFS</link> directory. For an example of a volume using the
+          flex driver (required for K8s 1.12 and earlier), see the
+          <link linkend="flex-driver">Flex Driver</link> section below.
+        </para>
+      </blockquote>
+      <para>
+        Save this storage class definition as
+        <literal>storageclass.yaml</literal>:
+      </para>
+      <programlisting language="yaml">
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+        name: rook-cephfs
+        # Change &quot;rook-ceph&quot; provisioner prefix to match the operator namespace if needed
+        provisioner: rook-ceph.cephfs.csi.ceph.com
+        parameters:
+        # clusterID is the namespace where operator is deployed.
+        clusterID: rook-ceph
+        
+        # CephFS filesystem name into which the volume shall be created
+        fsName: myfs
+        
+        # Ceph pool into which the volume shall be created
+        # Required for provisionVolume: &quot;true&quot;
+        pool: myfs-data0
+        
+        # Root path of an existing CephFS volume
+        # Required for provisionVolume: &quot;false&quot;
+        # rootPath: /absolute/path
+        
+        # The secrets contain Ceph admin credentials. These are generated automatically by the operator
+        # in the same namespace as the cluster.
+        csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+        csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+        csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+        csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+        csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+        csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+        
+        reclaimPolicy: Delete
+      </programlisting>
+      <para>
+        If you’ve deployed the Rook operator in a namespace other than
+        <quote>rook-ceph</quote> as is common change the prefix in the
+        provisioner to match the namespace you used. For example, if the
+        Rook operator is running in <quote>rook-op</quote> the provisioner
+        value should be <quote>rook-op.rbd.csi.ceph.com</quote>.
+      </para>
+      <para>
+        Create the storage class.
+      </para>
+      <programlisting>
+        kubectl create -f cluster/examples/kubernetes/ceph/csi/cephfs/storageclass.yaml
+      </programlisting>
+    </section>
+    <section xml:id="quotas">
+      <title>Quotas</title>
+      <blockquote>
+        <para>
+          <emphasis role="strong">IMPORTANT</emphasis>: The CephFS CSI
+          driver uses quotas to enforce the PVC size requested. Only newer
+          kernels support CephFS quotas (kernel version of at least 4.17).
+          If you require quotas to be enforced and the kernel driver does
+          not support it, you can disable the kernel driver and use the
+          FUSE client. This can be done by setting
+          <literal>CSI_FORCE_CEPHFS_KERNEL_CLIENT: false</literal> in the
+          operator deployment (<literal>operator.yaml</literal>). However,
+          it is important to know that when the FUSE client is enabled,
+          there is an issue that during upgrade the application pods will
+          be disconnected from the mount and will need to be restarted.
+          See the <link xlink:href="ceph-upgrade.md">upgrade guide</link>
+          for more details.
+        </para>
+      </blockquote>
+    </section>
+    <section xml:id="consume-the-shared-filesystem-k8s-registry-sample">
+      <title>Consume the Shared Filesystem: K8s Registry Sample</title>
+      <para>
+        As an example, we will start the kube-registry pod with the shared
+        filesystem as the backing store. Save the following spec as
+        <literal>kube-registry.yaml</literal>:
+      </para>
+      <programlisting language="yaml">
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+        name: cephfs-pvc
+        spec:
+        accessModes:
+        - ReadWriteMany
+        resources:
+        requests:
+        storage: 1Gi
+        storageClassName: rook-cephfs
+        ---
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+        name: kube-registry
+        namespace: kube-system
+        labels:
+        k8s-app: kube-registry
+        kubernetes.io/cluster-service: &quot;true&quot;
+        spec:
+        replicas: 3
+        selector:
+        matchLabels:
+        k8s-app: kube-registry
+        template:
+        metadata:
+        labels:
+        k8s-app: kube-registry
+        kubernetes.io/cluster-service: &quot;true&quot;
+        spec:
+        containers:
+        - name: registry
+        image: registry:2
+        imagePullPolicy: Always
+        resources:
+        limits:
+        cpu: 100m
+        memory: 100Mi
+        env:
+        # Configuration reference: https://docs.docker.com/registry/configuration/
+        - name: REGISTRY_HTTP_ADDR
+        value: :5000
+        - name: REGISTRY_HTTP_SECRET
+        value: &quot;Ple4seCh4ngeThisN0tAVerySecretV4lue&quot;
+        - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+        value: /var/lib/registry
+        volumeMounts:
+        - name: image-store
+        mountPath: /var/lib/registry
+        ports:
+        - containerPort: 5000
+        name: registry
+        protocol: TCP
+        livenessProbe:
+        httpGet:
+        path: /
+        port: registry
+        readinessProbe:
+        httpGet:
+        path: /
+        port: registry
+        volumes:
+        - name: image-store
+        persistentVolumeClaim:
+        claimName: cephfs-pvc
+        readOnly: false
+      </programlisting>
+      <para>
+        Create the Kube registry deployment:
+      </para>
+      <programlisting>
+        kubectl create -f cluster/examples/kubernetes/ceph/csi/cephfs/kube-registry.yaml
+      </programlisting>
+      <para>
+        You now have a docker registry which is HA with persistent
+        storage.
+      </para>
+      <section xml:id="kernel-version-requirement">
+        <title>Kernel Version Requirement</title>
+        <para>
+          If the Rook cluster has more than one filesystem and the
+          application pod is scheduled to a node with kernel version older
+          than 4.7, inconsistent results may arise since kernels older
+          than 4.7 do not support specifying filesystem namespaces.
+        </para>
+      </section>
+    </section>
+    <section xml:id="consume-the-shared-filesystem-toolbox">
+      <title>Consume the Shared Filesystem: Toolbox</title>
+      <para>
+        Once you have pushed an image to the registry (see the
+        <link xlink:href="https://github.com/kubernetes/kubernetes/tree/release-1.9/cluster/addons/registry">instructions</link>
+        to expose and use the kube-registry), verify that kube-registry is
+        using the filesystem that was configured above by mounting the
+        shared filesystem in the toolbox pod. See the
+        <link xlink:href="direct-tools.md#shared-filesystem-tools">Direct
+          Filesystem</link> topic for more details.
+      </para>
+    </section>
+    <section xml:id="teardown">
+      <title>Teardown</title>
+      <para>
+        To clean up all the artifacts created by the filesystem demo:
+      </para>
+      <programlisting>
+        kubectl delete -f kube-registry.yaml
+      </programlisting>
+      <para>
+        To delete the filesystem components and backing data, delete the
+        Filesystem CRD.
+      </para>
+      <blockquote>
+        <para>
+          <emphasis role="strong">WARNING: Data will be deleted if
+            preservePoolsOnDelete=false</emphasis>.
+        </para>
+      </blockquote>
+      <programlisting>
+        kubectl -n rook-ceph delete cephfilesystem myfs
+      </programlisting>
+      <para>
+        Note: If the <quote>preservePoolsOnDelete</quote> filesystem
+        attribute is set to true, the above command won’t delete the
+        pools. Creating again the filesystem with the same CRD will reuse
+        again the previous pools.
+      </para>
+    </section>
+    <section xml:id="flex-driver">
+      <title>Flex Driver</title>
+      <para>
+        To create a volume based on the flex driver instead of the CSI
+        driver, see the
+        <link xlink:href="https://github.com/rook/rook/blob/%7B%7B%20branchName%20%7D%7D/cluster/examples/kubernetes/ceph/flex/kube-registry.yaml">kube-registry.yaml</link>
+        example manifest or refer to the complete flow in the Rook v1.0
+        <link xlink:href="https://rook.io/docs/rook/v1.0/ceph-filesystem.html">Shared
+          Filesystem</link> documentation.
+      </para>
+      <section xml:id="advanced-example-erasure-coded-filesystem">
+        <title>Advanced Example: Erasure Coded Filesystem</title>
+        <para>
+          The Ceph filesystem example can be found here:
+          <link xlink:href="ceph-filesystem-crd.md#erasure-coded">Ceph
+            Shared Filesystem - Samples - Erasure Coded</link>.
+        </para>
+      </section>
+    </section>
+  </section>
+</chapter>
