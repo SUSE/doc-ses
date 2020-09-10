@@ -5,12 +5,375 @@
     %entities;
 ]>
 <chapter xmlns="http://docbook.org/ns/docbook"
- xmlns:xi="http://www.w3.org/2001/XInclude"
- xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0"
- xml:id="admin-caasp-cephosd">
-<!-- ============================================================== -->
- <title>&ceph; OSD Management</title>
- <para>
-   Content from: https://rook.io/docs/rook/v1.4/ceph-osd-mgmt.html
- </para>
- </chapter>
+  xmlns:xi="http://www.w3.org/2001/XInclude"
+  xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0"
+  xml:id="admin-caasp-cephosd">
+  <!-- ============================================================== -->
+  <title>&ceph; OSD Management</title>
+  <remark>
+    Content from: https://rook.io/docs/rook/v1.4/ceph-osd-mgmt.html
+  </remark>
+  
+  <section xml:id="ceph-osd-management">
+    <title>Ceph OSD Management</title>
+    <para>
+      Ceph Object Storage Daemons (OSDs) are the heart and soul of the
+      Ceph storage platform. Each OSD manages a local device and together
+      they provide the distributed storage. Rook will automate creation
+      and management of OSDs to hide the complexity based on the desired
+      state in the CephCluster CR as much as possible. This guide will
+      walk through some of the scenarios to configure OSDs where more
+      configuration may be required.
+    </para>
+    <section xml:id="osd-health">
+      <title>OSD Health</title>
+      <para>
+        The <link xlink:href="./ceph-toolbox.md">rook-ceph-tools
+          pod</link> provides a simple environment to run Ceph tools. The
+        <literal>ceph</literal> commands mentioned in this document should
+        be run from the toolbox.
+      </para>
+      <para>
+        Once the is created, connect to the pod to execute the
+        <literal>ceph</literal> commands to analyze the health of the
+        cluster, in particular the OSDs and placement groups (PGs). Some
+        common commands to analyze OSDs include:
+      </para>
+      <programlisting>
+        ceph status
+        ceph osd tree
+        ceph osd status
+        ceph osd df
+        ceph osd utilization
+      </programlisting>
+      <programlisting>
+        kubectl -n rook-ceph exec -it $(kubectl -n rook-ceph get pod -l &quot;app=rook-ceph-tools&quot; -o jsonpath='{.items[0].metadata.name}') bash
+      </programlisting>
+    </section>
+    <section xml:id="add-an-osd">
+      <title>Add an OSD</title>
+      <para>
+        The <link xlink:href="ceph-quickstart.md">QuickStart Guide</link>
+        will provide the basic steps to create a cluster and start some
+        OSDs. For more details on the OSD settings also see the
+        <link xlink:href="ceph-cluster-crd.md">Cluster CRD</link>
+        documentation. If you are not seeing OSDs created, see the
+        <link xlink:href="ceph-common-issues.md">Ceph Troubleshooting
+          Guide</link>.
+      </para>
+      <para>
+        To add more OSDs, Rook will automatically watch for new nodes and
+        devices being added to your cluster. If they match the filters or
+        other settings in the <literal>storage</literal> section of the
+        cluster CR, the operator will create new OSDs.
+      </para>
+    </section>
+    <section xml:id="add-an-osd-on-a-pvc">
+      <title>Add an OSD on a PVC</title>
+      <para>
+        In more dynamic environments where storage can be dynamically
+        provisioned with a raw block storage provider, the OSDs can be
+        backed by PVCs. See the <literal>storageClassDeviceSets</literal>
+        documentation in the
+        <link xlink:href="ceph-cluster-crd.md#storage-class-device-sets">Cluster
+          CRD</link> topic.
+      </para>
+      <para>
+        To add more OSDs, you can either increase the
+        <literal>count</literal> of the OSDs in an existing device set or
+        you can add more device sets to the cluster CR. The operator will
+        then automatically create new OSDs according to the updated
+        cluster CR.
+      </para>
+    </section>
+    <section xml:id="remove-an-osd">
+      <title>Remove an OSD</title>
+      <para>
+        Removal of OSDs is intentionally not automated. Rook’s charter is
+        to keep your data safe, not to delete it. If you are sure you need
+        to remove OSDs, it can be done. We just want you to be in control
+        of this action.
+      </para>
+      <para>
+        To remove an OSD due to a failed disk or other re-configuration,
+        consider the following to ensure the health of the data through
+        the removal process: - Confirm you will have enough space on your
+        cluster after removing your OSDs to properly handle the deletion -
+        Confirm the remaining OSDs and their placement groups (PGs) are
+        healthy in order to handle the rebalancing of the data - Do not
+        remove too many OSDs at once - Wait for rebalancing between
+        removing multiple OSDs
+      </para>
+      <para>
+        If all the PGs are <literal>active+clean</literal> and there are
+        no warnings about being low on space, this means the data is fully
+        replicated and it is safe to proceed. If an OSD is failing, the
+        PGs will not be perfectly clean and you will need to proceed
+        anyway.
+      </para>
+      <section xml:id="from-the-toolbox">
+        <title>From the Toolbox</title>
+        <orderedlist numeration="arabic" spacing="compact">
+          <listitem>
+            <para>
+              Determine the OSD ID for the OSD to be removed. The osd pod
+              may be in an error state such as
+              <literal>CrashLoopBackoff</literal> or the
+              <literal>ceph</literal> commands in the toolbox may show
+              which OSD is <literal>down</literal>.
+            </para>
+          </listitem>
+          <listitem>
+            <para>
+              Mark the OSD as <literal>out</literal> if not already marked
+              as such by Ceph. This signals Ceph to start moving
+              (backfilling) the data that was on that OSD to another OSD.
+            </para>
+            <itemizedlist spacing="compact">
+              <listitem>
+                <para>
+                  <literal>ceph osd out osd.&lt;ID&gt;</literal> (for
+                  example if the OSD ID is 23 this would be
+                  <literal>ceph osd out osd.23</literal>)
+                </para>
+              </listitem>
+            </itemizedlist>
+          </listitem>
+          <listitem>
+            <para>
+              Wait for the data to finish backfilling to other OSDs.
+            </para>
+            <itemizedlist spacing="compact">
+              <listitem>
+                <para>
+                  <literal>ceph status</literal> will indicate the
+                  backfilling is done when all of the PGs are
+                  <literal>active+clean</literal>. If desired, it’s safe
+                  to remove the disk after that.
+                </para>
+              </listitem>
+            </itemizedlist>
+          </listitem>
+          <listitem>
+            <para>
+              Update your CephCluster CR such that the operator won’t
+              create an OSD on the device anymore. Depending on your CR
+              settings, you may need to remove the device from the list or
+              update the device filter. If you are using
+              <literal>useAllDevices: true</literal>, no change to the CR
+              is necessary.
+            </para>
+          </listitem>
+          <listitem>
+            <para>
+              Remove the OSD from the Ceph cluster
+            </para>
+            <itemizedlist spacing="compact">
+              <listitem>
+                <para>
+                  <literal>ceph osd purge &lt;ID&gt; --yes-i-really-mean-it</literal>
+                </para>
+              </listitem>
+            </itemizedlist>
+          </listitem>
+          <listitem>
+            <para>
+              Verify the OSD is removed from the node in the CRUSH map
+            </para>
+            <itemizedlist spacing="compact">
+              <listitem>
+                <para>
+                  <literal>ceph osd tree</literal>
+                </para>
+              </listitem>
+            </itemizedlist>
+          </listitem>
+        </orderedlist>
+      </section>
+      <section xml:id="remove-the-osd-deployment">
+        <title>Remove the OSD Deployment</title>
+        <para>
+          The operator can automatically remove OSD deployments that are
+          considered <quote>safe-to-destroy</quote> by Ceph. After the
+          steps above, the OSD will be considered safe to remove since the
+          data has all been moved to other OSDs. But this will only be
+          done automatically by the operator if you have this setting in
+          the cluster CR:
+        </para>
+        <programlisting>
+          removeOSDsIfOutAndSafeToRemove: true
+        </programlisting>
+        <orderedlist numeration="arabic" spacing="compact">
+          <listitem override="8">
+            <para>
+              Otherwise, you will need to delete the deployment directly:
+            </para>
+            <itemizedlist spacing="compact">
+              <listitem>
+                <para>
+                  <literal>kubectl delete deployment -n rook-ceph rook-ceph-osd-&lt;ID&gt;</literal>
+                </para>
+              </listitem>
+            </itemizedlist>
+          </listitem>
+        </orderedlist>
+      </section>
+      <section xml:id="delete-the-underlying-data">
+        <title>Delete the underlying data</title>
+        <orderedlist numeration="arabic" spacing="compact">
+          <listitem override="9">
+            <para>
+              If you want to clean the device where the OSD was running,
+              see in the instructions to wipe a disk on the
+              <link xlink:href="ceph-teardown.md#delete-the-data-on-hosts">Cleaning
+                up a Cluster</link> topic.
+            </para>
+          </listitem>
+        </orderedlist>
+      </section>
+    </section>
+    <section xml:id="replace-an-osd">
+      <title>Replace an OSD</title>
+      <para>
+        To replace a disk that has failed:
+      </para>
+      <orderedlist numeration="arabic" spacing="compact">
+        <listitem>
+          <para>
+            Run the steps in the previous section to
+            <link linkend="remove-an-osd">Remove an OSD</link>.
+          </para>
+        </listitem>
+        <listitem>
+          <para>
+            Replace the physical device and verify the new device is
+            attached.
+          </para>
+        </listitem>
+        <listitem>
+          <para>
+            Check if your cluster CR will find the new device. If you are
+            using <literal>useAllDevices: true</literal> you can skip this
+            step. If your cluster CR lists individual devices or uses a
+            device filter you may need to update the CR.
+          </para>
+        </listitem>
+        <listitem>
+          <para>
+            The operator ideally will automatically create the new OSD
+            within a few minutes of adding the new device or updating the
+            CR. If you don’t see a new OSD automatically created, restart
+            the operator (by deleting the operator pod) to trigger the OSD
+            creation.
+          </para>
+        </listitem>
+        <listitem>
+          <para>
+            Verify if the OSD is created on the node by running
+            <literal>ceph osd tree</literal> from the toolbox.
+          </para>
+        </listitem>
+      </orderedlist>
+      <para>
+        Note that the OSD might have a different ID than the previous OSD
+        that was replaced.
+      </para>
+    </section>
+    <section xml:id="remove-an-osd-from-a-pvc">
+      <title>Remove an OSD from a PVC</title>
+      <para>
+        If you have installed your OSDs on top of PVCs and you desire to
+        reduce the size of your cluster by removing OSDs:
+      </para>
+      <orderedlist numeration="arabic" spacing="compact">
+        <listitem>
+          <para>
+            Shrink the number of OSDs in the
+            <literal>storageClassDeviceSet</literal> in the CephCluster
+            CR.
+          </para>
+          <itemizedlist spacing="compact">
+            <listitem>
+              <para>
+                <literal>kubectl -n rook-ceph edit cephcluster rook-ceph</literal>
+              </para>
+            </listitem>
+            <listitem>
+              <para>
+                Reduce the <literal>count</literal> of the OSDs to the
+                desired number. Rook will not take any action to
+                automatically remove the extra OSD(s), but will
+                effectively stop managing the orphaned OSD.
+              </para>
+            </listitem>
+          </itemizedlist>
+        </listitem>
+        <listitem>
+          <para>
+            Identify the orphaned PVC that belongs to the orphaned OSD.
+          </para>
+          <itemizedlist spacing="compact">
+            <listitem>
+              <para>
+                The orphaned PVC will have the highest index among the
+                PVCs for the device set.
+              </para>
+            </listitem>
+            <listitem>
+              <para>
+                <literal>kubectl -n rook-ceph get pvc -l ceph.rook.io/DeviceSet=&lt;deviceSet&gt;</literal>
+              </para>
+            </listitem>
+            <listitem>
+              <para>
+                For example if the device set is named
+                <literal>set1</literal> and the <literal>count</literal>
+                was reduced from <literal>3</literal> to
+                <literal>2</literal>, the orphaned PVC would have the
+                index <literal>2</literal> and might be named
+                <literal>set1-2-data-vbwcf</literal>
+              </para>
+            </listitem>
+          </itemizedlist>
+        </listitem>
+        <listitem>
+          <para>
+            Identify the orphaned OSD.
+          </para>
+          <itemizedlist spacing="compact">
+            <listitem>
+              <para>
+                The OSD assigned to the PVC can be found in the labels on
+                the PVC
+              </para>
+            </listitem>
+            <listitem>
+              <para>
+                <literal>kubectl -n rook-ceph get pod -l ceph.rook.io/pvc=&lt;orphaned-pvc&gt; -o yaml | grep ceph-osd-id</literal>
+              </para>
+            </listitem>
+            <listitem>
+              <para>
+                For example, this might return:
+                <literal>ceph-osd-id: &quot;0&quot;</literal>
+              </para>
+            </listitem>
+          </itemizedlist>
+        </listitem>
+        <listitem>
+          <para>
+            Now proceed with the steps in the section above to
+            <link linkend="remove-an-osd">Remove an OSD</link> for the
+            orphaned OSD ID.
+          </para>
+        </listitem>
+        <listitem>
+          <para>
+            If desired, delete the orphaned PVC after the OSD is removed.
+          </para>
+        </listitem>
+      </orderedlist>
+    </section>
+  </section>
+  
+</chapter>
