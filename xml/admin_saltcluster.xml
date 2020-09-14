@@ -137,8 +137,8 @@ placement:
    </step>
    <step>
     <para>
-     If the node is running <literal>node-exporter</literal> and
-     <literal>crash</literal> services, remove them by running the following
+     If the node is running <literal>crash.osd.1</literal> and
+     <literal>crash.osd.2</literal> services, remove them by running the following
      command on the host:
     </para>
 <screen>
@@ -148,8 +148,8 @@ placement:
      For example:
     </para>
 <screen>
-&prompt.sminion;cephadm rm-daemon --fsid b4b30c6e... --name node-exporter
-&prompt.sminion;cephadm rm-daemon --fsid b4b30c6e... --name crash
+&prompt.sminion;cephadm rm-daemon --fsid b4b30c6e... --name crash.osd.1
+&prompt.sminion;cephadm rm-daemon --fsid b4b30c6e... --name crash.osd.2
 </screen>
    </step>
    <step>
@@ -160,20 +160,831 @@ placement:
    </step>
   </procedure>
  </sect1>
- <sect1 xml:id="removing-node-osds">
-  <title>Removing OSDs</title>
+ <sect1 xml:id="osd-management">
+  <title>OSD Management</title>
 
   <para>
-   Before removing an OSD node from the cluster, verify that the cluster has
-   more free disk space than the OSD disk you are going to remove. Be aware
-   that removing an OSD results in rebalancing of the whole cluster.
+   This section describes how to add, erase, or remove OSDs in a &ceph;
+   cluster.
   </para>
 
-  <procedure>
-   <step>
+  <sect2 xml:id="osd-management-listing">
+   <title>Listing Disk Devices</title>
+   <para>
+    To identify used and unused disk devices on all cluster nodes, list them by
+    running the following command:
+   </para>
+<screen>
+&prompt.cephuser;ceph orch device ls
+HOST       PATH      TYPE SIZE  DEVICE  AVAIL REJECT REASONS
+ses-master /dev/vda  hdd  42.0G         False locked
+ses-min1   /dev/vda  hdd  42.0G         False locked
+ses-min1   /dev/vdb  hdd  8192M  387836 False locked, LVM detected, Insufficient space (&lt;5GB) on vgs
+ses-min2   /dev/vdc  hdd  8192M  450575 True
+</screen>
+  </sect2>
+
+  <sect2 xml:id="osd-management-erasing">
+   <title>Erasing Disk Devices</title>
+   <para>
+    To re-use a disk device, you need to erase (or <emphasis>zap</emphasis>) it
+    first:
+   </para>
+<screen>ceph orch device zap <replaceable>HOST_NAME</replaceable> <replaceable>DISK_DEVICE</replaceable></screen>
+   <para>
+    For example:
+   </para>
+<screen>&prompt.cephuser;ceph orch device zap ses-min2 /dev/vdc</screen>
+   <note>
     <para>
-     Identify which OSD to remove by getting its ID:
+     If you previously deployed OSDs by using &drvgrps; or the
+     <option>--all-available-devices</option> option while the
+     <literal>unmanaged</literal> flag was not set, &cephadm; will deploy these
+     OSDs automatically after you erase them.
     </para>
+   </note>
+  </sect2>
+
+  <sect2 xml:id="drive-groups">
+   <title>Adding OSDs using &drvgrps; Specification</title>
+   <para>
+    <emphasis>&drvgrps;</emphasis> specify the layouts of OSDs in the &ceph;
+    cluster. They are defined in a single YAML file. In this section, we will
+    use <filename>drive_groups.yml</filename> as an example.
+   </para>
+   <para>
+    An administrator should manually specify a group of OSDs that are
+    interrelated (hybrid OSDs that are deployed on a mixture of HDDs and SDDs)
+    or share identical deployment options (for example, the same object store,
+    same encryption option, stand-alone OSDs). To avoid explicitly listing
+    devices, &drvgrps; use a list of filter items that correspond to a few
+    selected fields of <command>ceph-volume</command>'s inventory reports.
+    &cephadm; will provide code that translates these &drvgrps; into actual
+    device lists for inspection by the user.
+   </para>
+   <para>
+    To apply OSD specification to your cluster, run
+   </para>
+<screen>&prompt.cephuser;ceph orch apply osd -i <filename>drive_groups.yml</filename></screen>
+   <tip>
+    <para>
+     You can use the <option>--dry-run</option> option together with the
+     <command>ceph orch apply osd</command> command to see a preview of actions
+     that will actually happen when running the command without the
+     <option>--dry-run</option> option.
+    </para>
+   </tip>
+   <important>
+    <para>
+     All available clean disk devices that match the &drvgrps; specification
+     will be used as OSDs automatically after you add them to the cluster. If
+     you need to avoid this behavior, add the <option>--unmanaged=true</option>
+     option when creating OSDs:
+    </para>
+<screen>&prompt.cephuser;ceph orch apply osd -i <filename>drive_groups.yml</filename> --unmanaged=true</screen>
+    <para>
+     Alternatively, if you have already created OSDs without the
+     <option>--unmanaged=true</option>, you can disable the automatic OSD
+     creation using the following command:
+    </para>
+<screen>&prompt.cephuser;ceph orch osd spec --service-name  osd.<replaceable>OSD_SERVICE_ID</replaceable> --unmanaged</screen>
+   </important>
+   <sect3 xml:id="drive-groups-specs">
+    <title>Specification</title>
+    <para>
+     Following is an example &drvgrps; specification file:
+    </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name
+placement:
+  host_pattern: '*'
+data_devices:
+  drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+db_devices:
+  drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+wal_devices:
+  drive_spec: <replaceable>DEVICE_SPECIFICATION</replaceable>
+block_wal_size: '5G'  # (optional, unit suffixes permitted)
+block_db_size: '5G'   # (optional, unit suffixes permitted)
+<!-- osds_per_device: 1   # number of osd daemons per device -->
+encryption:           # 'True' or 'False' (defaults to 'False')
+</screen>
+   </sect3>
+   <sect3>
+    <title>Matching Disk Devices</title>
+    <para>
+     You can describe the specification using the following filters:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       By a disk model:
+      </para>
+<screen>
+model: <replaceable>DISK_MODEL_STRING</replaceable>
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       By a disk vendor:
+      </para>
+<screen>
+vendor: <replaceable>DISK_VENDOR_STRING</replaceable>
+</screen>
+      <tip>
+       <para>
+        Always enter the <replaceable>DISK_VENDOR_STRING</replaceable> in lower
+        case.
+       </para>
+      </tip>
+      <para>
+       To obtain details about disk model and vendor, examine the output of the
+       following command:
+      </para>
+<screen>
+&prompt.cephuser;ceph orch device ls
+HOST     PATH     TYPE  SIZE DEVICE_ID                  MODEL            VENDOR
+ses-min1 /dev/sdb ssd  29.8G SATA_SSD_AF34075704240015  SATA SSD         ATA
+ses-min2 /dev/sda ssd   223G Micron_5200_MTFDDAK240TDN  Micron_5200_MTFD ATA
+[...]
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Whether a disk is rotational or not. SSDs and NVMe drives are not
+       rotational.
+      </para>
+<screen>
+rotational: 0
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Deploy a node using <emphasis>all</emphasis> available drives for OSDs:
+      </para>
+<screen>
+data_devices:
+  all: true
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Additionally, by limiting the number of matching disks:
+      </para>
+<screen>
+limit: 10
+</screen>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3>
+    <title>Filtering Devices by Size</title>
+    <para>
+     You can filter disk devices by their size&mdash;either by an exact size,
+     or a size range. The <option>size:</option> parameter accepts arguments in
+     the following form:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       '10G' - Includes disks of an exact size.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       '10G:40G' - Includes disks whose size is within the range.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       ':10G' - Includes disks less than or equal to 10&nbsp;GB in size.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       '40G:' - Includes disks equal to or greater than 40&nbsp;GB in size.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <example>
+     <title>Matching by Disk Size</title>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name
+placement:
+  host_pattern: '*'
+data_devices:
+  size: '40TB:'
+db_devices:
+  size: ':2TB'
+</screen>
+    </example>
+    <note>
+     <title>Quotes Required</title>
+     <para>
+      When using the ':' delimiter, you need to enclose the size in quotes,
+      otherwise the ':' sign will be interpreted as a new configuration hash.
+     </para>
+    </note>
+    <tip>
+     <title>Unit Shortcuts</title>
+     <para>
+      Instead of Gigabytes (G), you can specify the sizes in Megabytes (M) or
+      Terabytes (T).
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="ds-drive-groups-examples">
+    <title>Examples</title>
+    <para>
+     This section includes examples of different OSD setups.
+    </para>
+    <example>
+     <title>Simple Setup</title>
+     <para>
+      This example describes two nodes with the same setup:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 4&nbsp;TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 512&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      The corresponding <filename>drive_groups.yml</filename> file will be as
+      follows:
+     </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name
+placement:
+  host_pattern: '*'
+data_devices:
+  model: SSD-123-foo
+db_devices:
+  model: MC-55-44-XZ
+</screen>
+     <para>
+      Such a configuration is simple and valid. The problem is that an
+      administrator may add disks from different vendors in the future, and
+      these will not be included. You can improve it by reducing the filters on
+      core properties of the drives:
+     </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name
+placement:
+  host_pattern: '*'
+data_devices:
+  rotational: 1
+db_devices:
+  rotational: 0
+</screen>
+     <para>
+      In the previous example, we are enforcing all rotating devices to be
+      declared as 'data devices' and all non-rotating devices will be used as
+      'shared devices' (wal, db).
+     </para>
+     <para>
+      If you know that drives with more than 2&nbsp;TB will always be the
+      slower data devices, you can filter by size:
+     </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name
+placement:
+  host_pattern: '*'
+data_devices:
+  size: '2TB:'
+db_devices:
+  size: ':2TB'
+</screen>
+    </example>
+    <example>
+     <title>Advanced Setup</title>
+     <para>
+      This example describes two distinct setups: 20 HDDs should share 2 SSDs,
+      while 10 SSDs should share 2 NVMes.
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 4&nbsp;TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        12 SSDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 512&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 NVMes
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: NVME-QQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 256&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Such a setup can be defined with two layouts as follows:
+     </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name
+placement:
+  host_pattern: '*'
+data_devices:
+  rotational: 0
+db_devices:
+  model: MC-55-44-XZ
+</screen>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name2
+placement:
+  host_pattern: '*'
+data_devices:
+  model: MC-55-44-XZ
+db_devices:
+  vendor: samsung
+  size: 256GB
+</screen>
+    </example>
+    <example>
+     <title>Advanced Setup with Non-Uniform Nodes</title>
+     <para>
+      The previous examples assumed that all nodes have the same drives.
+      However, that is not always the case:
+     </para>
+     <para>
+      Nodes 1-5:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 4&nbsp;TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 512&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Nodes 6-10:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        5 NVMes
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 4&nbsp;TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        20 SSDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 512&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      You can use the 'target' key in the layout to target specific nodes.
+      &salt; target notation helps to keep things simple:
+     </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_one2five
+placement:
+  host_pattern: 'node[1-5]'
+data_devices:
+  rotational: 1
+db_devices:
+  rotational: 0
+</screen>
+     <para>
+      followed by
+     </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_rest
+placement:
+  host_pattern: 'node[6-10]'
+data_devices:
+  model: MC-55-44-XZ
+db_devices:
+  model: SSD-123-foo
+</screen>
+    </example>
+    <example>
+     <title>Expert Setup</title>
+     <para>
+      All previous cases assumed that the WALs and DBs use the same device. It
+      is however possible to deploy the WAL on a dedicated device as well:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 4&nbsp;TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 512&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        2 NVMes
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: NVME-QQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 256&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+<screen>
+service_type: osd
+service_id: example_drvgrp_name
+placement:
+  host_pattern: '*'
+data_devices:
+  model: MC-55-44-XZ
+db_devices:
+  model: SSD-123-foo
+wal_devices:
+  model: NVME-QQQQ-987
+</screen>
+    </example>
+    <example>
+     <title>Complex (and Unlikely) Setup</title>
+     <para>
+      In the following setup, we are trying to define:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        20 HDDs backed by 1 NVMe
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        2 HDDs backed by 1 SSD(db) and 1 NVMe (wal)
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        8 SSDs backed by 1 NVMe
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        2 SSDs stand-alone (encrypted)
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        1 HDD is spare and should not be deployed
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      The summary of used drives is as follows:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        23 HDDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Intel
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: SSD-123-foo
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 4&nbsp;TB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        10 SSDs
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Micron
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: MC-55-44-ZX
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 512&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+      <listitem>
+       <para>
+        1 NVMe
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Vendor: Samsung
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Model: NVME-QQQQ-987
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Size: 256&nbsp;GB
+         </para>
+        </listitem>
+       </itemizedlist>
+      </listitem>
+     </itemizedlist>
+     <para>
+      The &drvgrps; definition will be the following:
+     </para>
+<screen>
+service_type: osd
+service_id: example_drvgrp_hdd_nvme
+placement:
+  host_pattern: '*'
+data_devices:
+  rotational: 0
+db_devices:
+  model: NVME-QQQQ-987
+</screen>
+<screen>
+service_type: osd
+service_id: example_drvgrp_hdd_ssd_nvme
+placement:
+  host_pattern: '*'
+data_devices:
+  rotational: 0
+db_devices:
+  model: MC-55-44-XZ
+wal_devices:
+  model: NVME-QQQQ-987
+</screen>
+<screen>
+service_type: osd
+service_id: example_drvgrp_ssd_nvme
+placement:
+  host_pattern: '*'
+data_devices:
+  model: SSD-123-foo
+db_devices:
+  model: NVME-QQQQ-987
+</screen>
+<screen>
+service_type: osd
+service_id: example_drvgrp_standalone_encrypted
+placement:
+  host_pattern: '*'
+data_devices:
+  model: SSD-123-foo
+encryption: True
+</screen>
+     <para>
+      One HDD will remain as the file is being parsed from top to bottom.
+     </para>
+    </example>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="removing-node-osds">
+   <title>Removing OSDs</title>
+   <para>
+    Before removing an OSD node from the cluster, verify that the cluster has
+    more free disk space than the OSD disk you are going to remove. Be aware
+    that removing an OSD results in rebalancing of the whole cluster.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Identify which OSD to remove by getting its ID:
+     </para>
 <screen>
 &prompt.cephuser;ceph orch ps --daemon_type osd
 NAME   HOST          STATUS
@@ -182,164 +993,93 @@ osd.1  ses-min3  running (5d)
 osd.2  ses-min4  running (5d)
 [...]
 </screen>
-   </step>
-   <step>
-    <para>
-     Remove one or more OSDs from the cluster:
-    </para>
+    </step>
+    <step>
+     <para>
+      Remove one or more OSDs from the cluster:
+     </para>
 <screen>
 &prompt.cephuser;ceph orch osd rm <replaceable>OSD1_ID</replaceable> <replaceable>OSD2_ID</replaceable> ...
 </screen>
-    <para>
-     For example:
-    </para>
+     <para>
+      For example:
+     </para>
 <screen>
 &prompt.cephuser;ceph orch osd rm 1 2
 </screen>
-   </step>
-   <step>
-    <para>
-     You can query the state of the removal operation:
-    </para>
+    </step>
+    <step>
+     <para>
+      You can query the state of the removal operation:
+     </para>
 <screen>
 &prompt.cephuser;ceph orch osd rm status
-NAME  HOST  PGS STARTED_AT
-osd.1 node1 55 2020-04-22 19:28:38.785761
-osd.1 node3 3 2020-04-22 19:28:34.201685
+OSD_ID  HOST         STATE                    PG_COUNT  REPLACE  FORCE  STARTED_AT
+2       cephadm-dev  done, waiting for purge  0         True     False  2020-07-17 13:01:43.147684
+3       cephadm-dev  draining                 17        False    True   2020-07-17 13:01:45.162158
+4       cephadm-dev  started                  42        False    True   2020-07-17 13:01:45.162158
 </screen>
-   </step>
-  </procedure>
- </sect1>
- <sect1 xml:id="replacing-node-osds">
-  <title>Replacing OSDs</title>
-
-  <para>
-   Replacing an OSD follows the same procedure as described in
-   <xref linkend="removing-node-osds"/>. The only exception is that the OSD is
-   not permanently removed from the CRUSH hierarchy, but is assigned a
-   <literal>destroyed</literal> flag:
-  </para>
-
-<screen>
-&prompt.cephuser;ceph orch osd rm <replaceable>OSD1_ID</replaceable> <replaceable>OSD2_ID</replaceable> ... --replace
-</screen>
-
-  <sect2 xml:id="replacing-node-osds-preserve">
-   <title>Preserving OSD IDs</title>
-   <para>
-    The <literal>destroyed</literal> flag that was set when replacing the OSD
-    is used to identify OSD IDs that will be reused in the next OSD deployment.
-   </para>
-   <para>
-    Because you use OSD specification to deploy OSDs (refer to
-    <xref linkend="drive-groups"/> for more details), your newly added disks
-    will be assigned with the OSD IDs of their replaced counterparts (if they
-    still match the same specification).
-<!-- 2020-06-22 tbazant: not settled yet...
-    To verify such behavior, you can
-    obtain the name of the OSD specification by running <command>ceph orch
-    ls</command> and using the <emphasis>preview</emphasis> feature:
--->
-   </para>
-<!-- 2020-06-22 tbazant: not settled yet...
-<screen>
-&prompt.cephuser;ceph orch apply osd \-\-service-name <replaceable>NAME_OF_OSD_SPEC</replaceable> \-\-preview
-</screen>
-   <para>
-    Alternatively, you can use the OSD specification file:
-   </para>
-<screen>
-&prompt.cephuser;ceph orch apply osd -i <replaceable>OSD_SPEC_FILE</replaceable> \-\-preview
-</screen>
--->
+    </step>
+   </procedure>
+   <sect3 xml:id="removing-node-osds-stop">
+    <title>Stopping OSD Removal</title>
+    <para>
+     After you have scheduled an OSD removal, you can stop the removal if
+     needed. The following command will reset the initial state of the OSD and
+     remove it from the queue:
+    </para>
+<screen>&prompt.cephuser;ceph orch osd rm stop <replaceable>OSD_SERVICE_ID</replaceable></screen>
+   </sect3>
   </sect2>
- </sect1>
- <sect1 xml:id="ds-osd-recover">
-  <title>Recovering a Reinstalled OSD Node</title>
 
-  <para>
-   If the operating system breaks and is not recoverable on one of your OSD
-   nodes, follow these steps to recover it and redeploy its OSD role with
-   cluster data untouched:
-  </para>
-
-  <procedure>
-   <step>
+  <sect2 xml:id="removing-node-osds-replace">
+   <title>Replacing OSDs</title>
+   <para>
+    To replace an OSD while preserving its ID, run:
+   </para>
+<screen>ceph orch osd rm <replaceable>OSD_SERVICE_ID</replaceable> --replace</screen>
+   <para>
+    For example:
+   </para>
+<screen>&prompt.cephuser;ceph orch osd rm 4 --replace</screen>
+   <para>
+    Replacing an OSD is identical to removing an OSD (see
+    <xref linkend="removing-node-osds"/> for more details) with the exception
+    that the OSD is not permanently removed from the CRUSH hierarchy and is
+    assigned a <literal>destroyed</literal> flag instead.
+   </para>
+   <para>
+    The <literal>destroyed</literal> flag is used to determined OSD IDs that
+    will be reused during the next OSD deployment. Newly added disks that match
+    the &drvgrps; specification (see <xref linkend="drive-groups"/> for more
+    details) will be assigned OSD IDs of their replaced counterpart.
+   </para>
+   <tip>
     <para>
-     Reinstall the base &sle; operating system on the node where the OS broke.
-     Install the <package>salt-minion</package> packages on the OSD node,
-     delete the old &sminion; key on the &smaster;, and register the new
-     &sminion;'s key with the &smaster;. For more information on the initial
-     deployment, see DEAD LINK.
+     Appending the <option>--dry-run</option> option will not execute the
+     actual replacement, but will preview the steps that would normally happen.
     </para>
-   </step>
-   <step>
-    <para>
-     Instead of running the whole of stage 0, run the following parts:
-    </para>
-<screen>
-&prompt.smaster;salt '<replaceable>osd_node</replaceable>' state.apply ceph.sync
-&prompt.smaster;salt '<replaceable>osd_node</replaceable>' state.apply ceph.packages.common
-&prompt.smaster;salt '<replaceable>osd_node</replaceable>' state.apply ceph.mines
-&prompt.smaster;salt '<replaceable>osd_node</replaceable>' state.apply ceph.updates
-</screen>
-   </step>
-   <step>
-    <para>
-     Run &deepsea; stages 1 to 5:
-    </para>
-<screen>
-&prompt.smaster;salt-run state.orch ceph.stage.1
-&prompt.smaster;salt-run state.orch ceph.stage.2
-&prompt.smaster;salt-run state.orch ceph.stage.3
-&prompt.smaster;salt-run state.orch ceph.stage.4
-&prompt.smaster;salt-run state.orch ceph.stage.5
-</screen>
-   </step>
-   <step>
-    <para>
-     Run &deepsea; stage 0:
-    </para>
-<screen>
-&prompt.smaster;salt-run state.orch ceph.stage.0
-</screen>
-   </step>
-   <step>
-    <para>
-     Reboot the relevant OSD node. All OSD disks will be rediscovered and
-     reused.
-    </para>
-   </step>
-   <step>
-    <para>
-     Get &prometheus;' node exporter installed/running:
-    </para>
-<screen>&prompt.smaster;salt '<replaceable>RECOVERED_MINION</replaceable>' \
- state.apply ceph.monitoring.prometheus.exporters.node_exporter</screen>
-   </step>
-   <step>
-    <para>
-     Remove unnecessary &salt; grains (preferably after all OSDs have been
-     migrated to LVM):
-    </para>
-<screen>&prompt.smaster;salt -I roles:storage grains.delkey ceph</screen>
-   </step>
-  </procedure>
+   </tip>
+  </sect2>
  </sect1>
  <sect1 xml:id="moving-saltmaster">
   <title>Moving the &adm; to a New Server</title>
 
   <para>
-   If you need to replace the &adm; host with a new one, you need to move the
-   &smaster; and &deepsea; files. Use your favorite synchronization tool for
-   transferring the files. In this procedure, we use <command>rsync</command>
-   because it is a standard tool available in &cephos; software repositories.
+   If you need to replace the &adm; host with a new one, follow these steps:
   </para>
 
   <procedure>
    <step>
     <para>
-     Stop <systemitem class="daemon">salt-master</systemitem> and
+     Export the cluster configuration and back up the exported JSON file. Find
+     more details in <xref linkend="deploy-cephadm-configure-export"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     If the &adm; is a &smaster; at the same time, stop
+     <systemitem class="daemon">salt-master</systemitem>
      <systemitem class="daemon">salt-minion</systemitem> services on the old
      &adm;:
     </para>
@@ -350,8 +1090,19 @@ osd.1 node3 3 2020-04-22 19:28:34.201685
    </step>
    <step>
     <para>
-     Configure &salt; on the new &adm; so that the &smaster; and &sminion;s
-     communicate. Find more details in DEAD LINK.
+     Install &cephos; on the new &adm; following the procedure described in
+     <xref linkend="deploy-os"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     If the &adm; is a &smaster; at the same time, install the
+     <package>salt-master</package> (and possibly
+     <package>salt-minion</package>) package. If the &adm; is
+     <emphasis>not</emphasis> a &smaster;, install the
+     <package>salt-minion</package> package only. Configure &salt; so that the
+     &smaster; and &sminion;s communicate. Follow the procedure described in
+     <xref linkend="deploy-salt"/>.
     </para>
     <tip>
      <title>Transition of Salt Minions</title>
@@ -367,47 +1118,27 @@ osd.1 node3 3 2020-04-22 19:28:34.201685
    </step>
    <step>
     <para>
-     Verify that the <package>deepsea</package> package is installed and
-     install it if required.
-    </para>
-<screen>&prompt.smaster;zypper install deepsea</screen>
-   </step>
-   <step>
-    <para>
-     Customize the <filename>policy.cfg</filename> file by changing the
-     <literal>role-master</literal> line. Find more details in DEAD LINK
+     On the &smaster;, install the <package>ceph-salt</package> package if it
+     is not already installed (see <xref linkend="deploy-cephadm-cephsalt"/>),
+     and include the new &adm; in the cluster as described in
+     <xref linkend="deploy-cephadm-configure-cephadm"/> and
+     <xref linkend="deploy-cephadm-configure-admin"/>.
     </para>
    </step>
    <step>
     <para>
-     Synchronize <filename>/srv/pillar</filename> and
-     <filename>/srv/salt</filename> directories from the old &adm; to the new
-     one.
+     Import the backed up cluster configuration and apply it:
     </para>
-    <tip>
-     <title><command>rsync</command> Dry Run and Symbolic Links</title>
+<screen>
+&prompt.smaster;ceph-salt import <replaceable>CLUSTER_CONFIG</replaceable>.json
+&prompt.smaster;ceph-salt apply
+</screen>
+   <important>
      <para>
-      If possible, try synchronizing the files in a dry run first to see which
-      files will be transferred (<command>rsync</command>'s option
-      <option>-n</option>). Also, include symbolic links
-      (<command>rsync</command>'s option <option>-a</option>). For
-      <command>rsync</command>, the synchronize command will look as follows:
+       If you have a new &adm;, ensure you rename the <literal>minion id</literal>
+       in the exported <replaceable>CLUSTER_CONFIG</replaceable>.json file before importing it.
      </para>
-<screen>&prompt.smaster;rsync -avn /srv/pillar/ <replaceable>NEW-ADMIN-HOSTNAME:</replaceable>/srv/pillar</screen>
-    </tip>
-   </step>
-   <step>
-    <para>
-     If you made custom changes to files outside of
-     <filename>/srv/pillar</filename> and <filename>/srv/salt</filename>, for
-     example in <filename>/etc/salt/master</filename> or
-     <filename>/etc/salt/master.d</filename>, synchronize them as well.
-    </para>
-   </step>
-   <step>
-    <para>
-     Now you can run &deepsea; stages from the new &adm;. Refer to DEAD LINK
-    </para>
+   </important>
    </step>
   </procedure>
  </sect1>
@@ -447,39 +1178,13 @@ osd.1 node3 3 2020-04-22 19:28:34.201685
    </para>
   </sect2>
 
-  <sect2 xml:id="rolling-updates-patch-or-dup">
-   <title><command>zypper patch</command> or <command>zypper dup</command></title>
-   <para>
-    By default, cluster nodes are upgraded using the <command>zypper
-    dup</command> command. If you prefer to update the system using
-    <command>zypper patch</command> instead, edit
-    <filename>/srv/pillar/ceph/stack/global.yml</filename> and add the
-    following line:
-   </para>
-<screen>update_method_init: zypper-patch</screen>
-  </sect2>
-
-  <sect2 xml:id="rolling-updates-reboots">
-   <title>Cluster Node Reboots</title>
-   <para>
-    During the update, cluster nodes may be optionally rebooted if their kernel
-    was upgraded by the update. If you want to eliminate the possibility of a
-    forced reboot of potentially all nodes, either verify that the latest
-    kernel is installed and running on &ceph; nodes, or disable automatic node
-    reboots as described in
-<!-- DEAD_LINK -->
-    .
-   </para>
-  </sect2>
-
   <sect2>
    <title>Downtime of &ceph; Services</title>
    <para>
     Depending on the configuration, cluster nodes may be rebooted during the
-    update as described in <xref linkend="rolling-updates-reboots"/>. If there
-    is a single point of failure for services such as &ogw;, &sgw;, &ganesha;,
-    or &iscsi;, the client machines may be temporarily disconnected from
-    services whose nodes are being rebooted.
+    update. If there is a single point of failure for services such as &ogw;,
+    &sgw;, &ganesha;, or &iscsi;, the client machines may be temporarily
+    disconnected from services whose nodes are being rebooted.
    </para>
   </sect2>
 
@@ -487,37 +1192,68 @@ osd.1 node3 3 2020-04-22 19:28:34.201685
    <title>Running the Update</title>
    <para>
     To update the software packages on all cluster nodes to the latest version,
-    follow these steps:
+    run the following command:
    </para>
-   <procedure>
-    <step>
-     <para>
-      Update the <package>deepsea</package>, <package>salt-master</package>,
-      and <package>salt-minion</package> packages and restart relevant services
-      on the &smaster;:
-     </para>
-<screen>&prompt.smaster;salt -I 'roles:master' state.apply ceph.updates.master</screen>
-    </step>
-    <step>
-     <para>
-      Update and restart the <package>salt-minion</package> package on all
-      cluster nodes:
-     </para>
-<screen>&prompt.smaster;salt -I 'cluster:ceph' state.apply ceph.updates.salt</screen>
-    </step>
-    <step>
-     <para>
-      Update all other software packages on the cluster:
-     </para>
-<screen>&prompt.smaster;salt-run state.orch ceph.stage.0</screen>
-    </step>
-    <step>
-     <para>
-      Restart &ceph; related services:
-     </para>
-<screen>&prompt.smaster;salt-run state.orch ceph.restart</screen>
-    </step>
-   </procedure>
+<screen>&prompt.smaster;ceph-salt update</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day2-cephupgrade">
+<!-- https://docs.ceph.com/docs/master/cephadm/upgrade/ -->
+
+  <title>Upgrading &ceph;</title>
+
+  <para>
+   You can instruct &cephadm; to upgrade &ceph; from one bugfix release to
+   another. The automated upgrade of &ceph; services respects the recommended
+   order&mdash;it starts with &mgr;s, &mon;s, and then continues on to other
+   services such as &osd;s, &mds;s, and &ogw;s. Each daemon is restarted only
+   after &ceph; indicates that the cluster will remain available.
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-cephupgrade-start">
+   <title>Starting the Upgrade</title>
+   <para>
+    Before you start the upgrade, verify that all nodes are currently online
+    and your cluster is healthy:
+   </para>
+<screen>&prompt.cephuser;cephadm shell -- ceph -s</screen>
+   <para>
+    To upgrade (or downgrade) to a specific &ceph; release:
+   </para>
+<screen>&prompt.cephuser;ceph orch upgrade start --image <replaceable>REGISTRY_URL</replaceable></screen>
+   <para>
+    For example:
+   </para>
+<screen>&prompt.cephuser;eph orch upgrade start --image registry.suse.com/ses/7/ceph/ceph:latest</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-cephupgrade-monitor">
+   <title>Monitoring the Upgrade</title>
+   <para>
+    Run the following command to determine whether an upgrade is in progress:
+   </para>
+<screen>&prompt.cephuser;ceph orch upgrade status</screen>
+   <para>
+    While the upgrade is in progress, you will see a progress bar in the &ceph;
+    status output:
+   </para>
+<screen>&prompt.cephuser;ceph -s
+[...]
+  progress:
+    Upgrade to docker.io/ceph/ceph:v15.2.1 (00h 20m 12s)
+      [=======.....................] (time remaining: 01h 43m 31s)</screen>
+   <para>
+    You can also watch the &cephadm; log:
+   </para>
+<screen>&prompt.cephuser;ceph -W cephadm</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-cephupgrade-stop">
+   <title>Cancelling an Upgrade</title>
+   <para>
+    You can stop the upgrade process at any time:
+   </para>
+<screen>&prompt.cephuser;ceph orch upgrade stop</screen>
   </sect2>
  </sect1>
  <sect1 xml:id="sec-salt-cluster-reboot">
@@ -623,68 +1359,14 @@ osd.1 node3 3 2020-04-22 19:28:34.201685
    </step>
   </procedure>
  </sect1>
- <sect1 xml:id="admin-apparmor">
-  <title>Enabling &aa; Profiles</title>
-
-  <para>
-   &aa; is a security solution that confines programs by a specific profile.
-   For more details, refer to
-   <link xlink:href="https://documentation.suse.com/sles/15-SP1/single-html/SLES-security/#part-apparmor"/>.
-  </para>
-
-  <para>
-   &deepsea; provides three states for &aa; profiles: 'enforce', 'complain',
-   and 'disable'. To activate a particular &aa; state, run:
-  </para>
-
-<screen>
-salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-<replaceable>STATE</replaceable>
-</screen>
-
-  <para>
-   To put the &aa; profiles in an 'enforce' state:
-  </para>
-
-<screen>
-&prompt.smaster;salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-enforce
-</screen>
-
-  <para>
-   To put the &aa; profiles in a 'complain' state:
-  </para>
-
-<screen>
-&prompt.smaster;salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-complain
-</screen>
-
-  <para>
-   To disable the &aa; profiles:
-  </para>
-
-<screen>
-&prompt.smaster;salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-disable
-</screen>
-
-  <tip>
-   <title>Enabling the &aa; Service</title>
-   <para>
-    Each of these three calls verifies if &aa; is installed and installs it if
-    not, and starts and enables the related &systemd; service. &deepsea; will
-    warn you if &aa; was installed and started/enabled in another way and
-    therefore runs without &deepsea; profiles.
-   </para>
-  </tip>
- </sect1>
- <sect1 xml:id="deepsea-ceph-purge">
+ <sect1 xml:id="ceph-cluster-purge">
   <title>Removing an Entire &ceph; Cluster</title>
 
   <para>
-   The <command>ceph.purge</command> runner removes the entire &ceph; cluster.
-   This way you can clean the cluster environment when testing different
-   setups. After the <command>ceph.purge</command> completes, the &salt;
-   cluster is reverted back to the state at the end of &deepsea; stage 1. You
-   can then either change the <filename>policy.cfg</filename> (see DEAD LINK
-   with the same setup.
+   The <command>ceph-salt purge</command> runner removes the entire &ceph;
+   cluster. If there are more &ceph; clusters deployed, the one reported by
+   <command>ceph -s</command> is purged. This way you can clean the cluster
+   environment when testing different setups.
   </para>
 
   <para>
@@ -694,38 +1376,8 @@ salt -I "deepsea_minions:*" state.apply ceph.apparmor.default-<replaceable>STATE
   </para>
 
 <screen>
-&prompt.smaster;salt-run disengage.safety
-&prompt.smaster;salt-run state.orch ceph.purge
+&prompt.smaster;ceph-salt disengage-safety
+&prompt.smaster;ceph-salt purge
 </screen>
-
-  <tip>
-   <title>Disabling &ceph; Cluster Removal</title>
-   <para>
-    If you want to prevent anyone from running the
-    <command>ceph.purge</command> runner, create a file named
-    <filename>disabled.sls</filename> in the
-    <filename>/srv/salt/ceph/purge</filename> directory and insert the
-    following line in the
-    <filename>/srv/pillar/ceph/stack/global.yml</filename> file:
-   </para>
-<screen>purge_init: disabled</screen>
-  </tip>
-
-  <important>
-   <title>Rescind Custom Roles</title>
-   <para>
-    If you previously created custom roles for &dashboard; (refer to
-    <xref linkend="dashboard-adding-roles"/> and
-    <xref linkend="dashboard-permissions"/> for detailed information), you need
-    to take manual steps to purge them before running the
-    <command>ceph.purge</command> runner. For example, if the custom role for
-    &ogw; is named 'us-east-1', then follow these steps:
-   </para>
-<screen>
-&prompt.smaster;cd /srv/salt/ceph/rescind
-&prompt.smaster;rsync -a rgw/ us-east-1
-&prompt.smaster;sed -i 's!rgw!us-east-1!' us-east-1/*.sls
-</screen>
-  </important>
  </sect1>
 </chapter>
