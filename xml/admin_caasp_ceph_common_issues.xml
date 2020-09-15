@@ -68,20 +68,11 @@
               Logs on a specific node to find why a PVC is failing to
               mount:
             </para>
-            <itemizedlist spacing="compact">
-              <listitem>
-                <para>
-                  Rook agent errors around the attach/detach:
-                  <literal>kubectl logs -n rook-ceph &lt;rook-ceph-agent-pod&gt;</literal>
-                </para>
-              </listitem>
-            </itemizedlist>
           </listitem>
           <listitem>
             <para>
               See the
-              <link xlink:href="ceph-advanced-configuration.md#log-collection">log
-                collection topic</link> for a script that will help you
+              <xref xlink:href="log-collection"/> for a script that will help you
               gather the logs
             </para>
           </listitem>
@@ -175,332 +166,6 @@
               Configuration section</link>. Of particular note, there are
             scripts for collecting logs and gathering OSD information
             there.
-          </para>
-        </section>
-      </section>
-    </section>
-    <section xml:id="pod-using-ceph-storage-is-not-running">
-      <title>Pod Using Ceph Storage Is Not Running</title>
-      <note>
-        <para>
-          This topic is specific to creating PVCs based on Rook’s
-          <emphasis role="strong">Flex</emphasis> driver, which is no
-          longer the default option. By default, Rook deploys the CSI
-          driver for binding the PVCs to the storage.
-        </para>
-      </note>
-      <section xml:id="symptoms">
-        <title>Symptoms</title>
-        <itemizedlist spacing="compact">
-          <listitem>
-            <para>
-              The pod that is configured to use Rook storage is stuck in
-              the <literal>ContainerCreating</literal> status
-            </para>
-          </listitem>
-          <listitem>
-            <para>
-              <literal>kubectl describe pod</literal> for the pod mentions
-              one or more of the following:
-            </para>
-            <itemizedlist spacing="compact">
-              <listitem>
-                <para>
-                  <literal>PersistentVolumeClaim is not bound</literal>
-                </para>
-              </listitem>
-              <listitem>
-                <para>
-                  <literal>timeout expired waiting for volumes to attach/mount</literal>
-                </para>
-              </listitem>
-            </itemizedlist>
-          </listitem>
-          <listitem>
-            <para>
-              <literal>kubectl -n rook-ceph get pod</literal> shows the
-              rook-ceph-agent pods in a
-              <literal>CrashLoopBackOff</literal> status
-            </para>
-          </listitem>
-        </itemizedlist>
-        <para>
-          If you see that the PVC remains in
-          <emphasis role="strong">pending</emphasis> state, see the topic
-          <xref linkend="pvcs-stay-in-pending-state"/>.
-        </para>
-      </section>
-      <section xml:id="possible-solutions-summary">
-        <title>Possible Solutions Summary</title>
-        <itemizedlist spacing="compact">
-          <listitem>
-            <para>
-              <literal>rook-ceph-agent</literal> pod is in a
-              <literal>CrashLoopBackOff</literal> status because it cannot
-              deploy its driver on a read-only filesystem:
-              <link xlink:href="./ceph-prerequisites.md#ceph-flexvolume-configuration">Flexvolume
-                configuration pre-reqs</link>
-            </para>
-          </listitem>
-          <listitem>
-            <para>
-              Persistent Volume and/or Claim are failing to be created and
-              bound: <xref linkend="volume-creation"/>
-            </para>
-          </listitem>
-          <listitem>
-            <para>
-              <literal>rook-ceph-agent</literal> pod is failing to mount
-              and format the volume: <xref linkend="volume-mounting"/>
-            </para>
-          </listitem>
-        </itemizedlist>
-      </section>
-      <section xml:id="investigation-details">
-        <title>Investigation Details</title>
-        <para>
-          If you see some of the symptoms above, it’s because the
-          requested Rook storage for your pod is not being created and
-          mounted successfully. In this walkthrough, we will be looking at
-          the wordpress mysql example pod that is failing to start.
-        </para>
-        <para>
-          To first confirm there is an issue, you can run commands similar
-          to the following and you should see similar output (note that
-          some of it has been omitted for brevity):
-        </para>
-        <screen>
-          &gt; kubectl get pod
-          NAME                              READY     STATUS              RESTARTS   AGE
-          wordpress-mysql-918363043-50pjr   0/1       ContainerCreating   0          1h
-
-          &gt; kubectl describe pod wordpress-mysql-918363043-50pjr
-          ...
-          Events:
-          FirstSeen LastSeen    Count   From            SubObjectPath   Type        Reason          Message
-          --------- --------    -----   ----            -------------   --------    ------          -------
-          1h        1h      3   default-scheduler           Warning     FailedScheduling    PersistentVolumeClaim is not bound: &quot;mysql-pv-claim&quot; (repeated 2 times)
-          1h        35s     36  kubelet, 172.17.8.101           Warning     FailedMount     Unable to mount volumes for pod &quot;wordpress-mysql-918363043-50pjr_default(08d14e75-bd99-11e7-bc4c-001c428b9fc8)&quot;: timeout expired waiting for volumes to attach/mount for pod &quot;default&quot;/&quot;wordpress-mysql-918363043-50pjr&quot;. list of unattached/unmounted volumes=[mysql-persistent-storage]
-          1h        35s     36  kubelet, 172.17.8.101           Warning     FailedSync      Error syncing pod
-        </screen>
-        <para>
-          To troubleshoot this, let’s walk through the volume provisioning
-          steps in order to confirm where the failure is happening.
-        </para>
-        <section xml:id="ceph-agent-deployment">
-          <title>Ceph Agent Deployment</title>
-          <para>
-            The <literal>rook-ceph-agent</literal> pods are responsible
-            for mapping and mounting the volume from the cluster onto the
-            node that your pod will be running on. If the
-            <literal>rook-ceph-agent</literal> pod is not running then it
-            cannot perform this function.
-          </para>
-          <para>
-            Below is an example of the <literal>rook-ceph-agent</literal>
-            pods failing to get to the <literal>Running</literal> status
-            because they are in a <literal>CrashLoopBackOff</literal>
-            status:
-          </para>
-          <screen>
-            &gt; kubectl -n rook-ceph get pod
-            NAME                                  READY     STATUS             RESTARTS   AGE
-            rook-ceph-agent-ct5pj                 0/1       CrashLoopBackOff   16         59m
-            rook-ceph-agent-zb6n9                 0/1       CrashLoopBackOff   16         59m
-            rook-operator-2203999069-pmhzn        1/1       Running            0          59m
-          </screen>
-          <para>
-            If you see this occurring, you can get more details about why
-            the <literal>rook-ceph-agent</literal> pods are continuing to
-            crash with the following command and its sample output:
-          </para>
-          <screen>
-            &gt; kubectl -n rook-ceph get pod -l app=rook-ceph-agent -o jsonpath='{range .items[*]}{.metadata.name}{&quot;\t&quot;}{.status.containerStatuses[0].lastState.terminated.message}{&quot;\n&quot;}{end}'
-            rook-ceph-agent-ct5pj   mkdir /usr/libexec/kubernetes: read-only filesystem
-            rook-ceph-agent-zb6n9   mkdir /usr/libexec/kubernetes: read-only filesystem
-          </screen>
-          <para>
-            From the output above, we can see that the agents were not
-            able to bind mount to
-            <literal>/usr/libexec/kubernetes</literal> on the host they
-            are scheduled to run on. For some environments, this default
-            path is read-only and therefore a better path must be provided
-            to the agents.
-          </para>
-          <para>
-            First, clean up the agent deployment with:
-          </para>
-          <screen>
-            kubectl -n rook-ceph delete daemonset rook-ceph-agent
-          </screen>
-          <para>
-            Once the <literal>rook-ceph-agent</literal> pods are gone,
-            <emphasis role="strong">follow the instructions in the
-              <link xlink:href="./ceph-prerequisites.md#ceph-flexvolume-configuration">Flexvolume
-                configuration pre-reqs</link></emphasis> to ensure a good
-            value for <literal>--volume-plugin-dir</literal> has been
-            provided to the Kubelet. After that has been configured, and
-            the Kubelet has been restarted, start the agent pods up again
-            by restarting <literal>rook-operator</literal>:
-          </para>
-          <screen>
-            kubectl -n rook-ceph delete pod -l app=rook-ceph-operator
-          </screen>
-        </section>
-        <section xml:id="volume-creation">
-          <title>Volume Creation</title>
-          <para>
-            The volume must first be created in the Rook cluster and then
-            bound to a volume claim before it can be mounted to a pod.
-            Let’s confirm that with the following commands and their
-            output:
-          </para>
-          <screen>
-            &gt; kubectl get pv
-            NAME                                       CAPACITY   ACCESSMODES   RECLAIMPOLICY   STATUS     CLAIM                    STORAGECLASS   REASON    AGE
-            pvc-9f273fbc-bdbf-11e7-bc4c-001c428b9fc8   20Gi       RWO           Delete          Bound      default/mysql-pv-claim   rook-ceph-block               25m
-
-            &gt; kubectl get pvc
-            NAME             STATUS    VOLUME                                     CAPACITY   ACCESSMODES   STORAGECLASS   AGE
-            mysql-pv-claim   Bound     pvc-9f273fbc-bdbf-11e7-bc4c-001c428b9fc8   20Gi       RWO           rook-ceph-block     25m
-          </screen>
-          <para>
-            Both your volume and its claim should be in the
-            <literal>Bound</literal> status. If one or neither of them is
-            not in the <literal>Bound</literal> status, then look for
-            details of the issue in the <literal>rook-operator</literal>
-            logs:
-          </para>
-          <screen>
-            kubectl -n rook-ceph logs `kubectl -n rook-ceph -l app=rook-ceph-operator get pods -o jsonpath='{.items[*].metadata.name}'`
-          </screen>
-          <para>
-            If the volume is failing to be created, there should be
-            details in the <literal>rook-operator</literal> log output,
-            especially those tagged with
-            <literal>op-provisioner</literal>.
-          </para>
-          <para>
-            One common cause for the <literal>rook-operator</literal>
-            failing to create the volume is when the
-            <literal>clusterNamespace</literal> field of the
-            <literal>StorageClass</literal> doesn’t match the
-            <emphasis role="strong">namespace</emphasis> of the Rook
-            cluster, as described in
-            <link xlink:href="https://github.com/rook/rook/issues/1502">#1502</link>.
-            In that scenario, the <literal>rook-operator</literal> log
-            would show a failure similar to the following:
-          </para>
-          <screen>
-            2018-03-28 18:58:32.041603 I | op-provisioner: creating volume with configuration {pool:replicapool clusterNamespace:rook-ceph fstype:}
-            2018-03-28 18:58:32.041728 I | exec: Running command: rbd create replicapool/pvc-fd8aba49-32b9-11e8-978e-08002762c796 --size 20480 --cluster=rook --conf=/var/lib/rook/rook-ceph/rook.config --keyring=/var/lib/rook/rook-ceph/client.admin.keyring
-            E0328 18:58:32.060893       5 controller.go:801] Failed to provision volume for claim &quot;default/mysql-pv-claim&quot; with StorageClass &quot;rook-ceph-block&quot;: Failed to create rook block image replicapool/pvc-fd8aba49-32b9-11e8-978e-08002762c796: failed to create image pvc-fd8aba49-32b9-11e8-978e-08002762c796 in pool replicapool of size 21474836480: Failed to complete '': exit status 1. global_init: unable to open config file from search list /var/lib/rook/rook-ceph/rook.config
-            . output:
-          </screen>
-          <para>
-            The solution is to ensure that the
-            <link xlink:href="https://github.com/rook/rook/blob/master/cluster/examples/kubernetes/ceph/flex/storageclass.yaml#L28"><literal>clusterNamespace</literal></link>
-            field matches the <emphasis role="strong">namespace</emphasis>
-            of the Rook cluster when creating the
-            <literal>StorageClass</literal>.
-          </para>
-        </section>
-        <section xml:id="volume-mounting">
-          <title>Volume Mounting</title>
-          <para>
-            The final step in preparing Rook storage for your pod is for
-            the <literal>rook-ceph-agent</literal> pod to mount and format
-            it. If all the preceding sections have been successful or
-            inconclusive, then take a look at the
-            <literal>rook-ceph-agent</literal> pod logs for further clues.
-            You can determine which <literal>rook-ceph-agent</literal> is
-            running on the same node that your pod is scheduled on by
-            using the <literal>-o wide</literal> output, then you can get
-            the logs for that <literal>rook-ceph-agent</literal> pod
-            similar to the example below:
-          </para>
-          <screen>
-            &gt; kubectl -n rook-ceph get pod -o wide
-            NAME                                  READY     STATUS    RESTARTS   AGE       IP             NODE
-            rook-ceph-agent-h6scx                 1/1       Running   0          9m        172.17.8.102   172.17.8.102
-            rook-ceph-agent-mp7tn                 1/1       Running   0          9m        172.17.8.101   172.17.8.101
-            rook-operator-2203999069-3tb68        1/1       Running   0          9m        10.32.0.7      172.17.8.101
-
-            &gt; kubectl -n rook-ceph logs rook-ceph-agent-h6scx
-            2017-10-30 23:07:06.984108 I | rook: starting Rook v0.5.0-241.g48ce6de.dirty with arguments '/usr/local/bin/rook agent'
-            [...]
-          </screen>
-          <para>
-            In the <literal>rook-ceph-agent</literal> pod logs, you may
-            see a snippet similar to the following:
-          </para>
-          <screen>
-            Failed to complete rbd: signal: interrupt.
-          </screen>
-          <para>
-            In this case, the agent waited for the <literal>rbd</literal>
-            command but it did not finish in a timely manner so the agent
-            gave up and stopped it. This can happen for multiple reasons,
-            but using <literal>dmesg</literal> will likely give you
-            insight into the root cause. If <literal>dmesg</literal> shows
-            something similar to below, then it means you have an old
-            kernel that can’t talk to the cluster:
-          </para>
-          <screen>
-            libceph: mon2 10.205.92.13:6789 feature set mismatch, my 4a042a42 &lt; server's 2004a042a42, missing 20000000000
-          </screen>
-          <para>
-            If <literal>uname -a</literal> shows that you have a kernel
-            version older than <literal>3.15</literal>, you’ll need to
-            perform <emphasis role="strong">one</emphasis> of the
-            following:
-          </para>
-          <itemizedlist spacing="compact">
-            <listitem>
-              <para>
-                Disable some Ceph features by starting the
-                <link xlink:href="./ceph-toolbox.md">rook toolbox</link>
-                and running
-                <literal>ceph osd crush tunables bobtail</literal>
-              </para>
-            </listitem>
-            <listitem>
-              <para>
-                Upgrade your kernel to <literal>3.15</literal> or later.
-              </para>
-            </listitem>
-          </itemizedlist>
-        </section>
-        <section xml:id="filesystem-mounting">
-          <title>Filesystem Mounting</title>
-          <para>
-            In the <literal>rook-ceph-agent</literal> pod logs, you may
-            see a snippet similar to the following:
-          </para>
-          <screen>
-            2017-11-07 00:04:37.808870 I | rook-flexdriver: WARNING: The node kernel version is 4.4.0-87-generic, which do not support multiple ceph filesystems. The kernel version has to be at least 4.7. If you have multiple ceph filesystems, the result could be inconsistent
-          </screen>
-          <para>
-            This will happen in kernels with versions older than 4.7,
-            where the option <literal>mds_namespace</literal> is not
-            supported. This option is used to specify a filesystem
-            namespace.
-          </para>
-          <para>
-            In this case, if there is only one filesystem in the Rook
-            cluster, there should be no issues and the mount should
-            succeed. If you have more than one filesystem, inconsistent
-            results may arise and the filesystem mounted may not be the
-            one you specified.
-          </para>
-          <para>
-            If the issue is still not resolved from the steps above,
-            please come chat with us on the
-            <emphasis role="strong">#general</emphasis> channel of our
-            <link xlink:href="https://slack.rook.io">Rook Slack</link>. We
-            want to help you get your storage working and learn from those
-            lessons to prevent users in the future from seeing the same
-            issue.
           </para>
         </section>
       </section>
@@ -802,12 +467,6 @@
             </para>
           </listitem>
         </orderedlist>
-        <para>
-          If you are still using the Rook flex driver for the volumes (the
-          CSI driver is the default since Rook v1.1), another cause could
-          be that the operator is not running or is otherwise not
-          responding to the request to provision the storage.
-        </para>
         <section xml:id="confirm-if-there-are-osds">
           <title>Confirm if there are OSDs</title>
           <para>
@@ -1268,7 +927,7 @@
         <screen>
           $kubectl -n rook-ceph get pod
           NAME                                 READY     STATUS    RESTARTS   AGE
-          rook-ceph-agent-gfrm5                0/1       Error     0          14s
+          -gfrm5                0/1       Error     0          14s
           rook-ceph-operator-5f4866946-vmtff   1/1       Running   0          23s
           rook-discover-qhx6c                  1/1       Running   0          14s
         </screen>
@@ -1429,27 +1088,6 @@
         ConfigMap to enable logging. See the
         <xref linkend="custom-cephconf-settings"/> for information about how to use the config
         override ConfigMap.
-      </para>
-    </section>
-    <section xml:id="flex-storage-class-versus-ceph-csi-storage-class">
-      <title>Flex storage class versus Ceph CSI storage class</title>
-      <para>
-        Since Rook 1.1, Ceph CSI has become stable and moving forward is
-        the ultimate replacement over the Flex driver. However, not all
-        Flex storage classes are available through Ceph CSI since it’s
-        basically catching up on features. Ceph CSI in its 1.2 version
-        (with Rook 1.1) does not support the Erasure coded pools storage
-        class.
-      </para>
-      <para>
-        So, if you are looking at using such storage class you should
-        enable the Flex driver by setting
-        <literal>ROOK_ENABLE_FLEX_DRIVER: true</literal> in your
-        <literal>operator.yaml</literal>. Also, if you are in the need of
-        specific features and wonder if CSI is capable of handling them,
-        you should read
-        <link xlink:href="https://github.com/ceph/ceph-csi#support-matrix">the
-          ceph-csi support matrix</link>.
       </para>
     </section>
     <section xml:id="a-worker-node-using-rbd-devices-hangs-up">
