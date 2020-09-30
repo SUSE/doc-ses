@@ -5,9 +5,9 @@
     %entities;
 ]>
 <chapter xmlns="http://docbook.org/ns/docbook"
- xmlns:xi="http://www.w3.org/2001/XInclude"
- xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0"
- xml:id="admin-caasp-cephtoolbox">
+  xmlns:xi="http://www.w3.org/2001/XInclude"
+  xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0"
+  xml:id="admin-caasp-cephtoolbox">
 <!-- ============================================================== -->
  <title>&ceph; Toolbox</title>
  <info>
@@ -17,7 +17,234 @@
    <dm:release>SES 7</dm:release>
   </dm:docmanager>
  </info>
- <para>
-   Content from: https://rook.io/docs/rook/v1.4/ceph-toolbox.html
- </para>
- </chapter>
+ <sect1 xml:id="rook-toolbox">
+  <title>&rook; Toolbox</title>
+
+  <para>
+   The &rook; toolbox is a container with common tools used for rook debugging
+   and testing. The toolbox is based on CentOS, so more tools of your choosing
+   can be installed with <command>yum</command>.
+  </para>
+
+  <para>
+   The toolbox can be run in two modes:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <xref linkend="interactive-toolbox"/>: Start a toolbox pod where you can
+     connect and execute &ceph; commands from a shell.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="toolbox-job"/>: Run a script with &ceph; commands and
+     collect the results from the job log.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <note>
+   <para>
+    Prerequisite: Before running the toolbox you should have a running &rook;
+    cluster deployed.
+   </para>
+  </note>
+
+  <sect2 xml:id="interactive-toolbox">
+   <title>Interactive Toolbox</title>
+   <para>
+    The &rook; toolbox can run as a deployment in a &kube; cluster where you
+    can connect and run arbitrary &ceph; commands.
+   </para>
+   <para>
+    Save the tools spec as <literal>toolbox.yaml</literal>:
+   </para>
+<screen>
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: rook-ceph-tools
+    namespace: rook-ceph
+    labels:
+      app: rook-ceph-tools
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: rook-ceph-tools
+    template:
+      metadata:
+        labels:
+          app: rook-ceph-tools
+      spec:
+        dnsPolicy: ClusterFirstWithHostNet
+        containers:
+        - name: rook-ceph-tools
+          image: rook/ceph:v1.4.4
+          command: ["/tini"]
+          args: ["-g", "--", "/usr/local/bin/toolbox.sh"]
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ROOK_CEPH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: ceph-username
+            - name: ROOK_CEPH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: ceph-secret
+          volumeMounts:
+            - mountPath: /etc/ceph
+              name: ceph-config
+            - name: mon-endpoint-volume
+              mountPath: /etc/rook
+        volumes:
+          - name: mon-endpoint-volume
+            configMap:
+              name: rook-ceph-mon-endpoints
+              items:
+              - key: data
+                path: mon-endpoints
+          - name: ceph-config
+            emptyDir: {}
+        tolerations:
+          - key: "node.kubernetes.io/unreachable"
+            operator: "Exists"
+            effect: "NoExecute"
+            tolerationSeconds: 5
+</screen>
+   <para>
+    Launch the rook-ceph-tools pod:
+   </para>
+<screen>kubectl create -f toolbox.yaml</screen>
+   <para>
+    Wait for the toolbox pod to download its container and get to the
+    <literal>running</literal> state:
+   </para>
+<screen>kubectl -n rook-ceph get pod -l &quot;app=rook-ceph-tools&quot;</screen>
+   <para>
+    Once the rook-ceph-tools pod is running, you can connect to it with:
+   </para>
+<screen>kubectl -n rook-ceph exec -it $(kubectl -n rook-ceph get pod -l &quot;app=rook-ceph-tools&quot; -o jsonpath='{.items[0].metadata.name}') bash</screen>
+   <para>
+    All available tools in the toolbox are ready for your troubleshooting
+    needs.
+   </para>
+   <para>
+    <emphasis role="strong">Example</emphasis>:
+   </para>
+   <itemizedlist spacing="compact">
+    <listitem>
+     <para>
+      <command>ceph status</command>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <command>ceph osd status</command>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <command>ceph df</command>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <command>rados df</command>
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    When you are done with the toolbox, you can remove the deployment:
+   </para>
+<screen>kubectl -n rook-ceph delete deployment rook-ceph-tools</screen>
+  </sect2>
+
+  <sect2 xml:id="toolbox-job">
+   <title>Toolbox Job</title>
+   <para>
+    If you want to run &ceph; commands as a one-time operation and collect the
+    results later from the logs, you can run a script as a &kube; Job. The
+    toolbox job will run a script that is embedded in the job spec. The script
+    has the full flexibility of a bash script.
+   </para>
+   <para>
+    In this example, the <command>ceph status</command> command is executed
+    when the job is created.
+   </para>
+<screen>
+  apiVersion: batch/v1
+  kind: Job
+  metadata:
+    name: rook-ceph-toolbox-job
+    namespace: rook-ceph
+    labels:
+      app: ceph-toolbox-job
+  spec:
+    template:
+      spec:
+        initContainers:
+        - name: config-init
+          image: rook/ceph:v1.4.4
+          command: ["/usr/local/bin/toolbox.sh"]
+          args: ["--skip-watch"]
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: ROOK_CEPH_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: rook-ceph-mon
+                key: ceph-username
+          - name: ROOK_CEPH_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: rook-ceph-mon
+                key: ceph-secret
+          volumeMounts:
+          - mountPath: /etc/ceph
+            name: ceph-config
+          - name: mon-endpoint-volume
+            mountPath: /etc/rook
+        containers:
+        - name: script
+          image: rook/ceph:v1.4.4
+          volumeMounts:
+          - mountPath: /etc/ceph
+            name: ceph-config
+            readOnly: true
+          command:
+          - "bash"
+          - "-c"
+          - |
+            # Modify this script to run any ceph, rbd, radosgw-admin, or other commands that could
+            # be run in the toolbox pod. The output of the commands can be seen by getting the pod log.
+            #
+            # example: print the ceph status
+            ceph status
+        volumes:
+        - name: mon-endpoint-volume
+          configMap:
+            name: rook-ceph-mon-endpoints
+            items:
+            - key: data
+              path: mon-endpoints
+        - name: ceph-config
+          emptyDir: {}
+        restartPolicy: Never
+</screen>
+   <para>
+    Create the toolbox job:
+   </para>
+<screen>kubectl create -f toolbox-job.yaml</screen>
+   <para>
+    After the job completes, see the results of the script:
+   </para>
+<screen>kubectl -n rook-ceph logs -l job-name=rook-ceph-toolbox-job</screen>
+  </sect2>
+ </sect1>
+</chapter>
