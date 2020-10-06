@@ -1,0 +1,829 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE chapter
+[
+  <!ENTITY % entities SYSTEM "entity-decl.ent">
+    %entities;
+]>
+<!-- Converted by suse-upgrade version 1.1 -->
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0" xml:id="cha-ceph-as-iscsi">
+<!-- ============================================================== -->
+ <title>Installation of iSCSI Gateway</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  iSCSI is a storage area network (SAN) protocol that allows clients (called
+  <emphasis>initiators</emphasis>) to send SCSI commands to SCSI storage
+  devices (<emphasis>targets</emphasis>) on remote servers. &productname;
+  &productnumber; includes a facility that opens &ceph; storage management to
+  heterogeneous clients, such as &mswin;* and &vmware;* vSphere, through the
+  iSCSI protocol. Multipath iSCSI access enables availability and scalability
+  for these clients, and the standardized iSCSI protocol also provides an
+  additional layer of security isolation between clients and the &productname;
+  &productnumber; cluster. The configuration facility is named &ceiscsi;. Using
+  &ceiscsi;, &ceph; storage administrators can define thin-provisioned,
+  replicated, highly-available volumes supporting read-only snapshots,
+  read-write clones, and automatic resizing with &ceph; RADOS Block Device
+  (RBD). Administrators can then export volumes either via a single &ceiscsi;
+  gateway host, or via multiple gateway hosts supporting multipath failover.
+  Linux, &mswin;, and &vmware; hosts can connect to volumes using the iSCSI
+  protocol, which makes them available like any other SCSI block device. This
+  means &productname; &productnumber; customers can effectively run a complete
+  block-storage infrastructure subsystem on &ceph; that provides all the
+  features and benefits of a conventional SAN, enabling future growth.
+ </para>
+ <para>
+  This chapter introduces detailed information to set up a &ceph; cluster
+  infrastructure together with an iSCSI gateway so that the client hosts can
+  use remotely stored data as local storage devices using the iSCSI protocol.
+ </para>
+ <sect1 xml:id="ceph-iscsi-iscsi">
+  <title>iSCSI Block Storage</title>
+
+  <para>
+   iSCSI is an implementation of the Small Computer System Interface (SCSI)
+   command set using the Internet Protocol (IP), specified in RFC 3720. iSCSI
+   is implemented as a service where a client (the initiator) talks to a server
+   (the target) via a session on TCP port 3260. An iSCSI target's IP address
+   and port are called an <emphasis>iSCSI portal</emphasis>, where a target can be exposed through
+   one or more portals. The combination of a target and one or more portals is
+   called the <emphasis>target portal group</emphasis> (TPG).
+  </para>
+
+  <para>
+   The underlying data link layer protocol for iSCSI is most often Ethernet. More
+   specifically, modern iSCSI infrastructures use 10 GigE Ethernet or faster
+   networks for optimal throughput. 10 Gigabit Ethernet connectivity between
+   the iSCSI gateway and the back-end &ceph; cluster is strongly recommended.
+  </para>
+
+  <sect2 xml:id="ceph-iscsi-iscsi-target">
+   <title>The Linux Kernel iSCSI Target</title>
+   <para>
+    The Linux kernel iSCSI target was originally named LIO for <literal>linux-iscsi.org</literal>,
+    the project's original domain and Web site. For some time, no fewer than
+    four competing iSCSI target implementations were available for the Linux
+    platform, but LIO ultimately prevailed as the single iSCSI reference
+    target. The mainline kernel code for LIO uses the simple, but somewhat
+    ambiguous name "target", distinguishing between "target core" and a variety
+    of front-end and back-end target modules.
+   </para>
+   <para>
+    The most commonly used front-end module is arguably iSCSI. However, LIO
+    also supports Fibre Channel (FC), Fibre Channel over Ethernet (FCoE) and
+    several other front-end protocols. At this time, only the iSCSI protocol is
+    supported by &productname;.
+   </para>
+   <para>
+    The most frequently used target back-end module is one that is capable of
+    simply re-exporting any available block device on the target host. This
+    module is named <emphasis>iblock</emphasis>. However, LIO also has an RBD-specific back-end
+    module supporting parallelized multipath I/O access to RBD images.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-iscsi-initiators">
+   <title>iSCSI Initiators</title>
+   <para>
+    This section introduces brief information on iSCSI initiators used on
+    Linux, &mswin;, and &vmware; platforms.
+   </para>
+   <sect3>
+    <title>Linux</title>
+    <para>
+     The standard initiator for the Linux platform is
+     <systemitem>open-iscsi</systemitem>. <systemitem>open-iscsi</systemitem>
+     launches a daemon, <systemitem>iscsid</systemitem>, which the user can
+     then use to discover iSCSI targets on any given portal, log in to targets,
+     and map iSCSI volumes. <systemitem>iscsid</systemitem> communicates with
+     the SCSI mid layer to create in-kernel block devices that the kernel can
+     then treat like any other SCSI block device on the system. The
+     <systemitem>open-iscsi</systemitem> initiator can be deployed in
+     conjunction with the Device Mapper Multipath
+     (<systemitem>dm-multipath</systemitem>) facility to provide a highly
+     available iSCSI block device.
+    </para>
+   </sect3>
+   <sect3>
+    <title>&mswin; and &hyper;</title>
+    <para>
+     The default iSCSI initiator for the &mswin; operating system is the
+     Microsoft iSCSI initiator. The iSCSI service can be configured via a
+     graphical user interface (GUI), and supports multipath I/O for high
+     availability.
+    </para>
+   </sect3>
+   <sect3>
+    <title>&vmware;</title>
+    <para>
+     The default iSCSI initiator for &vmware; vSphere and ESX is the &vmware;
+     ESX software iSCSI initiator, <systemitem>vmkiscsi</systemitem>. When
+     enabled, it can be configured either from the vSphere client, or using the
+     <command>vmkiscsi-tool</command> command. You can then format storage
+     volumes connected through the vSphere iSCSI storage adapter with VMFS, and
+     use them like any other VM storage device. The &vmware; initiator also
+     supports multipath I/O for high availability.
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-lrbd">
+  <title>General Information about &ceiscsi;</title>
+
+  <para>
+   &ceiscsi; combines the benefits of RADOS Block Devices with the ubiquitous
+   versatility of iSCSI. By employing &ceiscsi; on an iSCSI target host (known
+   as the &igw;), any application that needs to make use of block storage can
+   benefit from &ceph;, even if it does not speak any &ceph; client protocol.
+   Instead, users can use iSCSI or any other target front-end protocol to
+   connect to an LIO target, which translates all target I/O to RBD storage
+   operations.
+  </para>
+
+  <figure>
+   <title>&ceph; Cluster with a Single iSCSI Gateway</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   &ceiscsi; is inherently highly-available and supports multipath operations.
+   Thus, downstream initiator hosts can use multiple iSCSI gateways for both
+   high availability and scalability. When communicating with an iSCSI
+   configuration with more than one gateway, initiators may load-balance iSCSI
+   requests across multiple gateways. In the event of a gateway failing, being
+   temporarily unreachable, or being disabled for maintenance, I/O will
+   transparently continue via another gateway.
+  </para>
+
+  <figure>
+   <title>&ceph; Cluster with Multiple iSCSI Gateways</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-deploy">
+  <title>Deployment Considerations</title>
+
+  <para>
+   A minimum configuration of &productname; &productnumber; with &ceiscsi;
+   consists of the following components:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     A &ceph; storage cluster. The &ceph; cluster consists of a minimum of four
+     physical servers hosting at least eight object storage daemons (OSDs)
+     each. In such a configuration, three OSD nodes also double as a monitor
+     (MON) host.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     An iSCSI target server running the LIO iSCSI target, configured via
+     &ceiscsi;.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     An iSCSI initiator host, running <systemitem>open-iscsi</systemitem>
+     (Linux), the Microsoft iSCSI Initiator (&mswin;), or any other compatible
+     iSCSI initiator implementation.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   A recommended production configuration of &productname; &productnumber; with
+   &ceiscsi; consists of:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     A &ceph; storage cluster. A production &ceph; cluster consists of any
+     number of (typically more than 10) OSD nodes, each typically running 10-12
+     object storage daemons (OSDs), with no fewer than three dedicated MON
+     hosts.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Several iSCSI target servers running the LIO iSCSI target, configured via
+     &ceiscsi;. For iSCSI fail-over and load-balancing, these servers must run
+     a kernel supporting the <systemitem>target_core_rbd</systemitem> module.
+     Update packages are available from the &sls; maintenance channel.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Any number of iSCSI initiator hosts, running
+     <systemitem>open-iscsi</systemitem> (Linux), the Microsoft iSCSI Initiator
+     (&mswin;), or any other compatible iSCSI initiator implementation.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-install">
+  <title>Installation and Configuration</title>
+
+  <para>
+   This section describes steps to install and configure an &igw; on top of
+   &productname;.
+  </para>
+
+  <sect2>
+   <title>Deploy the &igw; to a &ceph; Cluster</title>
+   <para>
+    The &ceph; &igw; deployment follows the same procedure as the deployment
+    of other &ceph; services—by means of &cephadm;. For more details,
+    see <xref linkend="deploy-cephadm-day2-service-igw"/>.
+  </para>
+  </sect2>
+
+  <sect2>
+   <title>Create RBD Images</title>
+   <para>
+    RBD images are created in the &ceph; store and subsequently exported to
+    iSCSI. We recommend that you use a dedicated RADOS pool for this purpose.
+    You can create a volume from any host that is able to connect to your
+    storage cluster using the &ceph; <command>rbd</command> command line
+    utility. This requires the client to have at least a minimal <filename>ceph.conf</filename>
+    configuration file, and appropriate CephX authentication credentials.
+   </para>
+   <para>
+    To create a new volume for subsequent export via iSCSI, use the
+    <command>rbd create</command> command, specifying the volume size in
+    megabytes. For example, in order to create a 100&nbsp;GB volume named <literal>testvol</literal>
+    in the pool named <literal>iscsi-images</literal>, run:
+   </para>
+<screen>&prompt.cephuser;rbd --pool iscsi-images create --size=102400 <replaceable>testvol</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-rbd-export">
+   <title>Export RBD Images via iSCSI</title>
+   <para>
+    To export RBD images via iSCSI, you can use either &dashboard; Web
+    interface or the &ceiscsi; &gwcli; utility. In this section, we will focus
+    on &gwcli; only, demonstrating how to create an iSCSI target that exports
+    an RBD image using the command line.
+   </para>
+   <note>
+    <para>
+     Only the following RBD image features are supported:
+     <option>layering</option>, <option>striping (v2)</option>,
+     <option>exclusive-lock</option>, <option>fast-diff</option>, and
+     <option>data-pool</option>. RBD images with any other feature enabled
+     cannot be exported.
+    </para>
+   </note>
+   <para>
+    As &rootuser;, enter the &igw; container:
+   </para>
+<screen>&prompt.root;cephadm enter --name <replaceable>CONTAINER_NAME</replaceable></screen>
+   <para>
+     As &rootuser;, start the &igw; command line interface:
+   </para>
+<screen>&prompt.root;&gwcli;</screen>
+   <para>
+    Go to <literal>iscsi-targets</literal> and create a target with the name
+    <literal>iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol</literal>:
+   </para>
+<screen>
+&prompt.gwcli; /> cd /iscsi-targets
+&prompt.gwcli; /iscsi-targets> create iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol
+</screen>
+   <para>
+    Create the iSCSI gateways by specifying the gateway <literal>name</literal>
+    and <literal>ip</literal> address:
+   </para>
+<screen>
+&prompt.gwcli; /iscsi-targets> cd iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/gateways
+&prompt.gwcli; /iscsi-target...tvol/gateways> create iscsi1 192.168.124.104
+&prompt.gwcli; /iscsi-target...tvol/gateways> create iscsi2 192.168.124.105
+</screen>
+   <tip>
+    <para>
+     Use the <literal>help</literal> command to show the list of available
+     commands in the current configuration node.
+    </para>
+   </tip>
+   <para>
+    Add the RBD image with the name <literal>testvol</literal> in the pool
+    <literal>iscsi-images</literal>::
+   </para>
+<screen>
+&prompt.gwcli; /iscsi-target...tvol/gateways> cd /disks
+&prompt.gwcli; /disks> attach iscsi-images/testvol
+</screen>
+   <para>
+    Map the RBD image to the target:
+   </para>
+<screen>
+&prompt.gwcli; /disks> cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/disks
+&prompt.gwcli; /iscsi-target...testvol/disks> add iscsi-images/testvol
+</screen>
+   <note>
+    <para>
+     You can use lower level tools, such as <command>targetcli</command>, to
+     query the local configuration, but not to modify it.
+    </para>
+   </note>
+   <tip>
+    <para>
+     You can use the <command>ls</command> command to review the configuration.
+     Some configuration nodes also support the <command>info</command> command,
+     which can be used to display more detailed information.
+    </para>
+   </tip>
+   <para>
+    Note that, by default, ACL authentication is enabled so this target is not
+    accessible yet. Check <xref linkend="iscsi-lrbd-authentication" /> for more
+    information about authentication and access control.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="iscsi-lrbd-authentication">
+   <title>Authentication and Access Control</title>
+   <para>
+    &iscsi; authentication is flexible and covers many authentication
+    possibilities.
+   </para>
+   <sect3>
+    <title>No Authentication</title>
+    <para>
+     'No authentication' means that any initiator will be able to access any
+     LUNs on the corresponding target. You can enable 'No authentication' by
+     disabling the ACL authentication:
+    </para>
+<screen>
+&prompt.gwcli; /> cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/hosts
+&prompt.gwcli; /iscsi-target...testvol/hosts> auth disable_acl
+</screen>
+   </sect3>
+   <sect3>
+    <title>ACL Authentication</title>
+    <para>
+     When using initiator-name-based ACL authentication, only the defined
+     initiators are allowed to connect. You can define an initiator by doing:
+    </para>
+<screen>
+&prompt.gwcli; /> cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/hosts
+&prompt.gwcli; /iscsi-target...testvol/hosts> create iqn.1996-04.de.suse:01:e6ca28cc9f20
+</screen>
+    <para>
+     Defined initiators will be able to connect, but will only have access to
+     the RBD images that were explicitly added to the initiator:
+    </para>
+<screen>
+&prompt.gwcli; /iscsi-target...:e6ca28cc9f20> disk add rbd/testvol
+</screen>
+   </sect3>
+   <sect3 xml:id="chap-auth-password">
+    <title>CHAP Authentication</title>
+    <para>
+     In addition to the ACL, you can enable CHAP authentication by
+     specifying a user name and password for each initiator:
+    </para>
+<screen>
+&prompt.gwcli; /> cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/hosts/iqn.1996-04.de.suse:01:e6ca28cc9f20
+&prompt.gwcli; /iscsi-target...:e6ca28cc9f20> auth username=common12 password=pass12345678
+</screen>
+    <note>
+     <para>
+      User names must have a length of 8 to 64 characters and can contain
+      alphanumeric characters, <literal>.</literal>, <literal>@</literal>,
+      <literal>-</literal>, <literal>_</literal> or <literal>:</literal>.
+     </para>
+     <para>
+      Passwords must have a length of 12 to 16 characters and can contain
+      alphanumeric characters, <literal>@</literal>, <literal>-</literal>,
+      <literal>_</literal> or <literal>/</literal>..
+     </para>
+    </note>
+    <para>
+     Optionally, you can also enable CHAP mutual authentication by
+     specifying the <option>mutual_username</option> and
+     <option>mutual_password</option> parameters in the <command>auth</command>
+     command.
+    </para>
+   </sect3>
+   <sect3>
+    <title>Discovery and Mutual Authentication</title>
+    <para>
+     <emphasis>Discovery authentication</emphasis> is independent of the
+     previous authentication methods. It requires credentials for browsing, it
+     is optional, and can be configured by:
+    </para>
+<screen>
+&prompt.gwcli; /> cd /iscsi-targets
+&prompt.gwcli; /iscsi-targets> discovery_auth username=du123456 password=dp1234567890
+</screen>
+    <note>
+     <para>
+      User-names must have a length of 8 to 64 characters and can only contain
+      letters, <literal>.</literal>, <literal>@</literal>, <literal>-</literal>,
+      <literal>_</literal> or <literal>:</literal>.
+     </para>
+     <para>
+      Passwords must have a length of 12 to 16 characters and can only contain
+      letters, <literal>@</literal>, <literal>-</literal>, <literal>_</literal>
+      or <literal>/</literal>.
+     </para>
+    </note>
+    <para>
+     Optionally, you can also specify the <option>mutual_username</option> and
+     <option>mutual_password</option> parameters in the
+     <command>discovery_auth</command> command.
+    </para>
+    <para>
+     Discovery authentication can be disabled by using the following command:
+    </para>
+<screen>
+&prompt.gwcli; /iscsi-targets> discovery_auth nochap
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-rbd-advanced">
+   <title>Advanced Settings</title>
+   <para>
+    &ceiscsi; can be configured with advanced parameters which are subsequently
+    passed on to the LIO I/O target. The parameters are divided up into
+    <literal>target</literal> and <literal>disk</literal> parameters.
+   </para>
+   <warning>
+    <para>
+     Unless otherwise noted, changing these parameters from the default setting
+     is not recommended.
+    </para>
+   </warning>
+   <sect3>
+    <title>Target Settings</title>
+    <para>
+     You can view the value of these settings by using the
+     <command>info</command> command:
+    </para>
+<screen>
+&prompt.gwcli; /> cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol
+&prompt.gwcli; /iscsi-target...i.<replaceable>SYSTEM-ARCH</replaceable>:testvol> info
+</screen>
+    <para>
+     And change a setting using the <command>reconfigure</command> command:
+    </para>
+<screen>
+&prompt.gwcli; /iscsi-target...i.<replaceable>SYSTEM-ARCH</replaceable>:testvol> reconfigure login_timeout 20
+</screen>
+    <para>
+     The available <literal>target</literal> settings are:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>default_cmdsn_depth</term>
+      <listitem>
+       <para>
+        Default CmdSN (Command Sequence Number) depth. Limits the amount of
+        requests that an iSCSI initiator can have outstanding at any moment.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>default_erl</term>
+      <listitem>
+       <para>
+        Default error recovery level.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>login_timeout</term>
+      <listitem>
+       <para>
+        Login timeout value in seconds.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>netif_timeout</term>
+      <listitem>
+       <para>
+        NIC failure timeout in seconds.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>prod_mode_write_protect</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, prevents writes to LUNs.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>Disk Settings</title>
+    <para>
+     You can view the value of these settings by using the
+     <command>info</command> command:
+    </para>
+<screen>
+&prompt.gwcli; /> cd /disks/rbd/testvol
+&prompt.gwcli; /disks/rbd/testvol> info
+</screen>
+    <para>
+     And change a setting using the <command>reconfigure</command> command:
+    </para>
+<screen>
+&prompt.gwcli; /disks/rbd/testvol> reconfigure rbd/testvol emulate_pr 0
+</screen>
+    <para>
+     The available <literal>disk</literal> settings are:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>block_size</term>
+      <listitem>
+       <para>
+        Block size of the underlying device.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_3pc</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Third Party Copy.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_caw</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Compare and Write.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_dpo</term>
+      <listitem>
+       <para>
+        If set to 1, turns on Disable Page Out.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_fua_read</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Force Unit Access read.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_fua_write</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Force Unit Access write.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_model_alias</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, uses the back-end device name for the model alias.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_pr</term>
+      <listitem>
+       <para>
+        If set to 0, support for SCSI Reservations, including Persistent Group
+        Reservations, is disabled. While disabled, the SES iSCSI Gateway can
+        ignore reservation state, resulting in improved request latency.
+       </para>
+       <tip>
+        <para>
+         Setting <literal>backstore_emulate_pr</literal> to <literal>0</literal> is recommended if iSCSI initiators
+         do not require SCSI Reservation support.
+        </para>
+       </tip>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_rest_reord</term>
+      <listitem>
+       <para>
+        If set to <literal>0</literal>, the Queue Algorithm Modifier has Restricted Reordering.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tas</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Task Aborted Status.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tpu</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Thin Provisioning Unmap.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tpws</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Thin Provisioning Write Same.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_ua_intlck_ctrl</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enables Unit Attention Interlock.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_write_cache</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, turns on Write Cache Enable.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>enforce_pr_isids</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, enforces persistent reservation ISIDs.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>is_nonrot</term>
+      <listitem>
+       <para>
+        If set to <literal>1</literal>, the backstore is a non-rotational device.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_unmap_block_desc_count</term>
+      <listitem>
+       <para>
+        Maximum number of block descriptors for UNMAP.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_unmap_lba_count:</term>
+      <listitem>
+       <para>
+        Maximum number of LBAs for UNMAP.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_write_same_len</term>
+      <listitem>
+       <para>
+        Maximum length for WRITE_SAME.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>optimal_sectors</term>
+      <listitem>
+       <para>
+        Optimal request size in sectors.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>pi_prot_type</term>
+      <listitem>
+       <para>
+        DIF protection type.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>queue_depth</term>
+      <listitem>
+       <para>
+        Queue depth.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_granularity</term>
+      <listitem>
+       <para>
+        UNMAP granularity.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_granularity_alignment</term>
+      <listitem>
+       <para>
+        UNMAP granularity alignment.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>force_pr_aptpl</term>
+      <listitem>
+       <para>
+        When enabled, LIO will always write out the <emphasis>persistent
+        reservation</emphasis> state to persistent storage, regardless of
+        whether or not the client has requested it via
+        <option>aptpl=1</option>. This has no effect with the kernel RBD
+        back-end for LIO&mdash;it always persists PR state. Ideally, the
+        <option>target_core_rbd</option> option should force it to '1' and
+        throw an error if someone tries to disable it via configfs.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_zeroes_data</term>
+      <listitem>
+       <para>
+        Affects whether LIO will advertise LBPRZ to SCSI initiators, indicating
+        that zeros will be read back from a region following UNMAP or WRITE
+        SAME with an unmap bit.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="iscsi-tcmu">
+  <title>Exporting &rbd; Images Using <systemitem>tcmu-runner</systemitem></title>
+
+  <para>
+   The &ceiscsi; supports both <option>rbd</option> (kernel-based) and
+   <option>user:rbd</option> (tcmu-runner) backstores, making all the management
+   transparent and independent of the backstore.
+  </para>
+
+  <warning>
+   <title>Technology Preview</title>
+   <para>
+    <systemitem>tcmu-runner</systemitem> based &igw; deployments are currently
+    a technology preview.
+   </para>
+  </warning>
+
+  <para>
+   Unlike kernel-based &igw; deployments, <systemitem>tcmu-runner</systemitem>
+   based &igw;s do not offer support for multipath I/O or SCSI Persistent
+   Reservations.
+  </para>
+
+  <para>
+   To export an &rbd; image using <systemitem>tcmu-runner</systemitem>, all you
+   need to do is specify the <option>user:rbd</option> backstore when attaching
+   the disk:
+  </para>
+
+<screen>
+&prompt.gwcli; /disks> attach rbd/testvol backstore=user:rbd
+</screen>
+
+  <note>
+   <para>
+    When using <systemitem>tcmu-runner</systemitem>, the exported RBD image
+    must have the <option>exclusive-lock</option> feature enabled.
+   </para>
+  </note>
+ </sect1>
+</chapter>
