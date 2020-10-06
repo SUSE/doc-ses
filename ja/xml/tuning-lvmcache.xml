@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="tuning-lvmcache.xml" version="5.0" xml:id="lvmcache">
+
+ <title>LVMキャッシュによるパフォーマンスの向上</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:editurl>https://github.com/SUSE/doc-ses/edit/master/xml/</dm:editurl>
+   <dm:maintainer>tbazant@suse.com</dm:maintainer>
+   <dm:status>編集</dm:status>
+   <dm:deadline/>
+   <dm:priority/>
+   <dm:translation>yes</dm:translation>
+   <dm:languages/>
+   <dm:release>SES 6</dm:release>
+  </dm:docmanager>
+ </info>
+ <warning>
+  <title>技術プレビュー</title>
+  <para>
+   LVMキャッシュは現在、技術プレビューです。
+  </para>
+ </warning>
+ <para>
+  LVMキャッシュは、LV (論理ボリューム)のパフォーマンス向上のために使用されるキャッシュメカニズムです。一般的には、小容量の高速なデバイスを使用して、大容量で低速なLVのI/Oパフォーマンスを向上させます。LVMキャッシュの詳細については、そのマニュアルページ(<command>man 7 lvmcache</command>)を参照してください。
+ </para>
+ <para>
+  SUSE Enterprise Storageでは、LVMキャッシュによってOSDのパフォーマンスを向上できます。LVMキャッシュのサポートは、<command>ceph-volume</command>プラグインを介して提供されます。<command>ceph-volume lvmcache</command>を実行することにより、その使用法の詳細を確認できます。
+ </para>
+ <sect1 xml:id="lvmcache-prerequisites">
+  <title>前提条件</title>
+
+  <para>
+   LVMキャッシュ機能を使用して、Cephクラスタのパフォーマンスを向上させるには、以下が必要です。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     安定状態(「HEALTH_OK」)の実行中のCephクラスタ。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     BlueStoreおよびLVMとともに展開されたOSD。SUSE Enterprise Storage 6以降を使用してOSDを構築した場合、これはデフォルトです。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     キャッシュに使用する空のディスクまたはパーティション。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-planning">
+  <title>考慮すべきポイント</title>
+
+  <para>
+   LVMキャッシュを使用するようにOSDを設定する前に、次のポイントを考慮してください。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     「LVMキャッシュが使用事例に適していることを確認する。」<emphasis role="bold"/>OSD用に使用「しない」<emphasis role="bold"/>利用可能な高速ドライブが数台しかない場合の一般的な推奨事項は、それらの高速ドライブをOSD用のWAL/DBデバイスとして使用することです。このような場合、WALおよびDBの操作(小容量でまれな操作)は高速ドライブ上で適用される一方で、データ操作はより低速なOSDドライブ上で適用されます。
+    </para>
+    <tip>
+     <para>
+      使用している導入において、IOPSやスループットよりも遅延が重要である場合は、高速ドライブをWAL/DBパーティションではなくLVMキャッシュとして使用できます。
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     高速ドライブを複数のOSD用のLVMキャッシュとして使用する予定の場合、「OSDの操作(複製を含む)はすべてキャッシュデバイスを経由する」ことに注意する。<emphasis role="bold"/>読み込みはすべてキャッシュデバイスからクエリされ、キャッシュミスの場合は、低速デバイスからのみ提供されます。書き込みは常に、まずキャッシュデバイスに適用され、後で低速デバイスにフラッシュされます(「writeback」がデフォルトのキャッシュモードです)。
+    </para>
+    <para>
+     LVMキャッシュを利用するかどうかを決定する際には、高速ドライブが複数のOSDのフロントとして機能できるかどうかを確認しながら、許容可能な量のIOPSを提供します。これをテストするには、高速デバイスが提供できるIOPSの最大量を測定してから、その結果を、高速デバイスの後方にあるOSDの数で割ります。その結果が、OSDがキャッシュなしで提供できるIOPSの最大量より低いか、またはその量に近い場合、このセットアップにLVMキャッシュは適していないと考えられます。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     「LVMキャッシュデバイスとOSDの相互作用が重要である。」<emphasis role="bold"/>書き込みはキャッシュデバイスから低速デバイスへ定期的にフラッシュされます。受信トラフィックが持続的で大量である場合、キャッシュデバイスは、受信要求もフラッシュプロセスも遅れずに処理しようとするため、パフォーマンスが低下します。高速デバイスが低速デバイスを大きく上回るIOPSと優れたレイテンシを提供できる場合を除き、持続的で大量のワークロードではLVMキャッシュを使用しないでください。LVMキャッシュにはバーストパターンのトラフィックの方が適しています。このようなトラフィックでは、クライアントトラフィックを妨げることなく、キャッシュがダーティデータをフラッシュする時間があるためです。持続的にトラフィックの少ないワークロードでは、LVMキャッシュを使用するとパフォーマンスが向上するかどうかを事前に推測することは困難です。最適なテストは、LVMキャッシュセットアップとWAL/DBセットアップのベンチマークを実行して比較することです。さらに、WALパーティションでは小容量の書き込みが多いため、DB/WALには、LVMキャッシュの代わりに高速デバイスを使用することをお勧めします。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     LVMキャッシュを使用すべきかどうかわからない場合は、高速デバイスをWAL/DBデバイスとして使用してください。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="lvmcache-preparation">
+  <title>準備作業</title>
+
+  <para>
+   高速デバイスを複数のパーティションに分割する必要があります。各OSDには、キャッシュ用に2つのパーティションが必要です。1つはキャッシュデータ用で、もう1つはキャッシュメタデータ用です。どちらのパーティションも最小サイズは2GBです。1つの高速デバイスを使用して複数のOSDをキャッシュできます。必要なのは、パーティションを適切に作成することだけです。
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-configuring">
+  <title>LVMキャッシュの設定</title>
+
+  <para>
+   <command>ceph-volume lvmcache</command>コマンドを実行することにより、LVMキャッシュの追加、削除、および設定の詳細を確認できます。
+  </para>
+
+  <sect2 xml:id="lvmcache-adding">
+   <title>LVMキャッシュの追加</title>
+   <para>
+    LVMキャッシュを既存のOSDに追加するには、次のコマンドを使用します。
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache add
+ --cachemetadata <replaceable>METADATA-PARTITION</replaceable>
+ --cachedata <replaceable>DATA-PARTITION</replaceable>
+ --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    オプションの<option>--data</option>、<option>--db</option>、または<option>--wal</option>で、キャッシュするパーティションを指定します。デフォルトは<option>--data</option>です。
+   </para>
+   <tip>
+    <title>LV (論理ボリューム)の指定</title>
+    <para>
+     <option>--osd-id</option>オプションの代わりに<option>--origin</option>を使用して、キャッシュするLVを指定することもできます。
+    </para>
+<screen>
+[...]
+--origin <replaceable>VOLUME-GROUP</replaceable>/<replaceable>LOGICAL-VOLUME</replaceable>
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-removing">
+   <title>LVMキャッシュの削除</title>
+   <para>
+    OSDから既存のLVMキャッシュを削除するには、次のコマンドを使用します。
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache rm --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="lvmcache-mode">
+   <title>LVMキャッシュモードの設定</title>
+   <para>
+    キャッシュモードを指定するには、次のコマンドを使用します。
+   </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>ceph-volume lvmcache mode --set <replaceable>CACHING-MODE</replaceable> --osd-id <replaceable>OSD-ID</replaceable>
+</screen>
+   <para>
+    <replaceable>CACHING-MODE</replaceable>は、「writeback」(デフォルト)または「writethrough」のいずれかです。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="lvmcache-failures">
+  <title>障害処理</title>
+
+  <para>
+   キャッシュデバイスに障害が発生した場合、そのキャッシュデバイスの後方にあるすべてのOSDをクラスタから削除し(<xref linkend="salt-removing-osd"/>を参照)、消去して再展開する必要があります。OSDドライブに障害が発生した場合、OSDのLVとそのキャッシュのLVは、アクティブですが機能していません。<command>pvremove <replaceable>PARTITION</replaceable></command>を使用して、OSDのキャッシュデータに使用するパーティション(物理ボリューム)とメタデータパーティションを消去します。<command>pvs</command>を使用して、すべての物理ボリュームを一覧にできます。
+  </para>
+ </sect1>
+ <sect1 xml:id="lvmcache-faq">
+  <title>よくある質問</title>
+
+  <qandaset>
+   <qandaentry>
+    <question>
+     <para>
+      OSDを削除するとどうなりますか?
+     </para>
+    </question>
+    <answer>
+     <para>
+      <command>lvremove</command>を使用してOSDを削除すると、キャッシュLVも削除されます。ただし、パーティションに対して<command>pvremove</command>を呼び出し、すべてのラベルが消去されていることを確認する必要があります。
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      <command>ceph-volume zap</command>を使用してOSDを消去するとどうなりますか?
+     </para>
+    </question>
+    <answer>
+     <para>
+      質問「OSDを削除するとどうなりますか?」と同じ回答が当てはまります。<emphasis role="bold"/>
+     </para>
+    </answer>
+   </qandaentry>
+   <qandaentry>
+    <question>
+     <para>
+      元のドライブに障害が発生するとどうなりますか?
+     </para>
+    </question>
+    <answer>
+     <para>
+      キャッシュLVは引き続き存在し、<command>cache info</command>を実行すると、現在も使用可能であると表示されます。元のLVのデバイスがなくなっているため、LVMがキャッシュをフラッシュできないことから、キャッシュを解除できません。元のLVは存在しているものの、そのバッキングデバイスは存在しない状況になります。これを修正するには、<command>pvs</command>コマンドを使用して、元のLVに関連付けられているデバイスを検索します。その後、次のコマンドを使用してデバイスを削除できます。
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo pvremove /dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      キャッシュパーティションに対しても同じ操作を実行できます。この手順では、元のLVとキャッシュLVが表示されないようにします。以下も使用できます。
+     </para>
+<screen>
+<prompt>cephadm@osd &gt; </prompt>sudo dd if=/dev/zero of=/dev/<replaceable>DEVICE</replaceable> or <replaceable>PARTITION</replaceable>
+</screen>
+     <para>
+      これにより、<command>pvremove</command>を使用する前にLVを消去できます。
+     </para>
+    </answer>
+   </qandaentry>
+  </qandaset>
+ </sect1>
+</chapter>
