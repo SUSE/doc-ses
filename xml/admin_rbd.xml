@@ -1872,4 +1872,289 @@ protocol feature mismatch, my 2fffffffffff &lt; peer 4010ff8ffacffff missing 401
    </step>
   </procedure>
  </sect1>
+ <sect1 xml:id="rbd-kubernetes">
+   <title>Block Devices and &kube;</title>
+   <para>
+     You can use &ceph; RBD with &kube;v1.13 and higher through the <literal>ceph-csi</literal>
+     driver. This driver dynamically provisions RBD images to back &kube;
+     volumes and maps these RBD images as block devices (optionally mounting a
+     file system contained within the image) on worker nodes running pods that
+     reference an RBD-backed volume.
+   </para>
+   <para>
+     To use &ceph; block devices with &kube;, you must install and configure
+     <literal>ceph-csi</literal> within your &kube; environment.
+   </para>
+   <important>
+     <para>
+        <literal>ceph-csi</literal> uses the RBD kernel modules by default
+        which may not support all &ceph; CRUSH tunables or RBD image features.
+     </para>
+   </important>
+   <procedure>
+     <step>
+       <para>
+         By default, &ceph; block devices use the RBD pool. Create a pool for
+         &kube; volume storage. Ensure your &ceph; cluster is running, then
+         create the pool:
+       </para>
+<screen>&prompt.cephuser;ceph osd pool create kubernetes</screen>
+     </step>
+     <step>
+       <para>
+         Use the RBD tool to initialize the pool:
+       </para>
+<screen>&prompt.cephuser;rbd pool init kubernetes</screen>
+     </step>
+     <step>
+       <para>
+         Create a new user for &kube; and <literal>ceph-csi</literal>. Execute the following
+         and record the generated key:
+       </para>
+<screen>&prompt.cephuser;ceph auth get-or-create client.kubernetes mon 'profile rbd' osd 'profile rbd pool=kubernetes' mgr 'profile rbd pool=kubernetes'
+[client.kubernetes]
+    key = AQD9o0Fd6hQRChAAt7fMaSZXduT3NWEqylNpmg==</screen>
+     </step>
+     <step>
+       <para>
+         <literal>ceph-csi</literal> requires a ConfigMap object stored in &kube;
+         to define the the &ceph; monitor addresses for the &ceph; cluster.
+         Collect both the &ceph; cluster unique fsid and the monitor addresses:
+       </para>
+<screen>&prompt.cephuser;ceph mon dump
+&lt;...&gt;
+fsid b9127830-b0cc-4e34-aa47-9d1a2e9949a8
+&lt;...&gt;
+0: [v2:192.168.1.1:3300/0,v1:192.168.1.1:6789/0] mon.a
+1: [v2:192.168.1.2:3300/0,v1:192.168.1.2:6789/0] mon.b
+2: [v2:192.168.1.3:3300/0,v1:192.168.1.3:6789/0] mon.c</screen>
+     </step>
+     <step>
+       <para>
+         Generate a <filename>csi-config-map.yaml</filename> file similar to
+         the example below, substituting the fsid for <literal>clusterID</literal>, and
+         the monitor addresses for <literal>monitors</literal>:
+       </para>
+<screen>cat <<EOF > csi-config-map.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+data:
+  config.json: |-
+    [
+      {
+        "clusterID": "b9127830-b0cc-4e34-aa47-9d1a2e9949a8",
+        "monitors": [
+          "192.168.1.1:6789",
+          "192.168.1.2:6789",
+          "192.168.1.3:6789"
+        ]
+      }
+    ]
+metadata:
+  name: ceph-csi-config
+EOF</screen>
+     </step>
+     <step>
+       <para>
+         Once generated, store the new ConfigMap object in &kube;:
+       </para>
+<screen>&prompt.kubeuser;kubectl apply -f csi-config-map.yaml</screen>
+     </step>
+     <step>
+       <para>
+         <literal>ceph-csi</literal> requires the cephx credentials for
+         communicating with the &ceph; cluster. Generate a <filename>csi-rbd-secret.yaml</filename>
+         file similar to the example below, using the newly created
+         &kube; user ID and cephx key:
+       </para>
+<screen>cat <<EOF > csi-rbd-secret.yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: csi-rbd-secret
+  namespace: default
+stringData:
+  userID: kubernetes
+  userKey: AQD9o0Fd6hQRChAAt7fMaSZXduT3NWEqylNpmg==
+EOF</screen>
+     </step>
+     <step>
+       <para>
+         Once generated, store the new secret object in &kube;:
+       </para>
+<screen>&prompt.kubeuser;kubectl apply -f csi-rbd-secret.yaml</screen>
+     </step>
+     <step>
+       <para>
+         Create the required ServiceAccount and RBAC ClusterRole/ClusterRoleBinding
+         &kube; objects. These objects do not necessarily need to be customized
+         for your &kube; environment and therefore can be used directly from the
+         <literal>ceph-csi</literal> deployment YAMLs:
+       </para>
+<screen>&prompt.kubeuser;kubectl apply -f https://raw.githubusercontent.com/ceph/ceph-csi/master/deploy/rbd/kubernetes/csi-provisioner-rbac.yaml
+&prompt.kubeuser;kubectl apply -f https://raw.githubusercontent.com/ceph/ceph-csi/master/deploy/rbd/kubernetes/csi-nodeplugin-rbac.yaml</screen>
+     </step>
+     <step>
+       <para>
+         Create the <literal>ceph-csi</literal> provisioner and node plugins:
+       </para>
+<screen>&prompt.kubeuser;wget https://raw.githubusercontent.com/ceph/ceph-csi/master/deploy/rbd/kubernetes/csi-rbdplugin-provisioner.yaml
+&prompt.kubeuser;kubectl apply -f csi-rbdplugin-provisioner.yaml
+&prompt.kubeuser;wget https://raw.githubusercontent.com/ceph/ceph-csi/master/deploy/rbd/kubernetes/csi-rbdplugin.yaml
+&prompt.kubeuser;kubectl apply -f csi-rbdplugin.yaml</screen>
+       <important>
+         <para>
+            By default, the provisioner and node plugin YAMLs will pull the
+            development release of the <literal>ceph-csi</literal> container. The YAMLs should
+            be updated to use a release version.
+         </para>
+       </important>
+     </step>
+   </procedure>
+   <sect2 xml:id="using-rbd-kubernetes">
+     <title>Using &ceph; Block Devices in &kube;</title>
+     <para>
+       The &kube; StorageClass defines a class of storage. Multiple StorageClass
+       objects can be created to map to different quality-of-service levels and
+       features. For example, NVMe vs HDD-based pools.
+     </para>
+     <para>
+       To create a <literal>ceph-csi</literal> StorageClass that maps to the
+       &kube; pool created above, the following YAML file can be used after
+       ensuring that the <literal>clusterID</literal> property matches your
+       &ceph; cluster’s fsid:
+     </para>
+<screen>&prompt.kubeuser;cat <&lt;EOF > csi-rbd-sc.yaml
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+   name: csi-rbd-sc
+provisioner: rbd.csi.ceph.com
+parameters:
+   clusterID: b9127830-b0cc-4e34-aa47-9d1a2e9949a8
+   pool: kubernetes
+   csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+   csi.storage.k8s.io/provisioner-secret-namespace: default
+   csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+   csi.storage.k8s.io/node-stage-secret-namespace: default
+reclaimPolicy: Delete
+mountOptions:
+   - discard
+EOF
+&prompt.kubeuser;kubectl apply -f csi-rbd-sc.yaml</screen>
+     <para>
+       A <literal>PersistentVolumeClaim</literal> is a request for abstract storage resources
+       by a user. The <literal>PersistentVolumeClaim</literal> would then be associated to a
+       pod resource to provision a <literal>PersistentVolume</literal>, which would be backed
+       by a &ceph; block image. An optional <option>volumeMode</option> can be included to
+       select between a mounted file system (default) or raw block
+       device-based volume.
+     </para>
+     <para>
+       Using <literal>ceph-csi</literal>, specifying <option>Filesystem</option>
+       for <option>volumeMode</option> can support both <literal>ReadWriteOnce</literal>
+       and <literal>ReadOnlyMany accessMode</literal> claims, and specifying
+       <option>Block</option> for <option>volumeMode</option> can support
+       <literal>ReadWriteOnce</literal>, <literal>ReadWriteMany</literal>, and
+       <literal>ReadOnlyMany accessMode</literal> claims.
+     </para>
+     <para>
+       For example, to create a block-based <literal>PersistentVolumeClaim</literal> that
+       utilizes the <literal>ceph-csi-based StorageClass</literal> created above, the following
+       YAML can be used to request raw block storage from the <literal>csi-rbd-sc
+       StorageClass</literal>:
+     </para>
+<screen>&prompt.kubeuser;cat <&lt;EOF > raw-block-pvc.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: raw-block-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: csi-rbd-sc
+EOF
+&prompt.kubeuser;kubectl apply -f raw-block-pvc.yaml</screen>
+     <para>
+       The following demonstrates and example of binding the above
+       <literal>PersistentVolumeClaim</literal> to a pod resource as a raw
+       block device:
+     </para>
+<screen>&prompt.kubeuser;cat <&lt;EOF > raw-block-pod.yaml
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-raw-block-volume
+spec:
+  containers:
+    - name: fc-container
+      image: fedora:26
+      command: ["/bin/sh", "-c"]
+      args: ["tail -f /dev/null"]
+      volumeDevices:
+        - name: data
+          devicePath: /dev/xvda
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: raw-block-pvc
+EOF
+&prompt.kubeuser;kubectl apply -f raw-block-pod.yaml</screen>
+     <para>
+       To create a file-system-based <literal>PersistentVolumeClaim</literal> that utilizes
+       the <literal>ceph-csi-based StorageClass</literal> created above, the following
+       YAML can be used to request a mounted file system (backed by an
+       RBD image) from the <literal>csi-rbd-sc StorageClass</literal>:
+     </para>
+<screen>&prompt.kubeuser;cat <&lt;EOF > pvc.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rbd-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: csi-rbd-sc
+EOF
+&prompt.kubeuser;kubectl apply -f pvc.yaml</screen>
+     <para>
+       The following demonstrates and example of binding the above
+       <literal>PersistentVolumeClaim</literal> to a pod resource as a mounted file system:
+     </para>
+<screen>&prompt.kubeuser;cat <&lt;EOF > pod.yaml
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: csi-rbd-demo-pod
+spec:
+  containers:
+    - name: web-server
+      image: nginx
+      volumeMounts:
+        - name: mypvc
+          mountPath: /var/lib/www/html
+  volumes:
+    - name: mypvc
+      persistentVolumeClaim:
+        claimName: rbd-pvc
+        readOnly: false
+EOF
+&prompt.kubeuser;kubectl apply -f pod.yaml</screen>
+   </sect2>
+ </sect1>
 </chapter>
