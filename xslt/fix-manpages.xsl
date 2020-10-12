@@ -41,12 +41,11 @@
       </xsl:copy>
    </xsl:template>
 
-   <xsl:template match="/*">
-      <xsl:element name="{local-name()}"
-         namespace="http://docbook.org/ns/docbook">
-         <xsl:call-template name="add.root.namespaces"/>
-         <xsl:apply-templates select="@* | node()"/>
-      </xsl:element>
+   <xsl:template match="/section">
+     <sect1>
+      <xsl:call-template name="add.root.namespaces"/>
+      <xsl:apply-templates select="@* | node()"/>
+     </sect1>
    </xsl:template>
 
    <xsl:template match="*">
@@ -70,6 +69,14 @@
     <screen>
       <xsl:value-of select="normalize-space(para/text())"/>
     </screen>
+  </xsl:template>
+
+  <xsl:template match="section">
+    <xsl:variable name="level" select="count(ancestor-or-self::section)"/>
+
+    <xsl:element name="sect{$level}" namespace="http://docbook.org/ns/docbook">
+      <xsl:apply-templates select="node() | @*"/>
+    </xsl:element>
   </xsl:template>
 
 </xsl:stylesheet>
