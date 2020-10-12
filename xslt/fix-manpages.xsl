@@ -22,6 +22,9 @@
 
   <xsl:output indent="yes"/>
 
+  <xsl:param name="idprefix">man-</xsl:param>
+  <xsl:param name="id"/>
+
    <xsl:template name="add.root.namespaces">
     <!-- add namespaces to the top output element -->
     <xsl:variable name="temp">
@@ -42,7 +45,7 @@
    </xsl:template>
 
    <xsl:template match="/section">
-     <sect1>
+     <sect1 xml:lang="en">
       <xsl:call-template name="add.root.namespaces"/>
       <xsl:apply-templates select="@* | node()"/>
      </sect1>
@@ -77,6 +80,12 @@
     <xsl:element name="sect{$level}" namespace="http://docbook.org/ns/docbook">
       <xsl:apply-templates select="node() | @*"/>
     </xsl:element>
+  </xsl:template>
+
+  <xsl:template match="@xml:id">
+    <xsl:attribute name="xml:id">
+      <xsl:value-of select="concat($idprefix, $id, .)"/>
+    </xsl:attribute>
   </xsl:template>
 
 </xsl:stylesheet>

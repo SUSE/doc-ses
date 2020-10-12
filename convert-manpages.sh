@@ -33,6 +33,9 @@ DEST_MANPAGE_DIR="manpages"
 # Helper stylesheet to fine-tune raw XML from pandoc:
 XSLT="xslt/fix-manpages.xsl"
 
+# The ID prefix; by default, set to "man-"
+IDPREFIX=""
+
 # Verbosity level:
 VERBOSE=0
 
@@ -69,9 +72,10 @@ The script does the following steps:
 Done! :)
 
 Options:
-  -h, --help     Shows this help text
-  -v, -verbose   Makes output more verbose
-  -g, --gitdir   Use cloned GH directory from previous run
+  -h, --help      Shows this help text
+  -v, -verbose    Makes output more verbose
+  -g, --gitdir    Use cloned GH directory from previous run
+  -i, --idprefix  A short word that is added as prefix for all xml:id attributes
 
 Arguments:
   OUTPUTDIR      Directory where result is written (use "manpages")
@@ -145,12 +149,15 @@ function fix-manpage() {
     local DIR="${1}"
     local OUTDIR="${2}"
     local OUTFILE="$OUTDIR/$BASE"
+    local PARAMS="--stringparam id ${BASE%*.xml}-"
     dump "  Fix raw DocBook document from pandoc..."
-    xsltproc -o "$OUTFILE" "$THISDIR/$XSLT" "$FILE"
+    [[ -z $IDPREFIX ]] || PARAMS="$PARAMS --stringparam idprefx $IDPREFIX"
+    dump "  using $PARAMS"
+    xsltproc $PARAMS -o "$OUTFILE" "$THISDIR/$XSLT" "$FILE"
 }
 
 export POSIXLY_CORRECT=1
-ARGS=$(getopt -o "hvg:" -l "help,verbose,gitdir:" -n "$ME" -- "$@")
+ARGS=$(getopt -o "hvi:g:" -l "help,verbose,idprefix:,gitdir:" -n "$ME" -- "$@")
 
 eval set -- "$ARGS"
 
@@ -166,6 +173,11 @@ while true; do
             ;;
         -g|--gitdir)
             TEMPDIR="$2"
+            shift 2
+            ;;
+        -i|--idprefix)
+            echo "****"
+            IDPREFIX="$2"
             shift 2
             ;;
         --)
@@ -186,8 +198,10 @@ fi
 
 [[ -d $THISDIR/$DEST_MANPAGE_DIR ]] || mkdir $THISDIR/$DEST_MANPAGE_DIR
 
+# Step 1: check prerequisites_
 prerequisites
 
+# Step 2 + 3: Clone GitHub repository and download additional manpage
 if [[ -e "$TEMPDIR" ]]; then
     dump "* Using $TEMPDIR from previous run."
 else
@@ -195,6 +209,7 @@ else
     clone-repo
 fi
 
+# Step 4, 5, 6: Remove :orphan: lines, convert RST->DocBook, fix raw XML file
 dump "* Looking into $TEMPDIR/$SRC_MANPAGE_DIR for RST files..."
 for file in $TEMPDIR/$SRC_MANPAGE_DIR/*.rst; do
   dump "- $file"
