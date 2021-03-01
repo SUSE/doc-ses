@@ -652,17 +652,6 @@ ID   CLASS  WEIGHT   TYPE NAME       STATUS  REWEIGHT  PRI-AFF
  <sect1 xml:id="upgrade-gateways">
   <title>Gateway upgrades</title>
 
-<!-- 2020-10-12 tbazant: no upgrade path yet
-  <sect2 xml:id="upgrade-mds">
-   <title>Upgrade the &mds;</title>
-   <para><remark>TBD</remark></para>
-  </sect2>
-
-  <sect2 xml:id="upgrade-igw">
-   <title>Upgrade the &igw;</title>
-   <para><remark>TBD</remark></para>
-  </sect2>
--->
 
   <sect2 xml:id="upgrade-ogw">
    <title>Upgrading the &ogw;</title>
@@ -932,6 +921,152 @@ warning: /etc/ganesha/ganesha.conf saved as /etc/ganesha/ganesha.conf.rpmsave</s
 &prompt.cephuser;ceph dashboard get-ganesha-clusters-rados-pool-namespace
 &prompt.cephuser;ceph dashboard set-ganesha-clusters-rados-pool-namespace cluster2:pool2/ns2
 </screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-mds">
+   <title>Upgrading the &mds;</title>
+   <para>
+    Unlike MONs, MGRs and OSDs, Metadata servers cannot be adopted in-place.
+    Instead, you need to redeploy them in containers using the &ceph; orchestrator.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Run <command>ceph fs ls</command> to obtain the name of your file system, for example:
+     </para>
+<screen>
+&prompt.cephuser;ceph fs ls
+name: cephfs, metadata pool: cephfs_metadata, data pools: [cephfs_data ]
+</screen>
+    </step>
+    <step>
+     <para>
+      Create a new service specification file <filename>mds.yml</filename> as
+      described in <xref linkend="deploy-cephadm-day2-service-mds"/> by using
+      the file system name as the <option>service_id</option> and specifying
+      the hosts that will run the MDS daemons. For example:
+     </para>
+<screen>
+service_type: mds
+service_id: cephfs
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    </step>
+    <step>
+     <para>
+      Run <command>ceph orch apply -i mds.yml</command> to apply the service
+      specification and start the MDS daemons.
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-igw">
+   <title>Upgrading the &igw;</title>
+   <para>
+    &igw;s cannot be adopted in-place. Instead, you need to redeploy them in
+    containers using the &ceph; orchestrator. If you have multiple &igw;s,
+    redeploy them one by one to reduce the service downtime.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Stop and disable the existing &iscsi; daemons on each &igw; node:
+     </para>
+<screen>
+&prompt.sudo;systemctl stop rbd-target-gw
+&prompt.sudo;systemctl disable rbd-target-gw
+&prompt.sudo;systemctl stop rbd-target-api
+&prompt.sudo;systemctl disable rbd-target-api
+</screen>
+    </step>
+    <step>
+     <para>
+      Create a service specification for the &igw; as described in <xref
+      linkend="deploy-cephadm-day2-service-igw"/>. For this, you will need the
+      <option>pool</option>, <option>trusted_ip_list</option>, and
+      <option>api_*</option> settings from the existing
+      <filename>/etc/ceph/iscsi-gateway.cfg</filename> file. If you have SSL
+      support enabled (<literal>api_secure = true</literal>), you will need the
+      SSL certificate (<filename>/etc/ceph/iscsi-gateway.crt</filename>) and
+      key (<filename>/etc/ceph/iscsi-gateway.key</filename>).
+     </para>
+     <para>
+      For example, if <filename>/etc/ceph/iscsi-gateway.cfg</filename> contains
+      the following:
+     </para>
+<screen>
+[config]
+cluster_client_name = client.igw.ses-min5
+pool = iscsi-images
+trusted_ip_list = 10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202
+api_port = 5000
+api_user = admin
+api_password = admin
+api_secure = true
+</screen>
+     <para>
+      Then you need to create the following service specification file
+      <filename>iscsi.yml</filename>:
+     </para>
+<screen>
+service_type: iscsi
+service_id: igw
+placement:
+  hosts:
+  - ses-min5
+spec:
+  pool: iscsi-images
+  trusted_ip_list: "10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202"
+  api_port: 5000
+  api_user: admin
+  api_password: admin
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+     <note>
+      <para>
+       The <option>pool</option>, <option>trusted_ip_list</option>,
+       <option>api_port</option>, <option>api_user</option>,
+       <option>api_password</option>, <option>api_secure</option> settings are
+       identical to the ones from the
+       <filename>/etc/ceph/iscsi-gateway.cfg</filename> file. The
+       <option>ssl_cert</option> and <option>ssl_key</option> values can be
+       copied in from the existing SSL certificate and key files. Verify that
+       they are indented correctly and the 'pipe' character
+       <literal>|</literal> appears at the end of the
+       <literal>ssl_cert:</literal> and <literal>ssl_key:</literal> lines.
+      </para>
+     </note>
+    </step>
+    <step>
+     <para>
+      Run <filename>ceph orch apply -i iscsi.yml</filename> to apply the
+      service specification and start the &igw; daemons.
+     </para>
+    </step>
+    <step>
+     <para>
+      Remove the old <package>ceph-iscsi</package> package from each of the existing iSCSI gateway nodes:
+     </para>
+<screen>&prompt.cephuser;zypper rm -u ceph-iscsi</screen>
     </step>
    </procedure>
   </sect2>
