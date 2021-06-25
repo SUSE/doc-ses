@@ -149,7 +149,7 @@ function fix-manpage() {
     local DIR="${1}"
     local OUTDIR="${2}"
     local OUTFILE="$OUTDIR/$BASE"
-    local PARAMS="--stringparam id ${BASE%*.xml}-"
+    local PARAMS="--stringparam id ${BASE%*.xml}_"
     dump "  Fix raw DocBook document from pandoc..."
     [[ -z $IDPREFIX ]] || PARAMS="$PARAMS --stringparam idprefx $IDPREFIX"
     dump "  using $PARAMS"
