@@ -22,7 +22,7 @@
 
   <xsl:output indent="yes"/>
 
-  <xsl:param name="idprefix">man-</xsl:param>
+  <xsl:param name="idprefix">man_</xsl:param>
   <xsl:param name="id"/>
 
    <xsl:template name="add.root.namespaces">
@@ -82,10 +82,33 @@
     </xsl:element>
   </xsl:template>
 
+  <xsl:template name="idfix">
+    <xsl:param name="i" select="."/>
+    <xsl:variable name="tmp" select="translate(concat($idprefix, $id, $i),
+                                     ':_+',
+                                     '---')"/>
+    <xsl:value-of select="$tmp"/>
+  </xsl:template>
+
   <xsl:template match="@xml:id">
+    <xsl:variable name="idfix">
+      <xsl:call-template name="idfix">
+        <xsl:with-param name="i" select="."/>
+      </xsl:call-template>
+    </xsl:variable>
     <xsl:attribute name="xml:id">
-      <xsl:value-of select="concat($idprefix, $id, .)"/>
+      <xsl:value-of select="$idfix"/>
     </xsl:attribute>
   </xsl:template>
 
+  <xsl:template match="@linkend">
+    <xsl:variable name="idfix">
+      <xsl:call-template name="idfix">
+        <xsl:with-param name="i" select="."/>
+      </xsl:call-template>
+    </xsl:variable>
+    <xsl:attribute name="linkend">
+      <xsl:value-of select="$idfix"/>
+    </xsl:attribute>
+  </xsl:template>
 </xsl:stylesheet>
