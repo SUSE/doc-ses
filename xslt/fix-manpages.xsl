@@ -85,8 +85,8 @@
   <xsl:template name="idfix">
     <xsl:param name="i" select="."/>
     <xsl:variable name="tmp" select="translate(concat($idprefix, $id, $i),
-                                     ':-+',
-                                     '___')"/>
+                                     ':_+',
+                                     '---')"/>
     <xsl:value-of select="$tmp"/>
   </xsl:template>
 
