@@ -701,131 +701,315 @@ o- time_server ................................................ [enabled]
 <screen>&prompt.smaster;ceph-salt config /cephadm_bootstrap/dashboard/force_password_update disable</screen>
     </tip>
    </sect3>
-   <sect3 xml:id="deploy-cephadm-configure-imagepath">
-    <title>Configuring the path to container images</title>
-    <para>
-     &cephadm; needs to know a valid URI path to container images that will be
-     used during the deployment step. Verify whether the default path is set:
-    </para>
-<screen>&prompt.smaster;ceph-salt config /cephadm_bootstrap/ceph_image_path ls</screen>
-    <para>
-     If there is no default path set or your deployment requires a specific
-     path, add it as follows:
-    </para>
-<screen>&prompt.smaster;ceph-salt config /cephadm_bootstrap/ceph_image_path set registry.suse.com/ses/7/ceph/ceph</screen>
-    <note>
-     <para>
-      For the monitoring stack, there are more container images needed. For an
-      air-gapped deployment as well as deploying from a local registry, you may
-      want to get those images at this point to prepare your local registry
-      accordingly.
-     </para>
-     <para>
-      Note that those container images will not be used by &cephsalt; for the
-      deployment. It is a preparation for a later step where &cephadm; will be
-      used for the deployment or migration of monitoring components.
-     </para>
-     <para>
-      For more information about the images used by the monitoring stack and
-      how to customize them, visit the
-      <xref linkend="monitoring-custom-images"/> page.
-     </para>
-    </note>
-   </sect3>
    <sect3 xml:id="deploy-cephadm-configure-registry">
-    <title>Configuring the container registry</title>
+    <title>Using the container registry</title>
     <para>
-     Optionally, you can set a local container registry. This will serve as a
-     mirror of the <literal>registry.suse.com</literal> registry. Remember you
-     need to re-sync the local registry whenever there are new updated
-     containers available from
-     <systemitem class="systemname">registry.suse.com</systemitem>.
-<!-- 2021-02-09 tbazant: still looking for better solution
-     Find more
-     information about creating a container registry in
-     <link xlink:href="https://documentation.suse.com/sbp/all/single-html/SBP-Private-Registry/"/>
-     -->
-    </para>
-    <para>
-     Creating a local registry is useful in the following scenarios:
+     The &ceph; cluster needs to have access to a container registry so that it
+     can download and deploy containerized &ceph; services. There are two ways
+     to access the registry:
     </para>
     <itemizedlist>
      <listitem>
       <para>
-       You have a lot of cluster nodes and want to save download time and
-       bandwidth by creating a local mirror of container images.
+       If your cluster can access the default registry at
+       <literal>registry.suse.com</literal> (directly or via proxy), you can
+       point &cephsalt; directly to this URL without creating a local registry.
+       Continue by following the steps in
+       <xref linkend="deploy-cephadm-configure-imagepath"/>.
       </para>
      </listitem>
      <listitem>
       <para>
-       Your cluster has no access to the online registry (an air-gapped
-       deployment) and you need a local mirror to pull the container images
-       from.
-      </para>
-     </listitem>
-     <listitem>
-      <para>
-       If configuration or network issues prevent your cluster from accessing
-       remote registries across a secure link, so you need a local, unencrypted
-       registry instead.
+       If your cluster cannot access the default registry&mdash;for example,
+       for an air-gapped deployment&mdash;you need to configure a local
+       container registry. After the local registry is created and configured,
+       you need to point &cephsalt; to it.
       </para>
      </listitem>
     </itemizedlist>
-    <important>
+    <sect4 xml:id="updating-ceph-local-registry">
+     <title>Creating and configuring the local registry (optional)</title>
+     <important>
+      <para>
+       There are numerous methods of creating a local registry. The
+       instructions in this section are examples of creating secure and
+       insecure registries.
+      </para>
+     </important>
+     <tip>
+      <title>Placement and port usage</title>
+      <para>
+       Deploy the registry on a machine accessible by all nodes in the cluster.
+       We recommend the &adm;. By default, the registry listens on port 5000.
+      </para>
+      <para>
+       On the registry node, use the following command to ensure that the port
+       is free:
+      </para>
+<screen>ss -tulpn | grep :5000</screen>
+      <para>
+       If other processes (such as <literal>iscsi-tcmu</literal>) are already
+       listening on port 5000, determine another free port which can be used to
+       map to port 5000 in the registry container.
+      </para>
+     </tip>
+     <procedure>
+      <title>Creating the local registry</title>
+      <step>
+       <para>
+        Verify that the <package>Containers Module</package> extension is
+        enabled:
+       </para>
+<screen>
+&prompt.user;SUSEConnect --list-extensions | grep -A2 "Containers Module"
+Containers Module 15 SP2 x86_64 (Activated)
+</screen>
+      </step>
+      <step>
+       <para>
+        Verify that the following packages are installed:
+        <package>apache2-utils</package> (if enabling a secure registry),
+        <package>cni</package>, <package>cni-plugins</package>,
+        <package>podman</package>, <package>podman-cni-config</package>, and
+        <package>skopeo</package>.
+       </para>
+      </step>
+      <step>
+       <para>
+        Gather the following information:
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          Fully qualified domain name of the registry host
+          (<option>REG_HOST_FQDN</option>).
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          An available port number used to map to the registry container port
+          of 5000 (<option>REG_HOST_PORT</option>).
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          Whether the registry will be secure or insecure
+          (<option>insecure=[true|false]</option>).
+         </para>
+        </listitem>
+       </itemizedlist>
+      </step>
+      <step>
+       <para>
+        To start an insecure registry (without SSL encryption), follow these
+        steps:
+       </para>
+       <substeps>
+        <step>
+         <para>
+          Configure &cephsalt; for the insecure registry:
+         </para>
+<screen>
+&prompt.cephuser;ceph-salt config containers/registries_conf enable
+&prompt.cephuser;ceph-salt config containers/registries_conf/registries \
+ add prefix=<option>REG_HOST_FQDN</option> insecure=true \
+ location=<option>REG_HOST_PORT</option>:5000
+</screen>
+        </step>
+        <step>
+         <para>
+          Start the insecure registry by creating the necessary directory (for
+          example, <filename>/var/lib/registry</filename>) and starting the
+          registry with the <command>podman</command> command:
+         </para>
+<screen>
+&prompt.root;mkdir -p /var/lib/registry
+&prompt.root;podman run --privileged -d --name registry \
+ -p <option>REG_HOST_PORT</option>:5000 -v /var/lib/registry:/var/lib/registry \
+ --restart=always registry:2
+</screen>
+        </step>
+        <step>
+         <para>
+          To have the registry start after a reboot, create a &systemd; unit
+          file for it and enable it:
+         </para>
+<screen>
+&prompt.sudo;podman generate systemd --files --name registry
+&prompt.sudo;mv container-registry.service /etc/systemd/system/
+&prompt.sudo;systemctl enable container-registry.service
+</screen>
+        </step>
+       </substeps>
+      </step>
+      <step>
+       <para>
+        To start a secure registry, follow these steps:
+       </para>
+       <substeps>
+        <step>
+         <para>
+          Create the necessary directories:
+         </para>
+<screen>&prompt.root;mkdir -p /var/lib/registry/{auth,certs}</screen>
+        </step>
+        <step>
+         <para>
+          Generate an SSL certificate:
+         </para>
+<screen>
+&prompt.root;openssl req -newkey rsa:4096 -nodes -sha256 \
+ -keyout /var/lib/registry/certs/domain.key -x509 -days 365 \
+ -out /var/lib/registry/certs/domain.crt
+</screen>
+         <note>
+          <para>
+           Set the <literal>CN=[value]</literal> value to the fully qualified
+           domain name of the host ([<option>REG_HOST_FQDN</option>]).
+          </para>
+         </note>
+        </step>
+        <step>
+         <para>
+          Copy the certificate to all cluster nodes and refresh the certificate
+          cache:
+         </para>
+<screen>
+&prompt.root;salt-cp '*' /var/lib/registry/certs/domain.crt \
+ /etc/pki/trust/anchors/
+&prompt.root;salt '*' cmd.shell "update-ca-certificates"
+</screen>
+        </step>
+        <step>
+         <para>
+          Generate a username and password combination for authentication to
+          the registry:
+         </para>
+<screen>
+&prompt.root;htpasswd2 -bBc /var/lib/registry/auth/htpasswd \
+ <option>REG_USERNAME</option> <option>REG_PASSWORD</option>
+</screen>
+        </step>
+        <step>
+         <para>
+          Start the secure registry:
+         </para>
+<screen>
+podman run --name myregistry -p <option>REG_HOST_PORT</option>:5000 \
+ -v /var/lib/registry:/var/lib/registry \
+ -v /var/lib/registry/auth:/auth:z \
+ -e "REGISTRY_AUTH=htpasswd" \
+ -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+ -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd \
+ -v /var/lib/registry/certs:/certs:z \
+ -e "REGISTRY_HTTP_TLS_CERTIFICATE=/certs/domain.crt" \
+ -e "REGISTRY_HTTP_TLS_KEY=/certs/domain.key" \
+ -e REGISTRY_COMPATIBILITY_SCHEMA1_ENABLED=true -d registry:2
+</screen>
+        </step>
+        <step>
+         <para>
+          Test secure access to the registry:
+         </para>
+<screen>
+&prompt.user;curl https://<option>REG_HOST_FQDN</option>:<option>REG_HOST_PORT</option>/v2/_catalog \
+ -u <option>REG_USERNAME</option>:<option>REG_PASSWORD</option>
+</screen>
+        </step>
+       </substeps>
+      </step>
+      <step>
+       <para>
+        When the local registry is created, you need to synchronize container
+        images from the official &suse; registry at
+        <literal>registry.suse.com</literal> to the local one. You can use the
+        <command>skopeo sync</command> command found in the
+        <package>skopeo</package> package for that purpose. For more details,
+        refer to the manual page (<command>man 1 skopeo-sync</command>).
+       </para>
+      </step>
+     </procedure>
+     <procedure>
+      <title>Configure the local registry and access credentials</title>
+      <step>
+       <para>
+        Configure the URL of the local registry:
+       </para>
+<screen>&prompt.cephuser;ceph-salt config /containers/registry_auth/registry set <replaceable>REG_HOST_URL</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        Configure the user name and password to access the local registry:
+       </para>
+<screen>&prompt.cephuser;ceph-salt config /containers/registry_auth/username set <replaceable>REG_USERNAME</replaceable></screen>
+<screen>&prompt.cephuser;ceph-salt config /containers/registry_auth/password set <replaceable>REG_PASSWORD</replaceable></screen>
+      </step>
+     </procedure>
+     <tip>
+      <title>Registry cache</title>
+      <para>
+       To avoid re-syncing the local registry when new updated containers
+       appear, you can configure a <emphasis>registry cache</emphasis>.
+      </para>
+     </tip>
+    </sect4>
+    <sect4 xml:id="deploy-cephadm-configure-imagepath">
+     <title>Configuring the path to container images</title>
+     <tip>
+      <title>Configuring HTTPS proxy</title>
+      <para>
+       If you need to use a proxy to communicate with the container registry
+       server, perform the following configuration steps on all cluster nodes:
+      </para>
+      <procedure>
+       <step>
+        <para>
+         Copy the configuration file for containers:
+        </para>
+<screen>&prompt.sudo;cp /usr/share/containers/containers.conf /etc/containers/containers.conf</screen>
+       </step>
+       <step>
+        <para>
+         Edit the newly-copied file and add the <option>http_proxy</option>
+         setting to its <literal>[engine]</literal> section, for example:
+        </para>
+<screen>&prompt.user;cat /etc/containers/containers.conf
+ [engine]
+ http_proxy=proxy.example.com
+ [...]
+ </screen>
+       </step>
+      </procedure>
+     </tip>
      <para>
-      In order to deploy Program Temporary Fixes (PTFs) on a supported system,
-      you need to deploy a local container registry.
+      &cephadm; needs to know a valid URI path to container images. Verify the
+      default setting by executing
      </para>
-    </important>
-    <para>
-     To configure a local registry URL together with access credentials, do the
-     following:
-    </para>
-    <procedure>
-     <step>
-      <para>
-       Configure the URL of the local registry:
-      </para>
-<screen>&prompt.cephuser;ceph-salt config /containers/registry_auth/registry set <replaceable>REGISTRY_URL</replaceable></screen>
-     </step>
-     <step>
-      <para>
-       Configure the user name and password to access the local registry:
-      </para>
-<screen>&prompt.cephuser;ceph-salt config /containers/registry_auth/username set <replaceable>REGISTRY_USERNAME</replaceable></screen>
-<screen>&prompt.cephuser;ceph-salt config /containers/registry_auth/password set <replaceable>REGISTRY_PASSWORD</replaceable></screen>
-     </step>
-     <step>
-      <para>
-       Run <command>ceph-salt apply</command> to update the &salt; pillar on
-       all minions.
-      </para>
-     </step>
-    </procedure>
-    <tip>
-     <title>Registry cache</title>
+<screen>&prompt.smaster;ceph-salt config /cephadm_bootstrap/ceph_image_path ls</screen>
      <para>
-      To avoid re-syncing the local registry when new updated containers
-      appear, you can configure a <emphasis>registry cache</emphasis>.
-<!-- 2021-02-09 tbazant: still looking for better solution
-      Find
-      more information about containers and air-gapped scenarios in
-      <link
-       xlink:href="https://documentation.suse.com/sbp/all/single-html/SBP-Private-Registry/#_deployment_in_an_air_gapped_environment"/>.
-      -->
+      If you do not need an alternative or local registry, specify the default
+      &suse; container registry:
      </para>
-    </tip>
-    <para>
-     Cloud Native Application Development and Delivery methods require a
-     registry and a CI/CD (Continuous Integration/Delivery) instance for the
-     development and production of container images. You can use a private
-     registry in this instance.
-<!-- 2021-02-09 tbazant: still looking for better solution
-     For more information, see
-     <link
-       xlink:href="https://documentation.suse.com/sbp/all/single-html/SBP-Private-Registry/"/>.
-     -->
-    </para>
+<screen>&prompt.smaster;ceph-salt config /cephadm_bootstrap/ceph_image_path set registry.suse.com/ses/7/ceph/ceph</screen>
+     <para>
+      If your deployment requires a specific path, for example, a path to a
+      local registry, configure it as follows:
+     </para>
+<screen>&prompt.smaster;ceph-salt config /cephadm_bootstrap/ceph_image_path set <replaceable>LOCAL_REGISTRY_PATH</replaceable></screen>
+     <note>
+      <para>
+       Note that these container images will not be used by &cephsalt; for the
+       deployment. This is a preparatory step for a later one, in which
+       &cephadm; will be used for the deployment or migration of monitoring
+       components.
+      </para>
+      <para>
+       For more information about the images used by the monitoring stack and
+       how to customize them, visit the
+       <xref linkend="monitoring-custom-images"/> page.
+      </para>
+     </note>
+    </sect4>
    </sect3>
    <sect3 xml:id="deploy-cephadm-inflight-encryption">
     <title>Enabling data in-flight encryption (msgr2)</title>
@@ -1317,11 +1501,11 @@ mon       1/0  5m ago     -    &lt;no spec>  registry.example.com/[...]  5bf1240
     <tip>
      <para>
       You can limit the list to services on a particular node with the optional
-      <option>-–host</option> parameter and services of a particular type
-      with the optional <option>--service-type</option> parameter (acceptable
-      types are <literal>mon</literal>, <literal>osd</literal>,
+      <option>-–host</option> parameter, and services of a particular type with
+      the optional <option>--service-type</option> parameter. Acceptable types
+      are <literal>mon</literal>, <literal>osd</literal>,
       <literal>mgr</literal>, <literal>mds</literal>, and
-      <literal>rgw</literal>).
+      <literal>rgw</literal>.
      </para>
     </tip>
     <para>
