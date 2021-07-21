@@ -1,0 +1,1062 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_upgrade.xml" version="5.0" xml:id="cha-ceph-upgrade">
+ <title>自前一版本升級</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  本章說明將 SUSE Enterprise Storage 6 升級至版本 7 的步驟。
+ </para>
+ <para>
+  升級包括以下任務：
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    自 Ceph Nautilus 升級至 Octopus。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    從透過 RPM 套件安裝和執行 Ceph 切換到在容器中執行。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    完全移除 DeepSea 並以 <systemitem class="resource">ceph-salt</systemitem> 和 cephadm 取代。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <warning>
+  <para>
+   本章中的升級資訊<emphasis>僅</emphasis>適用於自 DeepSea 升級至 cephadm。如果您要在 SUSE CaaS 平台上部署 SUSE Enterprise Storage，請不要嘗試遵循這些說明。
+  </para>
+ </warning>
+ <important>
+  <para>
+   不支援從早於 6 的 SUSE Enterprise Storage 版本升級。您需要先升級至 SUSE Enterprise Storage 6 的最新版本，然後再依照本章所述的步驟操作。
+  </para>
+ </important>
+ <sect1 xml:id="before-upgrade">
+  <title>升級前</title>
+
+  <para>
+   開始升級之前，<emphasis>必須</emphasis>完成以下任務。在 SUSE Enterprise Storage 6 生命週期內可隨時執行這些操作。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>必須</emphasis>在升級前執行從 FileStore 到 BlueStore 的 OSD 移轉，因為 FileStore 在 SUSE Enterprise Storage 7 中不受支援。如需 BlueStore 以及如何從 FileStore 移轉的更多詳細資料，請參閱 <link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-deployment/#filestore2bluestore"/>。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果您執行的是仍在使用 <literal>ceph-disk</literal> OSD 的舊叢集，則<emphasis>需要</emphasis>在升級前切換到 <literal>ceph-volume</literal>。如需更多詳細資料，請參閱<link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-deployment/#upgrade-osd-deployment"/>。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <sect2 xml:id="upgrade-consider-points">
+   <title>需考量的要點</title>
+   <para>
+    升級前，請務必閱讀以下章節，確定您瞭解所有需要執行的任務。
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>閱讀版本說明</emphasis> - 版本說明提供了有關自 SUSE Enterprise Storage 上一個版本發行後所進行的變更的其他資訊。檢查版本說明以瞭解：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        您的硬體是否有特殊注意事項。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        所用的任何軟體套件是否已發生重大變更。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        是否需要對您的安裝施行特殊預防措施。
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      版本說明還會提供無法及時編入手冊的資訊。它們還包含有關已知問題的說明。
+     </para>
+     <para>
+      您可以在 <link xlink:href="https://www.suse.com/releasenotes/"/> 上找到線上 SES 7 版本說明。
+     </para>
+     <para>
+      此外，安裝 SES 7 儲存庫中的
+      <package>release-notes-ses</package> 套件之後，您可在 <filename>/usr/share/doc/release-notes</filename> 目錄中找到本地版本說明，或在 <link xlink:href="https://www.suse.com/releasenotes/"/> 上找到線上版本說明。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      閱讀<xref linkend="deploy-cephadm"/>，熟悉 <systemitem class="resource">ceph-salt</systemitem> 和 Ceph orchestrator，特別需要瞭解有關服務規格的資訊。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      升級叢集可能需要花很長時間 - 所需時間大約為升級一部機器的時間乘以叢集節點數。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      您需要先升級 Salt Master，然後以 <systemitem class="resource">ceph-salt</systemitem> 和 cephadm 取代 DeepSea。至少要等到所有 Ceph 管理員都升級後，您<emphasis>才</emphasis>能開始使用 cephadm orchestrator 模組。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      從使用 Nautilus RPM 到 Octopus 容器的升級需要一步完成。這表示您需要一次升級整個節點，而不是一次只升級一個精靈。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      核心服務 (MON、MGR、OSD) 的升級是循序進行的。每個服務在升級期間都可用。升級核心服務後，需要重新部署閘道服務 (中繼資料伺服器、物件閘道、NFS Ganesha、iSCSI 閘道)。下面每個服務都有特定的停機時間：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <important>
+        <para>
+         中繼資料伺服器和物件閘道的停機時間自節點從 SUSE Linux Enterprise Server 15 SP1 升級至 SUSE Linux Enterprise Server 15 SP2 開始，直至升級程序結束時重新部署這些服務為止。如果這些服務與 MON、MGR 或 OSD 併置，則需特別考慮到停機時間，因為在這種情況下，它們可能會在叢集升級的整個期間處於停機狀態。如果這對您是個問題，請考慮在升級之前於其他節點上單獨部署這些服務，以儘可能縮短它們的停機時間。如此，停機時間便將是閘道節點升級的持續時間，而不是整個叢集升級的持續時間。
+        </para>
+       </important>
+      </listitem>
+      <listitem>
+       <para>
+        NFS Ganesha 和 iSCSI 閘道僅在從 SUSE Linux Enterprise Server 15 SP1 升級至 SUSE Linux Enterprise Server 15 SP2 期間將節點重新開機時處於停機狀態，並會在以容器化模式重新部署每個服務時再次短暫處於停機狀態。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="upgrade-backup-config-data">
+   <title>備份叢集組態和資料</title>
+   <para>
+    強烈建議您在開始升級至 SUSE Enterprise Storage 7 之前，備份所有叢集組態和資料。如需如何備份所有資料的說明，請參閱 <link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-admin/#cha-deployment-backup"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade">
+   <title>確認先前升級的步驟</title>
+   <para>
+    如果您先前是從版本 5 升級的，請確認升級至版本 6 的程序已成功完成：
+   </para>
+   <para>
+    檢查 <filename>/srv/salt/ceph/configuration/files/ceph.conf.import</filename> 檔案是否存在。
+   </para>
+   <para>
+    此檔案是在從 SUSE Enterprise Storage 5 升級至 6 期間由 engulf 程序建立的。<option>configuration_init: default-import</option> 選項在 <filename>/srv/pillar/ceph/proposals/config/stack/default/ceph/cluster.yml</filename> 中設定。
+   </para>
+   <para>
+    如果 <option>configuration_init</option> 仍設為 <option>default-import</option>，則表示叢集是使用 <filename>ceph.conf.import</filename> 而非 DeepSea 的預設 <filename>ceph.conf</filename> 做為其組態檔案的，後者是透過對 <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/</filename> 中的檔案進行編譯而產生的。
+   </para>
+   <para>
+    因此，您需要檢查 <filename>ceph.conf.import</filename> 中是否有任何自訂組態，並視需要將相應組態移至 <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/</filename> 中的其中一個檔案中。
+   </para>
+   <para>
+    然後從 <filename>/srv/pillar/ceph/proposals/config/stack/default/ceph/cluster.yml</filename> 中移除 <option>configuration_init: default-import</option> 行。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade-patch">
+   <title>更新叢集節點並確認叢集狀況</title>
+   <para>
+    確認 SUSE Linux Enterprise Server 15 SP1和 SUSE Enterprise Storage 6 的所有最新更新是否已套用至所有叢集節點：
+   </para>
+<screen><prompt role="root">root # </prompt>zypper refresh &amp;&amp; zypper patch</screen>
+   <para>
+    套用更新後，請檢查叢集狀況：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph -s</screen>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade-patch-repos">
+   <title>確認對軟體儲存庫和容器影像的存取權</title>
+   <para>
+    確認每個叢集節點是否擁有對 SUSE Linux Enterprise Server 15 SP2 和 SUSE Enterprise Storage 7 軟體儲存庫以及容器影像登錄的存取權。
+   </para>
+   <sect3 xml:id="verify-previous-upgrade-patch-repos-repos">
+    <title>軟體儲存庫</title>
+    <para>
+     如果所有節點均已在 SCC 中註冊，您便可以使用 <command>zypper migration</command> 指令進行升級。如需更多詳細資料，請參閱 <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-upgrade-online.html#sec-upgrade-online-zypper"/>。
+    </para>
+    <para>
+     如果節點<emphasis role="bold">未</emphasis>在 SCC 中註冊，請停用所有現有軟體儲存庫，並為下面每個延伸新增 <literal>Pool</literal> 和 <literal>Updates</literal> 儲存庫：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       SLE-Product-SLES/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SLE-Module-Basesystem/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SLE-Module-Server-Applications/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SUSE-Enterprise-Storage-7
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="verify-previous-upgrade-patch-repos-images">
+    <title>容器影像</title>
+    <para>
+     所有叢集節點都需要存取容器影像登錄。在大多數情況下，您將使用 <literal>registry.suse.com</literal> 上的公用 SUSE 登錄。您需要以下影像：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       registry.suse.com/ses/7/ceph/ceph
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/ses/7/ceph/grafana
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-server
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-node-exporter
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-alertmanager
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     或者，例如對於實體隔離部署，請設定本地登錄並確認您是否有一組正確的容器影像可用。如需設定本地容器影像登錄的更多詳細資料，請參閱<xref linkend="deploy-cephadm-configure-registry"/>。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="upgrade-salt-master">
+  <title>升級 Salt Master</title>
+
+  <para>
+   以下程序說明了升級 Salt Master 的過程：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     將基礎作業系統升級至 SUSE Linux Enterprise Server 15 SP2：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       對於所有節點均已在 SCC 中註冊的叢集，請執行 <command>zypper migration</command>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       對於節點具有手動指定軟體儲存庫的叢集，請執行 <command>zypper dup</command>，然後再執行 <command>reboot</command>。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </step>
+   <step>
+    <para>
+     停用 DeepSea 階段以避免意外使用。將以下內容新增至 <filename>/srv/pillar/ceph/stack/global.yml</filename>：
+    </para>
+<screen>
+stage_prep: disabled
+stage_discovery: disabled
+stage_configure: disabled
+stage_deploy: disabled
+stage_services: disabled
+stage_remove: disabled
+</screen>
+    <para>
+     儲存檔案並套用變更：
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' saltutil.pillar_refresh</screen>
+   </step>
+   <step>
+    <para>
+     如果您<emphasis role="bold">未</emphasis>使用 <literal>registry.suse.com</literal> 中的容器影像，而是使用本地設定的登錄，請編輯 <filename>/srv/pillar/ceph/stack/global.yml</filename> 以告知 DeepSea 要使用哪個 Ceph 容器影像和登錄。例如，若要使用 <literal>192.168.121.1:5000/my/ceph/image</literal>，請新增下面幾行：
+    </para>
+<screen>
+ses7_container_image: 192.168.121.1:5000/my/ceph/image
+ses7_container_registries:
+  - location: 192.168.121.1:5000
+</screen>
+    <para>
+     儲存檔案並套用變更：
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' saltutil.refresh_pillar</screen>
+   </step>
+   <step>
+    <para>
+     同化現有組態：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config assimilate-conf -i /etc/ceph/ceph.conf</screen>
+   </step>
+   <step>
+    <para>
+     確認升級狀態。您的輸出可能因叢集組態而異：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run upgrade.status
+The newest installed software versions are:
+ ceph: ceph version 15.2.2-60-gf5864377ab (f5864377abb5549f843784c93577980aa264b9bc) octopus (stable)
+ os: SUSE Linux Enterprise Server 15 SP2
+Nodes running these software versions:
+ admin.ceph (assigned roles: master, prometheus, grafana)
+Nodes running older software versions must be upgraded in the following order:
+ 1: mon1.ceph (assigned roles: admin, mon, mgr)
+ 2: mon2.ceph (assigned roles: admin, mon, mgr)
+ 3: mon3.ceph (assigned roles: admin, mon, mgr)
+ 4: data4.ceph (assigned roles: storage, mds)
+ 5: data1.ceph (assigned roles: storage)
+ 6: data2.ceph (assigned roles: storage)
+ 7: data3.ceph (assigned roles: storage)
+ 8: data5.ceph (assigned roles: storage, rgw)
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-mon-mgr-nodes">
+  <title>升級 MON、MGR 和 OSD 節點</title>
+
+  <para>
+   每次升級一個 Ceph 監控程式、Ceph 管理員和 OSD 節點。對於每個服務，請執行以下步驟：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     如果您要升級的是 OSD 節點，請透過執行以下指令避免在升級期間將 OSD 標示為 <literal>out</literal>：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd add-noout <replaceable>SHORT_NODE_NAME</replaceable></screen>
+    <para>
+     以 <command>ceph osd tree</command> 指令輸出中顯示之節點的簡短名稱取代 <replaceable>SHORT_NODE_NAME</replaceable>。在以下輸入中，主機簡短名稱為 <literal>ses-min1</literal> 和 <literal>ses-min2</literal>
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph osd tree
+ID   CLASS  WEIGHT   TYPE NAME       STATUS  REWEIGHT  PRI-AFF
+ -1         0.60405  root default
+-11         0.11691      host ses-min1
+  4    hdd  0.01949          osd.4       up   1.00000  1.00000
+  9    hdd  0.01949          osd.9       up   1.00000  1.00000
+ 13    hdd  0.01949          osd.13      up   1.00000  1.00000
+[...]
+ -5         0.11691      host ses-min2
+  2    hdd  0.01949          osd.2       up   1.00000  1.00000
+  5    hdd  0.01949          osd.5       up   1.00000  1.00000
+[...]
+</screen>
+   </step>
+   <step>
+    <para>
+     將基礎作業系統升級至 SUSE Linux Enterprise Server 15 SP2：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       如果叢集的節點均已在 SCC 中註冊，請執行 <command>zypper migration</command>。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果叢集的節點具有手動指定的軟體儲存庫，請執行 <command>zypper dup</command>，然後再執行 <command>reboot</command>。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </step>
+   <step>
+    <para>
+     將節點重新開機後，透過在 Salt Master 上執行以下指令，將該節點上所有現有 MON、MGR 和 OSD 精靈進行容器化：
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>MINION_ID</replaceable> state.apply ceph.upgrade.ses7.adopt</screen>
+    <para>
+     以您要升級的 Minion 的 ID 取代 <replaceable>MINION_ID</replaceable>。您可以透過在 Salt Master 上執行 <command>salt-key -L</command> 指令來獲取 Minion ID 清單。
+    </para>
+    <tip>
+     <para>
+      若要查看<emphasis>採用</emphasis>的狀態和進度，請檢查 Ceph Dashboard 或在 Salt Master 上執行下面其中一個指令：
+     </para>
+<screen>
+<prompt>root@master # </prompt>ceph status
+<prompt>root@master # </prompt>ceph versions
+<prompt>root@master # </prompt>salt-run upgrade.status
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     成功完成採用後，如果您要升級的節點是 OSD 節點，請取消設定 <literal>noout</literal> 旗標：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd rm-noout <replaceable>SHORT_NODE_NAME</replaceable></screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-gateway-nodes">
+  <title>升級閘道節點</title>
+  <para>
+   接下來，請升級各個閘道節點 (中繼資料伺服器、物件閘道、NFS Ganesha 或 iSCSI 閘道)。針對每個節點將基礎作業系統升級至 SUSE Linux Enterprise Server 15 SP2：
+  </para>
+  <itemizedlist>
+   <listitem>
+    <para>
+     如果叢集的節點均已在 SUSE Customer Center 中註冊，請執行 <command>zypper migration</command> 指令。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果叢集的節點具有手動指定的軟體儲存庫，請執行 <command>zypper dup</command>，然後再執行 <command>reboot</command> 指令。
+    </para>
+   </listitem>
+  </itemizedlist>
+  <para>
+   此步驟同樣適用於屬於叢集但尚未指定任何角色的任何節點 (如有疑問，請查看透過 <command>salt-key -L</command> 指令提供的 Salt Master 上的主機清單，並將其與 <command>salt-run upgrade.status</command> 指令的輸出進行比較)。
+  </para>
+  <para>
+   升級叢集中所有節點上的作業系統後，下一步是安裝 <package>ceph-salt</package> 套件並套用叢集組態。升級程序結束時，會以容器化模式重新部署實際的閘道服務。
+  </para>
+  <note>
+   <para>
+    從升級至 SUSE Linux Enterprise Server 15 SP2 開始，到升級程序結束時重新部署中繼資料伺服器和物件閘道服務為止，這段期間這些服務將不可用。
+   </para>
+  </note>
+ </sect1>
+ <sect1 xml:id="upgrade-cephsalt">
+  <title>安裝 <systemitem class="resource">ceph-salt</systemitem> 並套用叢集組態</title>
+
+  <para>
+   在開始安裝 <systemitem class="resource">ceph-salt</systemitem> 並套用叢集組態之前，請先透過執行以下指令查看叢集和升級狀態：
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>ceph status
+<prompt>root@master # </prompt>ceph versions
+<prompt>root@master # </prompt>salt-run upgrade.status
+</screen>
+
+  <procedure>
+   <step>
+    <para>
+     移除 DeepSea 建立的 <literal>rbd_exporter</literal> 和 <literal>rgw_exporter</literal> 排程工作 (cron job)。在 Salt Master 上，以 <systemitem class="username">root</systemitem> 身分執行 <command>crontab -e</command> 指令以編輯 crontab。刪除下列項目 (如果存在)：
+    </para>
+<screen>
+# SALT_CRON_IDENTIFIER:deepsea rbd_exporter cron job
+*/5 * * * * /var/lib/prometheus/node-exporter/rbd.sh &gt; \
+ /var/lib/prometheus/node-exporter/rbd.prom 2&gt; /dev/null
+# SALT_CRON_IDENTIFIER:Prometheus rgw_exporter cron job
+*/5 * * * * /var/lib/prometheus/node-exporter/ceph_rgw.py &gt; \
+ /var/lib/prometheus/node-exporter/ceph_rgw.prom 2&gt; /dev/null
+</screen>
+   </step>
+   <step>
+    <para>
+     透過執行以下指令從 DeepSea 輸出叢集組態：
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run upgrade.ceph_salt_config &gt; ceph-salt-config.json
+<prompt>root@master # </prompt>salt-run upgrade.generate_service_specs &gt; specs.yaml
+</screen>
+   </step>
+   <step>
+    <para>
+     解除安裝 DeepSea，並在 Salt Master 上安裝 <systemitem class="resource">ceph-salt</systemitem>：
+    </para>
+<screen>
+<prompt>root@master # </prompt>zypper remove 'deepsea*'
+<prompt>root@master # </prompt>zypper install ceph-salt
+</screen>
+   </step>
+   <step>
+    <para>
+     重新啟動 Salt Master 並同步 Salt 模組：
+    </para>
+<screen>
+<prompt>root@master # </prompt>systemctl restart salt-master.service
+<prompt>root@master # </prompt>salt \* saltutil.sync_all
+</screen>
+   </step>
+   <step>
+    <para>
+     將 DeepSea 的叢集組態輸入至 <systemitem class="resource">ceph-salt</systemitem>：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt import ceph-salt-config.json</screen>
+   </step>
+   <step>
+    <para>
+     為叢集節點通訊產生 SSH 金鑰：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ssh generate</screen>
+    <tip>
+     <para>
+      確認是否已從 DeepSea 輸入叢集組態，並指定可能缺失的選項：
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config ls</screen>
+     <para>
+      如需叢集組態的完整描述，請參閱<xref linkend="deploy-cephadm-configure"/>。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     套用組態並啟用 cephadm：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply</screen>
+   </step>
+   <step>
+    <para>
+     如果您需要提供本地容器登錄 URL 和存取身分證明，請依據<xref linkend="deploy-cephadm-configure-registry"/>中所述的步驟進行操作。
+    </para>
+   </step>
+   <step>
+    <para>
+     如果您<emphasis role="bold">未</emphasis>使用 <literal>registry.suse.com</literal> 中的容器影像，而是使用本地設定的登錄，請執行以下指令以告知 Ceph 要使用哪個容器影像
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global container_image <replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global container_image 192.168.121.1:5000/my/ceph/image</screen>
+   </step>
+   <step>
+    <para>
+     停止並停用 SUSE Enterprise Storage 6 <systemitem class="daemon">ceph-crash</systemitem> 精靈。系統將於稍後自動啟動這些精靈的新容器化格式。
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '*' service.stop ceph-crash
+<prompt>root@master # </prompt>salt '*' service.disable ceph-crash
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-cephsalt-monitoring">
+  <title>升級並採用監控堆疊</title>
+
+  <para>
+   以下程序會採用監控堆疊的所有元件 (如需更多詳細資料，請參閱<xref linkend="monitoring-alerting"/>)。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     暫停 orchestrator：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch pause</screen>
+   </step>
+   <step>
+    <para>
+     在執行 Prometheus、Grafana 和警示管理員 (預設為 Salt Master) 的節點上，執行以下指令：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name prometheus.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name alertmanager.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name grafana.$(hostname)
+</screen>
+    <tip>
+     <para>
+      如果您<emphasis role="bold">未</emphasis>執行預設容器影像登錄 <literal>registry.suse.com</literal>，則需要指定要使用的影像，例如：
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/caasp/v4.5/prometheus-server:2.18.0 \
+  adopt --style=legacy --name prometheus.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/caasp/v4.5/prometheus-alertmanager:0.16.2 \
+  adopt --style=legacy --name alertmanager.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/ses/7/ceph/grafana:7.0.3 \
+ adopt --style=legacy --name grafana.$(hostname)
+</screen>
+     <para>
+      如需使用自訂或本地容器影像的更多詳細資料，請參閱<xref linkend="monitoring-custom-images"/>。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     移除 Node-Exporter。它不需要進行移轉，將在套用 <filename>specs.yaml</filename> 檔案時做為容器重新安裝。
+    </para>
+<screen><prompt>tux &gt; </prompt><command>sudo</command> zypper rm golang-github-prometheus-node_exporter</screen>
+   </step>
+   <step>
+    <para>
+     套用您先前從 DeepSea 輸出的服務規格：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i specs.yaml</screen>
+   </step>
+   <step>
+    <para>
+     繼續 orchestrator：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch resume</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-gateways">
+  <title>重新部署閘道服務</title>
+
+  <sect2 xml:id="upgrade-ogw">
+   <title>升級物件閘道</title>
+   <para>
+    在 SUSE Enterprise Storage 7 中，物件閘道永遠設定有一個領域，以為未來使用多站台提供支援 (如需更多詳細資料，請參閱<xref linkend="ceph-rgw-fed"/>)。如果您在 SUSE Enterprise Storage 6 中使用了單站台物件閘道組態，請執行以下步驟來新增領域。如果您實際上並不打算使用多站台功能，則可以為領域、區域群組和區域名稱使用 <literal>default</literal> 值。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      建立新領域：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin realm create --rgw-realm=<replaceable>REALM_NAME</replaceable> --default</screen>
+    </step>
+    <step>
+     <para>
+      (選擇性) 重新命名預設區域和區域群組。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup rename \
+ --rgw-zonegroup default \
+ --zonegroup-new-name=<replaceable>ZONEGROUP_NAME</replaceable>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone rename \
+ --rgw-zone default \
+ --zone-new-name <replaceable>ZONE_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable>
+</screen>
+    </step>
+    <step>
+     <para>
+      設定主區域群組：
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup modify \
+ --rgw-realm=<replaceable>REALM_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable> \
+ --endpoints http://<replaceable>RGW.EXAMPLE.COM</replaceable>:80 \
+ --master --default
+</screen>
+    </step>
+    <step>
+     <para>
+      設定主區域。為此，您將需要啟用了 <option>system</option> 旗標之物件閘道使用者的 ACCESS_KEY 和 SECRET_KEY。這通常是 <literal>admin</literal> 使用者。若要獲取 ACCESS_KEY 和 SECRET_KEY，請執行 <command>radosgw-admin user info --uid admin</command>。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify \
+ --rgw-realm=<replaceable>REALM_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE_NAME</replaceable> \
+ --endpoints http://<replaceable>RGW.EXAMPLE.COM</replaceable>:80 \
+ --access-key=<replaceable>ACCESS_KEY</replaceable> \
+ --secret=<replaceable>SECRET_KEY</replaceable> \
+ --master --default
+</screen>
+    </step>
+    <step>
+     <para>
+      提交更新後的組態：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+    </step>
+   </procedure>
+   <para>
+    若要將物件閘道服務容器化，請依據<xref linkend="deploy-cephadm-day2-service-ogw"/>中所述建立其規格檔案，然後套用該檔案。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>RGW</replaceable>.yml
+</screen>
+  </sect2>
+
+  <sect2 xml:id="upgrade-ganesha">
+   <title>升級 NFS Ganesha</title>
+   <para>
+    下面說明如何將執行 Ceph Nautilus 的現有 NFS Ganesha 服務移轉至執行 Ceph Octopus 的 NFS Ganesha 容器。
+   </para>
+   <warning>
+    <para>
+     以下文件要求您已成功升級了核心 Ceph 服務。
+    </para>
+   </warning>
+   <para>
+    NFS Ganesha 會在 RADOS 池中儲存額外的精靈特定組態並輸出組態。所設定的 RADOS 池可在 <filename>ganesha.conf</filename> 檔案中之 <literal>RADOS_URLS</literal> 區塊的 <literal>watch_url</literal> 行上找到。依預設，此池將重新命名為 <literal>ganesha_config</literal>
+   </para>
+   <para>
+    在嘗試任何移轉之前，強烈建議您複製 RADOS 池中的輸出和精靈組態物件。若要尋找所設定的 RADOS 池，請執行以下指令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>grep -A5 RADOS_URLS /etc/ganesha/ganesha.conf</screen>
+   <para>
+    列出 RADOS 池的內容：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados --pool ganesha_config --namespace ganesha ls | sort
+  conf-node3
+  export-1
+  export-2
+  export-3
+  export-4</screen>
+   <para>
+    複製 RADOS 物件：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>RADOS_ARGS="--pool ganesha_config --namespace ganesha"
+<prompt>cephuser@adm &gt; </prompt>OBJS=$(rados $RADOS_ARGS ls)
+<prompt>cephuser@adm &gt; </prompt>for obj in $OBJS; do rados $RADOS_ARGS get $obj $obj; done
+<prompt>cephuser@adm &gt; </prompt>ls -lah
+total 40K
+drwxr-xr-x 2 root root 4.0K Sep 8 03:30 .
+drwx------ 9 root root 4.0K Sep 8 03:23 ..
+-rw-r--r-- 1 root root 90 Sep 8 03:30 conf-node2
+-rw-r--r-- 1 root root 90 Sep 8 03:30 conf-node3
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-1
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-2
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-3
+-rw-r--r-- 1 root root 358 Sep 8 03:30 export-4</screen>
+   <para>
+    基於每個節點，停止現有的 NFS Ganesha 服務，然後以 cephadm 管理的容器取代。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      停止並停用現有的 NFS Ganesha 服務：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>systemctl stop nfs-ganesha
+<prompt>cephuser@adm &gt; </prompt>systemctl disable nfs-ganesha
+</screen>
+    </step>
+    <step>
+     <para>
+      停止現有的 NFS Ganesha 服務之後，可以使用 cephadm 在容器中部署一個新的服務。為此，您需要建立一個服務規格，其中包含將用於識別此新 NFS 叢集的 <literal>service_id</literal>、在放置規格中做為主機列出的所要移轉節點的主機名稱，以及包含所設定 NFS 輸出物件的 RADOS 池和名稱空間。例如：
+     </para>
+     <screen>service_type: nfs
+service_id: <replaceable>SERVICE_ID</replaceable>
+placement:
+  hosts:
+  - node2
+  pool: ganesha_config
+  namespace: ganesha
+</screen>
+     <para>
+      如需建立放置規格的詳細資訊，請參閱<xref linkend="cephadm-service-and-placement-specs"/>。
+     </para>
+    </step>
+    <step>
+     <para>
+      套用放置規格：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>FILENAME</replaceable>.yaml</screen>
+    </step>
+    <step>
+     <para>
+      確認主機上是否執行有 NFS Ganesha 精靈：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type nfs
+NAME           HOST   STATUS         REFRESHED  AGE  VERSION  IMAGE NAME                                IMAGE ID      CONTAINER ID
+nfs.foo.node2  node2  running (26m)  8m ago     27m  3.3      registry.suse.com/ses/7/ceph/ceph:latest  8b4be7c42abd  c8b75d7c8f0d</screen>
+    </step>
+    <step>
+     <para>
+      針對每個 NFS Ganesha 節點重複上述步驟。您不需要為每個節點建立單獨的服務規格。您只需將每個節點的主機名稱新增至現有 NFS 服務規格中，然後重新套用該規格。
+     </para>
+    </step>
+   </procedure>
+   <para>
+    現有輸出可以透過兩種方法進行移轉：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      使用 Ceph Dashboard 手動重新建立或重新指定。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      手動將每個精靈 RADOS 物件的內容複製到新建立的 NFS Ganesha 通用組態中。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <procedure>
+    <title>手動將輸出複製到 NFS Ganesha 通用組態檔案</title>
+    <step>
+     <para>
+      確定每個精靈 RADOS 物件的清單：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>RADOS_ARGS="--pool ganesha_config --namespace ganesha"
+<prompt>cephuser@adm &gt; </prompt>DAEMON_OBJS=$(rados $RADOS_ARGS ls | grep 'conf-')</screen>
+    </step>
+    <step>
+     <para>
+      複製每個精靈的 RADOS 物件：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>for obj in $DAEMON_OBJS; do rados $RADOS_ARGS get $obj $obj; done
+<prompt>cephuser@adm &gt; </prompt>ls -lah
+total 20K
+drwxr-xr-x 2 root root 4.0K Sep 8 16:51 .
+drwxr-xr-x 3 root root 4.0K Sep 8 16:47 ..
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-nfs.<replaceable>SERVICE_ID</replaceable>
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-node2
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-node3</screen>
+    </step>
+    <step>
+     <para>
+      排序並合併到單個輸出清單中：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>cat conf-* | sort -u &gt; conf-nfs.<replaceable>SERVICE_ID</replaceable>
+<prompt>cephuser@adm &gt; </prompt>cat conf-nfs.foo
+%url "rados://ganesha_config/ganesha/export-1"
+%url "rados://ganesha_config/ganesha/export-2"
+%url "rados://ganesha_config/ganesha/export-3"
+%url "rados://ganesha_config/ganesha/export-4"</screen>
+    </step>
+    <step>
+     <para>
+      寫入新的 NFS Ganesha 通用組態檔案：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados $RADOS_ARGS put conf-nfs.<replaceable>SERVICE_ID</replaceable> conf-nfs.<replaceable>SERVICE_ID</replaceable></screen>
+    </step>
+    <step>
+     <para>
+      通知 NFS Ganesha 精靈：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados $RADOS_ARGS notify conf-nfs.<replaceable>SERVICE_ID</replaceable> conf-nfs.<replaceable>SERVICE_ID</replaceable></screen>
+     <note>
+      <para>
+       此動作將導致精靈重新載入組態。
+      </para>
+     </note>
+    </step>
+   </procedure>
+   <para>
+    成功移轉服務後，可以移除基於 Nautilus 的 NFS Ganesha 服務。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      移除 NFS Ganesha：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>zypper rm nfs-ganesha
+Reading installed packages...
+Resolving package dependencies...
+The following 5 packages are going to be REMOVED:
+  nfs-ganesha nfs-ganesha-ceph nfs-ganesha-rados-grace nfs-ganesha-rados-urls nfs-ganesha-rgw
+5 packages to remove.
+After the operation, 308.9 KiB will be freed.
+Continue? [y/n/v/...? shows all options] (y): y
+(1/5) Removing nfs-ganesha-ceph-2.8.3+git0.d504d374e-3.3.1.x86_64 .................................................................................................................................................................................................................................................................................................[done]
+(2/5) Removing nfs-ganesha-rgw-2.8.3+git0.d504d374e-3.3.1.x86_64 ..................................................................................................................................................................................................................................................................................................[done]
+(3/5) Removing nfs-ganesha-rados-urls-2.8.3+git0.d504d374e-3.3.1.x86_64 ...........................................................................................................................................................................................................................................................................................[done]
+(4/5) Removing nfs-ganesha-rados-grace-2.8.3+git0.d504d374e-3.3.1.x86_64 ..........................................................................................................................................................................................................................................................................................[done]
+(5/5) Removing nfs-ganesha-2.8.3+git0.d504d374e-3.3.1.x86_64 ......................................................................................................................................................................................................................................................................................................[done]
+Additional rpm output:
+warning: /etc/ganesha/ganesha.conf saved as /etc/ganesha/ganesha.conf.rpmsave</screen>
+    </step>
+    <step>
+     <para>
+      從 Ceph Dashboard 中移除舊的叢集設定：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph dashboard reset-ganesha-clusters-rados-pool-namespace
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-mds">
+   <title>升級中繼資料伺服器</title>
+   <para>
+    與 MON、MGR 和 OSD 不同，無法就地採用中繼資料伺服器。您需要使用 Ceph orchestrator 在容器中進行重新部署。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      執行 <command>ceph fs ls</command> 指令以獲取您檔案系統的名稱，例如：
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph fs ls
+name: cephfs, metadata pool: cephfs_metadata, data pools: [cephfs_data ]
+</screen>
+    </step>
+    <step>
+     <para>
+      透過使用檔案系統名稱做為 <option>service_id</option>，並指定將會執行 MDS 精靈的主機，依據<xref linkend="deploy-cephadm-day2-service-mds"/>中所述建立新服務規格檔案 <filename>mds.yml</filename>。例如：
+     </para>
+<screen>
+service_type: mds
+service_id: cephfs
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    </step>
+    <step>
+     <para>
+      執行 <command>ceph orch apply -i mds.yml</command> 指令以套用服務規格並啟動 MDS 精靈。
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-igw">
+   <title>升級 iSCSI 閘道</title>
+   <para>
+    若要升級 iSCSI 閘道，您需要使用 Ceph orchestrator 在容器中重新部署該閘道。如果您有多個 iSCSI 閘道，則需要逐一重新部署，以減少服務停機時間。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      停止並停用每個 iSCSI 閘道節點上的現有 iSCSI 精靈：
+     </para>
+<screen>
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl stop rbd-target-gw
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl disable rbd-target-gw
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl stop rbd-target-api
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl disable rbd-target-api
+</screen>
+    </step>
+    <step>
+     <para>
+      依據<xref linkend="deploy-cephadm-day2-service-igw"/>中所述，為 iSCSI 閘道建立服務規格。為此，您需要現有 <filename>/etc/ceph/iscsi-gateway.cfg</filename> 檔案中的 <option>pool</option>、<option>trusted_ip_list</option> 和 <option>api_*</option> 設定。如果您啟用了 SSL 支援 (<literal>api_secure = true</literal>)，則還需要 SSL 證書 (<filename>/etc/ceph/iscsi-gateway.crt</filename>) 和金鑰 (<filename>/etc/ceph/iscsi-gateway.key</filename>)。
+     </para>
+     <para>
+      例如，如果 <filename>/etc/ceph/iscsi-gateway.cfg</filename> 包含以下設定：
+     </para>
+<screen>
+[config]
+cluster_client_name = client.igw.ses-min5
+pool = iscsi-images
+trusted_ip_list = 10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202
+api_port = 5000
+api_user = admin
+api_password = admin
+api_secure = true
+</screen>
+     <para>
+      則您需要建立以下服務規格檔案 <filename>iscsi.yml</filename>：
+     </para>
+<screen>
+service_type: iscsi
+service_id: igw
+placement:
+  hosts:
+  - ses-min5
+spec:
+  pool: iscsi-images
+  trusted_ip_list: "10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202"
+  api_port: 5000
+  api_user: admin
+  api_password: admin
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+     <note>
+      <para>
+       <option>pool</option>、<option>trusted_ip_list</option>、<option>api_port</option>、<option>api_user</option>、<option>api_password</option>、<option>api_secure</option> 設定與 <filename>/etc/ceph/iscsi-gateway.cfg</filename> 檔案中的相應設定相同。可從現有 SSL 證書和金鑰檔案中複製 <option>ssl_cert</option> 和 <option>ssl_key</option> 值。確認這些值是否縮排正確，並且 <literal>ssl_cert:</literal> 和 <literal>ssl_key:</literal> 行的末尾是否顯示有<emphasis>縱線</emphasis>字元 <literal>|</literal> (請參閱上述 <filename>iscsi.yml</filename> 檔案的內容)。
+      </para>
+     </note>
+    </step>
+    <step>
+     <para>
+      執行 <command>ceph orch apply -i iscsi.yml</command> 指令以套用服務規格並啟動 iSCSI 閘道精靈。
+     </para>
+    </step>
+    <step>
+     <para>
+      從每個現有 iSCSI 閘道節點中移除舊的 <package>ceph-iscsi</package> 套件：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>zypper rm -u ceph-iscsi</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="upgrade-post-cleanup">
+  <title>升級後清理</title>
+
+  <para>
+   升級後，請執行以下清理步驟：
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     透過檢查目前的 Ceph 版本，確認叢集是否已成功升級：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph versions</screen>
+   </step>
+   <step>
+    <para>
+     確定沒有舊的 OSD 加入叢集：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd require-osd-release octopus</screen>
+   </step>
+   <step>
+    <para>
+     啟用自動調整器模組：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable pg_autoscaler</screen>
+    <important>
+     <para>
+      依預設，在 SUSE Enterprise Storage 6 中，池的 <option>pg_autoscale_mode</option> 設定為 <option>warn</option>。這會導致在 PG 數量未達到最佳時出現警告訊息，但實際上並未發生自動調整。在 SUSE Enterprise Storage 7 中，新池的 <option>pg_autoscale_mode</option> 選項預設設定為 <option>on</option>，因此實際上會自動調整 PG。而升級程序並不會自動變更現有池的 <option>pg_autoscale_mode</option>。如果您要將其變更為 <option>on</option> 以充分利用自動調整器的功能，請參閱<xref linkend="op-pgs-autoscaler"/>中的說明。
+     </para>
+    </important>
+    <para>
+     如需更多詳細資料，請參閱<xref linkend="op-pgs-autoscaler"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     阻止 Luminous 以下版本的用戶端：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd set-require-min-compat-client luminous</screen>
+   </step>
+   <step>
+    <para>
+     啟用平衡器模組：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph balancer mode upmap
+<prompt>cephuser@adm &gt; </prompt>ceph balancer on
+</screen>
+    <para>
+     如需更多詳細資料，請參閱<xref linkend="mgr-modules-balancer"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     (選擇性) 啟用遙測模組：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph mgr module enable telemetry
+<prompt>cephuser@adm &gt; </prompt>ceph telemetry on
+ </screen>
+    <para>
+     如需更多詳細資料，請參閱<xref linkend="mgr-modules-telemetry"/>。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

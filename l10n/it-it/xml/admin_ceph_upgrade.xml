@@ -1,0 +1,1062 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_upgrade.xml" version="5.0" xml:id="cha-ceph-upgrade">
+ <title>Upgrade da una release precedente</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>sì</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Questo capitolo descrive le procedure per eseguire l'upgrade di SUSE Enterprise Storage 6 alla versione 7.
+ </para>
+ <para>
+  L'upgrade include i task seguenti:
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    Esecuzione dell'upgrade da Ceph Nautilus a Octopus.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Passaggio dall'installazione ed esecuzione di Ceph tramite pacchetti RPM all'esecuzione in container.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Rimozione completa di DeepSea e sostituzione con <systemitem class="resource">ceph-salt</systemitem> e cephadm.
+   </para>
+  </listitem>
+ </itemizedlist>
+ <warning>
+  <para>
+   Le informazioni sull'upgrade contenute in questo capitolo si applicano <emphasis>soltanto</emphasis> agli upgrade da DeepSea a cephadm. Non seguire queste istruzioni se si desidera distribuire SUSE Enterprise Storage sulla piattaforma SUSE CaaS.
+  </para>
+ </warning>
+ <important>
+  <para>
+   L'upgrade dalle versioni di SUSE Enterprise Storage precedenti alla 6 non è supportato. Prima di seguire le procedure descritte in questo capitolo, è necessario eseguire l'upgrade alla versione più recente di SUSE Enterprise Storage 6.
+  </para>
+ </important>
+ <sect1 xml:id="before-upgrade">
+  <title>Attività preparatorie all'upgrade</title>
+
+  <para>
+   Prima di avviare l'upgrade, <emphasis>occorre</emphasis> completare i task seguenti. È possibile eseguire l'upgrade da SUSE Enterprise Storage 6 in qualsiasi momento.
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     La migrazione degli OSD da FileStore a BlueStore <emphasis>deve</emphasis> essere eseguita prima dell'upgrade, poiché FileStore non è supportato in SUSE Enterprise Storage 7. All'indirizzo <link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-deployment/#filestore2bluestore"/> sono disponibili ulteriori dettagli su BlueStore e su come eseguire la migrazione da FileStore.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Se è in esecuzione una versione precedente del cluster in cui sono ancora utilizzati OSD <literal>ceph-disk</literal>, è <emphasis>necessario</emphasis> passare a <literal>ceph-volume</literal> prima dell'upgrade. Ulteriori dettagli sono disponibili in <link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-deployment/#upgrade-osd-deployment"/>.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <sect2 xml:id="upgrade-consider-points">
+   <title>Aspetti da considerare</title>
+   <para>
+    Prima di eseguire l'upgrade, leggere per intero le sezioni seguenti per comprendere tutti i task che devono essere completati.
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Per altre informazioni sulle modifiche apportate rispetto alla release precedente di SUSE Enterprise Storage, <emphasis>leggere le note di rilascio</emphasis>. Controllare le note di rilascio per vedere se:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        l'hardware necessita di considerazioni speciali;
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        i pacchetti software utilizzati hanno subito modifiche significative;
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        è necessario adottare precauzioni speciali per l'installazione.
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Le note di rilascio forniscono inoltre informazioni che non si è fatto in tempo a riportare nel manuale. Contengono anche alcune note su problemi noti.
+     </para>
+     <para>
+      All'indirizzo <link xlink:href="https://www.suse.com/releasenotes/"/> è possibile trovare le note di rilascio di SES 7.
+     </para>
+     <para>
+      Inoltre, dopo aver installato il pacchetto
+      <package>release-notes-ses</package> dall'archivio di SES 7, individuare localmente le note di rilascio nella directory <filename>/usr/share/doc/release-notes</filename> oppure online all'indirizzo <link xlink:href="https://www.suse.com/releasenotes/"/>.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Leggere il <xref linkend="deploy-cephadm"/> per acquisire dimestichezza con <systemitem class="resource">ceph-salt</systemitem> e con l'utilità di coordinamento Ceph, in particolare con le informazioni sulle specifiche del servizio.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      L'upgrade del cluster può richiedere diverso tempo, circa lo stesso necessario per eseguire l'upgrade di un computer moltiplicato per il numero di nodi del cluster.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Eseguire innanzitutto l'upgrade del Salt Master e sostituire DeepSea con <systemitem class="resource">ceph-salt</systemitem>, quindi passare a cephadm. Finché non sarà stato completato l'upgrade di almeno tutti i Ceph Manager, <emphasis>non</emphasis> sarà possibile iniziare a utilizzare il modulo dell'utilità di coordinamento cephadm.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      L'upgrade dai pacchetti RPM Nautilus ai container Octopus deve essere eseguito in un unico passaggio. Pertanto, occorre eseguire l'upgrade di un intero nodo alla volta, e non di un daemon alla volta.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      I servizi di base (MON, MGR, OSD) vengono aggiornati per ordine e rimangono disponibili durante l'upgrade. Al termine dell'operazione, occorre ripetere la distribuzione dei servizi del gateway (Metadata Server, Object Gateway, NFS Ganesha, iSCSI Gateway). Ciascuno dei servizi riportati di seguito subirà un tempo di fermo:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <important>
+        <para>
+         I Metadata Server e gli Object Gateway sono disattivi dall'inizio dell'upgrade dei nodi da SUSE Linux Enterprise Server 15 SP1 a SUSE Linux Enterprise Server 15 SP2 fino alla ridistribuzione dei servizi al termine della procedura di upgrade. Questo è un aspetto particolarmente importante da tenere presente se questi servizi sono in co-location con MON, MGR oppure OSD, dal momento che in questo caso potrebbero essere inattivi per tutta la durata dell'upgrade del cluster. Se ciò rappresenta un problema, valutare di distribuire separatamente tali servizi su nodi aggiuntivi prima di procedere con l'upgrade per fare in modo che rimangano inattivi per il minor tempo possibile, ovvero per la durata dell'upgrade dei nodi del gateway, e non dell'intero cluster.
+        </para>
+       </important>
+      </listitem>
+      <listitem>
+       <para>
+        NFS Ganesha e gli iSCSI Gateway sono inattivi solo per il riavvio dei nodi durante l'upgrade da SUSE Linux Enterprise Server 15 SP1 a SUSE Linux Enterprise Server 15 SP2 e nuovamente per breve tempo durante la ridistribuzione di ciascun servizio nella modalità in container.
+       </para>
+      </listitem>
+     </itemizedlist>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="upgrade-backup-config-data">
+   <title>Backup della configurazione e dei dati del cluster</title>
+   <para>
+    Si consiglia di eseguire il backup della configurazione e dei dati del cluster prima di avviare l'upgrade a SUSE Enterprise Storage 7. Per istruzioni su come eseguire il backup di tutti i dati, vedere <link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-admin/#cha-deployment-backup"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade">
+   <title>Verifica dei passaggi dell'upgrade precedente</title>
+   <para>
+    Se in precedenza è stato eseguito l'upgrade dalla versione 5, verificare che l'upgrade alla versione 6 sia stato completato correttamente:
+   </para>
+   <para>
+    Controllare se il file <filename>/srv/salt/ceph/configuration/files/ceph.conf.import</filename> è presente.
+   </para>
+   <para>
+    Questo file è creato dal processo engulf durante l'upgrade da SUSE Enterprise Storage 5 a 6. L'opzione <option>configuration_init: default-import</option> è impostata in <filename>/srv/pillar/ceph/proposals/config/stack/default/ceph/cluster.yml</filename>.
+   </para>
+   <para>
+    Se l'opzione <option>configuration_init</option> è ancora impostata su <option>default-import</option>, come file di configurazione il cluster utilizza <filename>ceph.conf.import</filename> e non la configurazione <filename>ceph.conf</filename> di default di DeepSea, compilata dai file in <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/</filename>.
+   </para>
+   <para>
+    Pertanto, è necessario analizzare <filename>ceph.conf.import</filename> per rilevare eventuali configurazioni personalizzate e possibilmente spostare la configurazione in uno dei file in <filename>/srv/salt/ceph/configuration/files/ceph.conf.d/</filename>.
+   </para>
+   <para>
+    Quindi, rimuovere la riga <option>configuration_init: default-import</option> da <filename>/srv/pillar/ceph/proposals/config/stack/default/ceph/cluster.yml</filename>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade-patch">
+   <title>Aggiornamento dei nodi del cluster e verifica dell'integrità del cluster</title>
+   <para>
+    Verificare che tutti gli ultimi aggiornamenti di SUSE Linux Enterprise Server 15 SP1 e SUSE Enterprise Storage 6 siano stati applicati a tutti i nodi del cluster:ulti
+   </para>
+<screen><prompt role="root">root # </prompt>zypper refresh &amp;&amp; zypper patch</screen>
+   <para>
+    Dopodiché, verificare l'integrità del cluster:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph -s</screen>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade-patch-repos">
+   <title>Verifica dell'accesso agli archivi software e alle immagini del container</title>
+   <para>
+    Verificare che ogni nodo del cluster disponga dell'accesso agli archivi software di SUSE Linux Enterprise Server 15 SP2 e SUSE Enterprise Storage 7, oltre che al registro delle immagini del container.
+   </para>
+   <sect3 xml:id="verify-previous-upgrade-patch-repos-repos">
+    <title>Archivi software</title>
+    <para>
+     Se tutti i nodi sono registrati su SCC, sarà possibile eseguire l'upgrade con il comando <command>zypper migration</command>. Per ulteriori dettagli, fare riferimento alla <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-upgrade-online.html#sec-upgrade-online-zypper"/>.
+    </para>
+    <para>
+     Se i nodi <emphasis role="bold">non</emphasis> sono registrati su SCC, disabilitare tutti gli archivi software esistenti e aggiungere gli archivi <literal>Pool</literal> e <literal>Updates</literal> per ciascuna delle estensioni seguenti:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       SLE-Product-SLES/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SLE-Module-Basesystem/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SLE-Module-Server-Applications/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SUSE-Enterprise-Storage-7
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="verify-previous-upgrade-patch-repos-images">
+    <title>Immagini del container</title>
+    <para>
+     Tutti i nodi del cluster necessitano dell'accesso al registro delle immagini del container. Nella maggior parte dei casi, viene utilizzato il registro SUSE pubblico all'indirizzo <literal>registry.suse.com</literal>. Sono necessarie le immagini seguenti:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       registry.suse.com/ses/7/ceph/ceph
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/ses/7/ceph/grafana
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-server
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-node-exporter
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-alertmanager
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     In alternativa, ad esempio per le distribuzioni Air-gap, configurare un registro locale e verificare di disporre dell'insieme di immagini del container corretto. Fare riferimento alla <xref linkend="deploy-cephadm-configure-registry"/> per ulteriori dettagli sulla configurazione di un registro delle immagini del container locale.
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="upgrade-salt-master">
+  <title>Esecuzione dell'upgrade del Salt Master</title>
+
+  <para>
+   Di seguito è descritta la procedura di upgrade del Salt Master:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Eseguire l'upgrade del sistema operativo sottostante a SUSE Linux Enterprise Server 15 SP2:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Per i cluster con i nodi registrati su SCC, eseguire <command>zypper migration</command>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Per i cluster i cui nodi dispongono di archivi software assegnati manualmente, eseguire <command>zypper dup</command> seguito da <command>reboot</command>.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </step>
+   <step>
+    <para>
+     Disabilitare le fasi di DeepSea per evitare usi accidentali. Aggiungere il contenuto seguente a <filename>/srv/pillar/ceph/stack/global.yml</filename>:
+    </para>
+<screen>
+stage_prep: disabled
+stage_discovery: disabled
+stage_configure: disabled
+stage_deploy: disabled
+stage_services: disabled
+stage_remove: disabled
+</screen>
+    <para>
+     Salvare il file e applicare le modifiche:
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' saltutil.pillar_refresh</screen>
+   </step>
+   <step>
+    <para>
+     Se le immagini del container in uso <emphasis role="bold">non</emphasis> provengono da <literal>registry.suse.com</literal>, ma dal registro configurato in locale, modificare <filename>/srv/pillar/ceph/stack/global.yml</filename> per comunicare a DeepSea quale immagine del container e registro Ceph utilizzare. Ad esempio, per utilizzare <literal>192.168.121.1:5000/my/ceph/image</literal> aggiungere le righe seguenti:
+    </para>
+<screen>
+ses7_container_image: 192.168.121.1:5000/my/ceph/image
+ses7_container_registries:
+  - location: 192.168.121.1:5000
+</screen>
+    <para>
+     Salvare il file e applicare le modifiche:
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' saltutil.refresh_pillar</screen>
+   </step>
+   <step>
+    <para>
+     Assimilare la configurazione esistente:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config assimilate-conf -i /etc/ceph/ceph.conf</screen>
+   </step>
+   <step>
+    <para>
+     Verificare lo stato dell'upgrade. L'output potrebbe essere diverso a seconda della configurazione del cluster:
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run upgrade.status
+The newest installed software versions are:
+ ceph: ceph version 15.2.2-60-gf5864377ab (f5864377abb5549f843784c93577980aa264b9bc) octopus (stable)
+ os: SUSE Linux Enterprise Server 15 SP2
+Nodes running these software versions:
+ admin.ceph (assigned roles: master, prometheus, grafana)
+Nodes running older software versions must be upgraded in the following order:
+ 1: mon1.ceph (assigned roles: admin, mon, mgr)
+ 2: mon2.ceph (assigned roles: admin, mon, mgr)
+ 3: mon3.ceph (assigned roles: admin, mon, mgr)
+ 4: data4.ceph (assigned roles: storage, mds)
+ 5: data1.ceph (assigned roles: storage)
+ 6: data2.ceph (assigned roles: storage)
+ 7: data3.ceph (assigned roles: storage)
+ 8: data5.ceph (assigned roles: storage, rgw)
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-mon-mgr-nodes">
+  <title>Esecuzione dell'upgrade dei nodi MON, MGR e OSD</title>
+
+  <para>
+   Eseguire l'upgrade dei nodi Ceph Monitor, Ceph Manager e OSD uno alla volta. Per ogni servizio, seguire la procedura indicata di seguito:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Durante l'upgrade di un nodo OSD, fare in modo che l'OSD non sia contrassegnato con <literal>out</literal> eseguendo il comando seguente:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd add-noout <replaceable>SHORT_NODE_NAME</replaceable></screen>
+    <para>
+     Sostituire <replaceable>SHORT_NODE_NAME</replaceable> con il nome abbreviato del nodo così come viene visualizzato nell'output del comando <command>ceph osd tree</command>. Nell'input seguente, i nomi host abbreviati sono <literal>ses-min1</literal> e <literal>ses-min2</literal>.
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph osd tree
+ID   CLASS  WEIGHT   TYPE NAME       STATUS  REWEIGHT  PRI-AFF
+ -1         0.60405  root default
+-11         0.11691      host ses-min1
+  4    hdd  0.01949          osd.4       up   1.00000  1.00000
+  9    hdd  0.01949          osd.9       up   1.00000  1.00000
+ 13    hdd  0.01949          osd.13      up   1.00000  1.00000
+[...]
+ -5         0.11691      host ses-min2
+  2    hdd  0.01949          osd.2       up   1.00000  1.00000
+  5    hdd  0.01949          osd.5       up   1.00000  1.00000
+[...]
+</screen>
+   </step>
+   <step>
+    <para>
+     Eseguire l'upgrade del sistema operativo sottostante a SUSE Linux Enterprise Server 15 SP2:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Se tutti i nodi del cluster sono registrati su SCC, eseguire <command>zypper migration</command>.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Se i nodi del cluster dispongono di archivi software assegnati manualmente, eseguire <command>zypper dup</command> seguito da <command>reboot</command>.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </step>
+   <step>
+    <para>
+     In seguito al riavvio del nodo, inserire in container tutti i daemon MON, MGR e OSD esistenti sul nodo eseguendo il comando seguente sul Salt Master:
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>MINION_ID</replaceable> state.apply ceph.upgrade.ses7.adopt</screen>
+    <para>
+     Sostituire <replaceable>MINION_ID</replaceable> con l'ID del minion di cui si sta eseguendo l'upgrade. È possibile ottenere l'elenco degli ID dei minion eseguendo il comando <command>salt-key -L</command> sul Salt Master.
+    </para>
+    <tip>
+     <para>
+      Per vedere lo stato e l'avanzamento del processo di <emphasis>adozione</emphasis>, controllare il Ceph Dashboard o eseguire uno dei comandi seguenti sul Salt Master:
+     </para>
+<screen>
+<prompt>root@master # </prompt>ceph status
+<prompt>root@master # </prompt>ceph versions
+<prompt>root@master # </prompt>salt-run upgrade.status
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Al termine dell'adozione, annullare l'impostazione del flag <literal>noout</literal> se il nodo di cui si sta eseguendo l'upgrade è un nodo OSD:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd rm-noout <replaceable>SHORT_NODE_NAME</replaceable></screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-gateway-nodes">
+  <title>Esecuzione dell'upgrade dei nodi del gateway</title>
+  <para>
+   Adesso, eseguire l'upgrade dei nodi del gateway separati (Metadata Server, Object Gateway, NFS Ganesha o iSCSI Gateway). Eseguire l'upgrade del sistema operativo sottostante a SUSE Linux Enterprise Server 15 SP2 per ogni nodo:
+  </para>
+  <itemizedlist>
+   <listitem>
+    <para>
+     Se tutti i nodi del cluster sono registrati su SUSE Customer Center, eseguire il comando <command>zypper migration</command>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Se i nodi del cluster dispongono di archivi software assegnati manualmente, eseguire il comando <command>zypper dup</command> seguito dal comando <command>reboot</command>.
+    </para>
+   </listitem>
+  </itemizedlist>
+  <para>
+   Questo passaggio si applica anche ai nodi che fanno parte del cluster, ma a cui non è stato ancora assegnato nessun ruolo (in caso di dubbi, controllare l'elenco degli host sul Salt Master fornito dal comando <command>salt-key -L</command> e confrontarlo con l'output del comando <command>salt-run upgrade.status</command>).
+  </para>
+  <para>
+   In seguito all'upgrade del sistema operativo su tutti i nodi del cluster, installare il <package>pacchetto ceph-salt</package> e applicare la configurazione del cluster. I servizi del gateway effettivi vengono ridistribuiti nella modalità in container alla fine della procedura di upgrade.
+  </para>
+  <note>
+   <para>
+    I servizi Metadata Server e Object Gateway non sono disponibili dall'inizio dell'upgrade a SUSE Linux Enterprise Server 15 SP2 fino alla ridistribuzione al termine della procedura di upgrade.
+   </para>
+  </note>
+ </sect1>
+ <sect1 xml:id="upgrade-cephsalt">
+  <title>Installazione di <systemitem class="resource">ceph-salt</systemitem> e applicazione della configurazione del cluster</title>
+
+  <para>
+   Prima di avviare la procedura di installazione di <systemitem class="resource">ceph-salt</systemitem> e di applicazione della configurazione del cluster, verificare lo stato del cluster e dell'upgrade eseguendo i comandi seguenti:
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>ceph status
+<prompt>root@master # </prompt>ceph versions
+<prompt>root@master # </prompt>salt-run upgrade.status
+</screen>
+
+  <procedure>
+   <step>
+    <para>
+     Rimuovere i processi cron <literal>rbd_exporter</literal> e <literal>rgw_exporter</literal> creati da DeepSea. Sul Salt Master con il ruolo di <systemitem class="username">root</systemitem>, eseguire il comando <command>crontab -e</command> per modificare la crontab. Eliminare gli elementi seguenti, se presenti:
+    </para>
+<screen>
+# SALT_CRON_IDENTIFIER:deepsea rbd_exporter cron job
+*/5 * * * * /var/lib/prometheus/node-exporter/rbd.sh &gt; \
+ /var/lib/prometheus/node-exporter/rbd.prom 2&gt; /dev/null
+# SALT_CRON_IDENTIFIER:Prometheus rgw_exporter cron job
+*/5 * * * * /var/lib/prometheus/node-exporter/ceph_rgw.py &gt; \
+ /var/lib/prometheus/node-exporter/ceph_rgw.prom 2&gt; /dev/null
+</screen>
+   </step>
+   <step>
+    <para>
+     Esportare la configurazione del cluster da DeepSea eseguendo i comandi seguenti:
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run upgrade.ceph_salt_config &gt; ceph-salt-config.json
+<prompt>root@master # </prompt>salt-run upgrade.generate_service_specs &gt; specs.yaml
+</screen>
+   </step>
+   <step>
+    <para>
+     Disinstallare DeepSea e installare <systemitem class="resource">ceph-salt</systemitem> sul Salt Master:
+    </para>
+<screen>
+<prompt>root@master # </prompt>zypper remove 'deepsea*'
+<prompt>root@master # </prompt>zypper install ceph-salt
+</screen>
+   </step>
+   <step>
+    <para>
+     Riavviare il Salt Master e sincronizzare i moduli Salt:
+    </para>
+<screen>
+<prompt>root@master # </prompt>systemctl restart salt-master.service
+<prompt>root@master # </prompt>salt \* saltutil.sync_all
+</screen>
+   </step>
+   <step>
+    <para>
+     Importare la configurazione del cluster di DeepSea in <systemitem class="resource">ceph-salt</systemitem>:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt import ceph-salt-config.json</screen>
+   </step>
+   <step>
+    <para>
+     Generare le chiavi SSH per la comunicazione tra i nodi e il cluster:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ssh generate</screen>
+    <tip>
+     <para>
+      Verificare che la configurazione del cluster sia stata importata da DeepSea e specificare le potenziali opzioni ignorate:
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config ls</screen>
+     <para>
+      Per una descrizione completa della configurazione del cluster, fare riferimento alla <xref linkend="deploy-cephadm-configure"/>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Applicare la configurazione e abilitare cephadm:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply</screen>
+   </step>
+   <step>
+    <para>
+     Se è necessario specificare l'URL del registro del container locale e le credenziali di accesso, seguire la procedura descritta nella <xref linkend="deploy-cephadm-configure-registry"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Se le immagini del container in uso <emphasis role="bold">non</emphasis> provengono da <literal>registry.suse.com</literal>, ma dal registro configurato in locale, comunicare a Ceph quale immagine del container utilizzare eseguendo
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global container_image <replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     Esempio:
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global container_image 192.168.121.1:5000/my/ceph/image</screen>
+   </step>
+   <step>
+    <para>
+     Interrompere e disabilitare i daemon <systemitem class="daemon">ceph-crash</systemitem> di SUSE Enterprise Storage 6. I nuovi moduli in container di tali daemon saranno avviati automaticamente in un secondo momento.
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '*' service.stop ceph-crash
+<prompt>root@master # </prompt>salt '*' service.disable ceph-crash
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-cephsalt-monitoring">
+  <title>Esecuzione dell'upgrade e adozione dello stack di monitoraggio</title>
+
+  <para>
+   La procedura descritta di seguito adotta tutti i componenti dello stack di monitoraggio (vedere <xref linkend="monitoring-alerting"/> per ulteriori dettagli).
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Sospendere l'utilità di coordinamento:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch pause</screen>
+   </step>
+   <step>
+    <para>
+     Eseguire i comandi seguenti su qualsiasi nodo su cui sono in esecuzione Prometheus, Grafana e Alertmanager (il Salt Master di default):
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name prometheus.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name alertmanager.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name grafana.$(hostname)
+</screen>
+    <tip>
+     <para>
+      Se <emphasis role="bold">non</emphasis> è in esecuzione il registro delle immagini del container di default <literal>registry.suse.com</literal>, è necessario specificare l'immagine da utilizzare, ad esempio:
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/caasp/v4.5/prometheus-server:2.18.0 \
+  adopt --style=legacy --name prometheus.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/caasp/v4.5/prometheus-alertmanager:0.16.2 \
+  adopt --style=legacy --name alertmanager.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/ses/7/ceph/grafana:7.0.3 \
+ adopt --style=legacy --name grafana.$(hostname)
+</screen>
+     <para>
+      Per ulteriori dettagli sull'uso delle immagini del container personalizzate o locali, fare riferimento a <xref linkend="monitoring-custom-images"/>.
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Rimuovere Node-Exporter. Non è necessario eseguire la migrazione di tale utilità, che verrà reinstallata come container quando verrà applicato il file <filename>specs.yaml</filename>.
+    </para>
+<screen><prompt>tux &gt; </prompt><command>sudo</command> zypper rm golang-github-prometheus-node_exporter</screen>
+   </step>
+   <step>
+    <para>
+     Applicare le specifiche del servizio esportate in precedenza da DeepSea:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i specs.yaml</screen>
+   </step>
+   <step>
+    <para>
+     Riprendere l'utilità di coordinamento:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch resume</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-gateways">
+  <title>Ridistribuzione del servizio del gateway</title>
+
+  <sect2 xml:id="upgrade-ogw">
+   <title>Esecuzione dell'upgrade di Object Gateway</title>
+   <para>
+    In SUSE Enterprise Storage 7, gli Object Gateway sono sempre configurati con un dominio per consentire l'uso della funzionalità multisito (vedere <xref linkend="ceph-rgw-fed"/> per ulteriori dettagli) in un secondo momento. Se Object Gateway è stato configurato in modalità sito singolo in SUSE Enterprise Storage 6, seguire la procedura indicata di seguito per aggiungere un dominio. Se non si prevede di utilizzare la funzionalità multisito, è possibile utilizzare il valore <literal>default</literal> per il nome del dominio, del gruppo di zone e delle zone.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Creare un nuovo dominio:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin realm create --rgw-realm=<replaceable>REALM_NAME</replaceable> --default</screen>
+    </step>
+    <step>
+     <para>
+      Facoltativamente, rinominare il gruppo di zone e la zona di default.
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup rename \
+ --rgw-zonegroup default \
+ --zonegroup-new-name=<replaceable>ZONEGROUP_NAME</replaceable>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone rename \
+ --rgw-zone default \
+ --zone-new-name <replaceable>ZONE_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable>
+</screen>
+    </step>
+    <step>
+     <para>
+      Configurare il gruppo di zone master:
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup modify \
+ --rgw-realm=<replaceable>REALM_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable> \
+ --endpoints http://<replaceable>RGW.EXAMPLE.COM</replaceable>:80 \
+ --master --default
+</screen>
+    </step>
+    <step>
+     <para>
+      Configurare la zona master: A tale scopo, saranno necessarie la chiave di accesso (ACCESS_KEY) e la chiave segreta (SECRET_KEY) dell'utente Object Gateway con il flag <option>system</option> abilitato. In genere, si tratta dell'utente <literal>admin</literal>. Per ottenere la chiave di accesso (ACCESS_KEY) e la chiave segreta (SECRET_KEY), eseguire <command>radosgw-admin user info --uid admin</command>.
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify \
+ --rgw-realm=<replaceable>REALM_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE_NAME</replaceable> \
+ --endpoints http://<replaceable>RGW.EXAMPLE.COM</replaceable>:80 \
+ --access-key=<replaceable>ACCESS_KEY</replaceable> \
+ --secret=<replaceable>SECRET_KEY</replaceable> \
+ --master --default
+</screen>
+    </step>
+    <step>
+     <para>
+      Eseguire il commit della configurazione aggiornata:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+    </step>
+   </procedure>
+   <para>
+    Per inserire il servizio Object Gateway in container, creare il file della specifica corrispondente come descritto nella <xref linkend="deploy-cephadm-day2-service-ogw"/> e applicarlo.
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>RGW</replaceable>.yml
+</screen>
+  </sect2>
+
+  <sect2 xml:id="upgrade-ganesha">
+   <title>Esecuzione dell'upgrade di NFS Ganesha</title>
+   <para>
+    Di seguito viene mostrato come eseguire la migrazione di un servizio NFS Ganesha esistente su cui è in esecuzione Ceph Nautilus a un container NFS Ganesha su cui è in esecuzione Ceph Octopus.
+   </para>
+   <warning>
+    <para>
+     Nella documentazione seguente si presuppone che l'utente abbia già eseguito correttamente l'upgrade dei servizi Ceph di base.
+    </para>
+   </warning>
+   <para>
+    NFS Ganesha memorizza la configurazione aggiuntiva di ogni daemon e la esporta in un pool RADOS. È possibile individuare il pool RADOS configurato nella riga <literal>watch_url</literal> del blocco <literal>RADOS_URLS</literal> nel file <filename>ganesha.conf</filename>. Per default, questo pool sarà denominato <literal>ganesha_config</literal>.
+   </para>
+   <para>
+    Prima di provare a eseguire la migrazione, si consiglia di creare una copia dell'esportazione e degli oggetti di configurazione del daemon ubicati nel pool RADOS. Per individuare il pool RADOS configurato, eseguire il comando seguente:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>grep -A5 RADOS_URLS /etc/ganesha/ganesha.conf</screen>
+   <para>
+    Per elencare i contenuti del pool RADOS:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados --pool ganesha_config --namespace ganesha ls | sort
+  conf-node3
+  export-1
+  export-2
+  export-3
+  export-4</screen>
+   <para>
+    Per copiare gli oggetti RADOS:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>RADOS_ARGS="--pool ganesha_config --namespace ganesha"
+<prompt>cephuser@adm &gt; </prompt>OBJS=$(rados $RADOS_ARGS ls)
+<prompt>cephuser@adm &gt; </prompt>for obj in $OBJS; do rados $RADOS_ARGS get $obj $obj; done
+<prompt>cephuser@adm &gt; </prompt>ls -lah
+total 40K
+drwxr-xr-x 2 root root 4.0K Sep 8 03:30 .
+drwx------ 9 root root 4.0K Sep 8 03:23 ..
+-rw-r--r-- 1 root root 90 Sep 8 03:30 conf-node2
+-rw-r--r-- 1 root root 90 Sep 8 03:30 conf-node3
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-1
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-2
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-3
+-rw-r--r-- 1 root root 358 Sep 8 03:30 export-4</screen>
+   <para>
+    Su ogni singolo nodo, occorre interrompere il servizio NFS Ganesha esistente e sostituirlo con un container gestito da cephadm.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Interrompere e disabilitare il servizio NFS Ganesha esistente:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>systemctl stop nfs-ganesha
+<prompt>cephuser@adm &gt; </prompt>systemctl disable nfs-ganesha
+</screen>
+    </step>
+    <step>
+     <para>
+      In seguito all'interruzione del servizio NFS Ganesha esistente, è possibile distribuirne uno nuovo in un container tramite cephadm. A tale scopo, è necessario creare una specifica del servizio contenente un <literal>service_id</literal> che verrà utilizzato per identificare questo nuovo cluster NFS, il nome host del nodo di cui si sta eseguendo la migrazione indicato come host nella specifica di posizionamento e lo spazio dei nomi e il pool RADOS contenente gli oggetti di esportazione NFS configurati. Esempio:
+     </para>
+     <screen>service_type: nfs
+service_id: <replaceable>SERVICE_ID</replaceable>
+placement:
+  hosts:
+  - node2
+  pool: ganesha_config
+  namespace: ganesha
+</screen>
+     <para>
+      Per ulteriori informazioni sulla creazione di una specifica di posizionamento, vedere la <xref linkend="cephadm-service-and-placement-specs"/>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Applicare la specifica di posizionamento:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>FILENAME</replaceable>.yaml</screen>
+    </step>
+    <step>
+     <para>
+      Verificare che il daemon NFS Ganesha sia in esecuzione sull'host:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type nfs
+NAME           HOST   STATUS         REFRESHED  AGE  VERSION  IMAGE NAME                                IMAGE ID      CONTAINER ID
+nfs.foo.node2  node2  running (26m)  8m ago     27m  3.3      registry.suse.com/ses/7/ceph/ceph:latest  8b4be7c42abd  c8b75d7c8f0d</screen>
+    </step>
+    <step>
+     <para>
+      Ripetere questi passaggi per ogni nodo NFS Ganesha. Non è necessario creare una specifica del servizio separata per ogni nodo. È sufficiente aggiungere il nome host di ciascun nodo alla specifica del servizio NFS esistente e riapplicarla.
+     </para>
+    </step>
+   </procedure>
+   <para>
+    È possibile eseguire la migrazione delle esportazioni esistenti in due modi diversi:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Ricrearle manualmente o riassegnarle tramite il Ceph Dashboard.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Copiare manualmente i contenuti di ogni oggetto RADOS di ciascun daemon nella configurazione comune di NFS Ganesha appena creata.
+     </para>
+    </listitem>
+   </itemizedlist>
+   <procedure>
+    <title>Copia manuale delle esportazioni nel file di configurazione comune di NFS Ganesha</title>
+    <step>
+     <para>
+      Creare l'elenco degli oggetti RADOS di ciascun daemon:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>RADOS_ARGS="--pool ganesha_config --namespace ganesha"
+<prompt>cephuser@adm &gt; </prompt>DAEMON_OBJS=$(rados $RADOS_ARGS ls | grep 'conf-')</screen>
+    </step>
+    <step>
+     <para>
+      Creare una copia degli oggetti RADOS di ciascun daemon:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>for obj in $DAEMON_OBJS; do rados $RADOS_ARGS get $obj $obj; done
+<prompt>cephuser@adm &gt; </prompt>ls -lah
+total 20K
+drwxr-xr-x 2 root root 4.0K Sep 8 16:51 .
+drwxr-xr-x 3 root root 4.0K Sep 8 16:47 ..
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-nfs.<replaceable>SERVICE_ID</replaceable>
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-node2
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-node3</screen>
+    </step>
+    <step>
+     <para>
+      Ordinare e fondere gli elementi in un singolo elenco di esportazioni:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>cat conf-* | sort -u &gt; conf-nfs.<replaceable>SERVICE_ID</replaceable>
+<prompt>cephuser@adm &gt; </prompt>cat conf-nfs.foo
+%url "rados://ganesha_config/ganesha/export-1"
+%url "rados://ganesha_config/ganesha/export-2"
+%url "rados://ganesha_config/ganesha/export-3"
+%url "rados://ganesha_config/ganesha/export-4"</screen>
+    </step>
+    <step>
+     <para>
+      Scrivere sul nuovo file di configurazione comune di NFS Ganesha:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados $RADOS_ARGS put conf-nfs.<replaceable>SERVICE_ID</replaceable> conf-nfs.<replaceable>SERVICE_ID</replaceable></screen>
+    </step>
+    <step>
+     <para>
+      Inviare una notifica al daemon NFS Ganesha:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados $RADOS_ARGS notify conf-nfs.<replaceable>SERVICE_ID</replaceable> conf-nfs.<replaceable>SERVICE_ID</replaceable></screen>
+     <note>
+      <para>
+       Tramite questa azione, il daemon ricaricherà la configurazione.
+      </para>
+     </note>
+    </step>
+   </procedure>
+   <para>
+    Al termine della migrazione, è possibile rimuovere il servizio NFS Ganesha basato su Nautilus.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Rimuovere NFS Ganesha:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>zypper rm nfs-ganesha
+Reading installed packages...
+Resolving package dependencies...
+The following 5 packages are going to be REMOVED:
+  nfs-ganesha nfs-ganesha-ceph nfs-ganesha-rados-grace nfs-ganesha-rados-urls nfs-ganesha-rgw
+5 packages to remove.
+After the operation, 308.9 KiB will be freed.
+Continue? [y/n/v/...? shows all options] (y): y
+(1/5) Removing nfs-ganesha-ceph-2.8.3+git0.d504d374e-3.3.1.x86_64 .................................................................................................................................................................................................................................................................................................[done]
+(2/5) Removing nfs-ganesha-rgw-2.8.3+git0.d504d374e-3.3.1.x86_64 ..................................................................................................................................................................................................................................................................................................[done]
+(3/5) Removing nfs-ganesha-rados-urls-2.8.3+git0.d504d374e-3.3.1.x86_64 ...........................................................................................................................................................................................................................................................................................[done]
+(4/5) Removing nfs-ganesha-rados-grace-2.8.3+git0.d504d374e-3.3.1.x86_64 ..........................................................................................................................................................................................................................................................................................[done]
+(5/5) Removing nfs-ganesha-2.8.3+git0.d504d374e-3.3.1.x86_64 ......................................................................................................................................................................................................................................................................................................[done]
+Additional rpm output:
+warning: /etc/ganesha/ganesha.conf saved as /etc/ganesha/ganesha.conf.rpmsave</screen>
+    </step>
+    <step>
+     <para>
+      Rimuovere le impostazioni esistenti del cluster dal Ceph Dashboard:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph dashboard reset-ganesha-clusters-rados-pool-namespace
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-mds">
+   <title>Esecuzione dell'upgrade del Metadata Server</title>
+   <para>
+    Diversamente dai servizi MON, MGR e OSD, il Metadata Server non può essere adottato sul posto. Al contrario, è necessario ridistribuirlo in container tramite l'utilità di coordinamento Ceph.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Eseguire il comando <command>ceph fs ls</command> per ottenere il nome del file system, ad esempio:
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph fs ls
+name: cephfs, metadata pool: cephfs_metadata, data pools: [cephfs_data ]
+</screen>
+    </step>
+    <step>
+     <para>
+      Creare un nuovo file della specifica del servizio <filename>mds.yml</filename>, come descritto nella <xref linkend="deploy-cephadm-day2-service-mds"/>, utilizzando il nome del file system come <option>service_id</option> e specificando gli host su cui verranno eseguiti i daemon MDS. Esempio:
+     </para>
+<screen>
+service_type: mds
+service_id: cephfs
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    </step>
+    <step>
+     <para>
+      Eseguire il comando <command>ceph orch apply -i mds.yml</command> per applicare la specifica del servizio e avviare i daemon MDS.
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-igw">
+   <title>Esecuzione dell'upgrade di iSCSI Gateway</title>
+   <para>
+    Per eseguire l'upgrade di iSCSI Gateway, è necessario ridistribuire tale servizio nei container tramite l'utilità di coordinamento Ceph. Se sono presenti più iSCSI Gateway, occorre ridistribuirli uno per uno per ridurre il tempo di fermo del servizio.
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Interrompere e disabilitare i daemon iSCSI esistenti su ciascun nodo iSCSI Gateway:
+     </para>
+<screen>
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl stop rbd-target-gw
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl disable rbd-target-gw
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl stop rbd-target-api
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl disable rbd-target-api
+</screen>
+    </step>
+    <step>
+     <para>
+      Creare una specifica del servizio per l'iSCSI Gateway come descritto nella <xref linkend="deploy-cephadm-day2-service-igw"/>. A tale scopo, sono necessarie le impostazioni <option>pool</option>, <option>trusted_ip_list</option> e <option>api_*</option> del file <filename>/etc/ceph/iscsi-gateway.cfg</filename> esistente. Se il supporto per SSL è abilitato (<literal>api_secure = true</literal>), sono necessari inoltre il certificato (<filename>/etc/ceph/iscsi-gateway.crt</filename>) e la chiave (<filename>/etc/ceph/iscsi-gateway.key</filename>) SSL.
+     </para>
+     <para>
+      Ad esempio, se <filename>/etc/ceph/iscsi-gateway.cfg</filename> contiene quanto segue:
+     </para>
+<screen>
+[config]
+cluster_client_name = client.igw.ses-min5
+pool = iscsi-images
+trusted_ip_list = 10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202
+api_port = 5000
+api_user = admin
+api_password = admin
+api_secure = true
+</screen>
+     <para>
+      È necessario creare il file della specifica del servizio <filename>iscsi.yml</filename> seguente:
+     </para>
+<screen>
+service_type: iscsi
+service_id: igw
+placement:
+  hosts:
+  - ses-min5
+spec:
+  pool: iscsi-images
+  trusted_ip_list: "10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202"
+  api_port: 5000
+  api_user: admin
+  api_password: admin
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+     <note>
+      <para>
+       Le impostazioni <option>pool</option>, <option>trusted_ip_list</option>, <option>api_port</option>, <option>api_user</option>, <option>api_password</option>, <option>api_secure</option> sono identiche a quelle del file <filename>/etc/ceph/iscsi-gateway.cfg</filename>. I valori <option>ssl_cert</option> e <option>ssl_key</option> possono essere copiati dai file di chiave e certificato SSL esistenti. Verificare che il rientro sia corretto e che il carattere della <emphasis>barra verticale</emphasis> <literal>|</literal> venga visualizzato alla fine delle righe <literal>ssl_cert:</literal> e <literal>ssl_key:</literal> (vedere il contenuto del file <filename>iscsi.yml</filename> riportato sopra).
+      </para>
+     </note>
+    </step>
+    <step>
+     <para>
+      Eseguire il comando <command>ceph orch apply -i iscsi.yml</command> per applicare la specifica del servizio e avviare i daemon iSCSI Gateway.
+     </para>
+    </step>
+    <step>
+     <para>
+      Rimuovere il pacchetto <package>ceph-iscsi</package> precedente da ciascuno dei nodi iSCSI Gateway esistenti:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>zypper rm -u ceph-iscsi</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="upgrade-post-cleanup">
+  <title>Pulizia successiva all'upgrade</title>
+
+  <para>
+   In seguito all'upgrade, seguire la procedura di pulizia indicata di seguito:
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     Verificare che l'upgrade del cluster sia riuscito correttamente controllando la versione corrente di Ceph:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph versions</screen>
+   </step>
+   <step>
+    <para>
+     Assicurarsi che nessun OSD precedente si unisca al cluster:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd require-osd-release octopus</screen>
+   </step>
+   <step>
+    <para>
+     Abilitare il modulo dell'utilità di dimensionamento automatico:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable pg_autoscaler</screen>
+    <important>
+     <para>
+      Per default, in SUSE Enterprise Storage 6, l'opzione <option>pg_autoscale_mode</option> era impostata su <option>warn</option> per i pool. L'opzione generava un messaggio di avviso se il numero dei gruppi di posizionamento non era ottimale, senza però avviare il dimensionamento automatico. Per default, in SUSE Enterprise Storage 7, l'opzione <option>pg_autoscale_mode</option> è impostata su <option>on</option> per i nuovi pool e i gruppi di posizionamento vengono effettivamente sottoposti a dimensionamento automatico. Il processo di upgrade non modifica automaticamente l'opzione <option>pg_autoscale_mode</option> dei pool esistenti. Se si desidera modificarla su <option>on</option> per sfruttare tutti i vantaggi dell'utilità di dimensionamento automatico, vedere le istruzioni nel <xref linkend="op-pgs-autoscaler"/>.
+     </para>
+    </important>
+    <para>
+     Ulteriori dettagli sono disponibili nel <xref linkend="op-pgs-autoscaler"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Impedire i client precedenti a Luminous:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd set-require-min-compat-client luminous</screen>
+   </step>
+   <step>
+    <para>
+     Abilitare il modulo dell'utilità di bilanciamento:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph balancer mode upmap
+<prompt>cephuser@adm &gt; </prompt>ceph balancer on
+</screen>
+    <para>
+     Ulteriori dettagli sono disponibili nel <xref linkend="mgr-modules-balancer"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Facoltativamente, abilitare il modulo di telemetria:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph mgr module enable telemetry
+<prompt>cephuser@adm &gt; </prompt>ceph telemetry on
+ </screen>
+    <para>
+     Ulteriori dettagli sono disponibili nel <xref linkend="mgr-modules-telemetry"/>.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

@@ -1,0 +1,1560 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_datamgm.xml" version="5.0" xml:id="cha-storage-datamgm">
+ <title>保存データの管理</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  CRUSHアルゴリズムは、データの保存場所を計算することによって、データの保存と取得の方法を決定します。CRUSHにより、Cephクライアントは、中央サーバやブローカ経由ではなく直接OSDと通信できるようになります。アルゴリズムで決定されるデータの保存と取得の方法を使用することで、Cephは、SPOF (single point of failure)、パフォーマンスのボトルネック、およびスケーラビリティの物理的な制限を解消します。
+ </para>
+ <para>
+  CRUSHはクラスタのマップを必要とし、そのCRUSHマップを使用して、クラスタ全体に均等に分散したデータを擬似ランダムにOSDに保存および取得します。
+ </para>
+ <para>
+  CRUSHマップには、OSDのリスト、デバイスを物理的な場所に集約するための「バケット」のリスト、およびCephクラスタのプール内でデータをどのように複製するかをCRUSHに指示するルールのリストが含まれます。インストールの基礎になっている物理的な組織を反映することで、CRUSHは、相関するデバイス障害の潜在的な原因をモデル化し、これによってその原因に対応できます。原因としては、物理的な距離の近さ、共有電源、共有ネットワークなどが代表的です。この情報をクラスタマップにエンコードすることにより、CRUSHの配置ポリシーは、オブジェクトのレプリカを異なる障害ドメインに分離しながら、必要な分散を維持できます。たとえば、発生する可能性がある同時障害に対応するため、データレプリカを、異なるシェルフ、ラック、電源、コントローラ、または物理的な場所を使用するデバイスに配置することが望ましい場合があります。
+ </para>
+ <para>
+  Cephクラスタの展開後、デフォルトのCRUSHマップが生成されます。Cephサンドボックス環境にはこれで十分です。ただし、大規模なデータクラスタを展開する場合は、カスタムCRUSHマップの作成を積極的に検討する必要があります。カスタムCRUSHマップは、Cephクラスタの管理、パフォーマンスの向上、およびデータの安全性の確保に役立つためです。
+ </para>
+ <para>
+  たとえば、OSDがダウンしてオンサイトでのサポートやハードウェアの交換が必要になった場合、CRUSHマップがあれば、ホストの物理的なデータセンター、ルーム、列、およびラックの場所を容易に特定できます。
+ </para>
+ <para>
+  同様に、障害の特定の迅速化にも役立つことがあります。たとえば、特定のラックのOSDすべてが同時にダウンした場合、OSD自体の障害ではなく、ネットワークスイッチ、あるいはラックまたはネットワークスイッチの電源の障害であることがあります。
+ </para>
+ <para>
+  カスタムCRUSHマップは、障害が発生したホストに関連付けられた配置グループ(<xref linkend="op-pgs"/>を参照)が機能低下状態になった場合に、Cephによってデータの冗長コピーが保存される物理的な場所を特定するのにも役立ちます。
+ </para>
+ <para>
+  CRUSHマップには主なセクションが3つあります。
+ </para>
+ <itemizedlist mark="bullet" spacing="normal">
+  <listitem>
+   <para>
+    <xref linkend="datamgm-devices" xrefstyle="select: title"/>は、<systemitem>ceph-osd</systemitem>デーモンに対応するオブジェクトストレージデバイスで構成されます。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-buckets" xrefstyle="select: title"/>は、ストレージの場所の階層的な集約構造(列、ラック、ホストなど)と、それらに割り当てられている重みで構成されます。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-rules" xrefstyle="select: title"/>は、バケットの選択方法で構成されます。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="datamgm-devices">
+  <title>OSDデバイス</title>
+
+  <para>
+   配置グループをOSDにマップするため、CRUSHマップにはOSDデバイスのリスト(OSDデーモンの名前)が必要です。デバイスのリストはCRUSHマップの先頭に記述されます。
+  </para>
+
+<screen>#devices
+device <replaceable>NUM</replaceable> osd.<replaceable>OSD_NAME</replaceable> class <replaceable>CLASS_NAME</replaceable></screen>
+
+  <para>
+   以下に例を示します。
+  </para>
+
+<screen>
+#devices
+device 0 osd.0 class hdd
+device 1 osd.1 class ssd
+device 2 osd.2 class nvme
+device 3 osd.3class ssd
+</screen>
+
+  <para>
+   一般的な規則として、OSDデーモンは1つのディスクにマップされます。
+  </para>
+
+  <sect2 xml:id="crush-devclasses">
+   <title>デバイスクラス</title>
+   <para>
+    CRUSHマップによってデータ配置を柔軟に制御できる点は、Cephの強みの1つです。これは、クラスタの管理において最も困難な部分の1つでもあります。「デバイスクラス」<emphasis/>を使用すると、これまで管理者が手動で行う必要があった、CRUSHマップに対して特によく行われる変更を自動化できます。
+   </para>
+   <sect3 xml:id="crush-management-problem">
+    <title>CRUSHの管理の問題</title>
+    <para>
+     多くの場合、Cephクラスタは、HDD、SSD、NVMeなど複数のタイプのストレージデバイスで構築し、これらの種類を混在させる場合もあります。ここでは、このようなさまざまなタイプのストレージデバイスを「デバイスクラス」<emphasis/>と呼びます。これは、CRUSHバケットの「タイプ」<emphasis/>プロパティを混同しないようにするためです(たとえば、ホスト、ラック、列など。詳細については<xref linkend="datamgm-buckets"/>を参照してください)。SSDでサポートされているCeph OSDは、回転型のディスクでサポートされているものよりはるかに高速であるため、特定のワークロードに適しています。Cephを使用すると、異なるデータセットやワークロード用のRADOSプールを簡単に作成したり、これらのプールのデータ配置を制御するために異なるCRUSHルールを簡単に割り当てたりすることができます。
+    </para>
+    <figure>
+     <title>複数のデバイスクラスが混在するOSD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     ただし、データを特定のデバイスクラスにのみ配置するようにCRUSHルールを設定するのは面倒です。ルールはCRUSH階層の点から見ると有効ですが、(上記のサンプル階層のように)複数のデバイスが同じホストやラックに混在する場合、これらのデバイスは混在して階層の同じサブツリーに表示されます(デフォルト)。以前のバージョンのSUSE Enterprise Storageでは、これらを手動で別個のツリーに分離するには、デバイスクラスごとに1つずつ、複数のバージョンの中間ノードを作成する必要がありました。
+    </para>
+   </sect3>
+   <sect3 xml:id="osd-crush-device-classes">
+    <title>デバイスクラス</title>
+    <para>
+     Cephが提供する優れた解決策は、各OSDに「デバイスクラス」というプロパティを追加することです。<emphasis/>デフォルトで、OSDは、Linuxカーネルによって公開されるハードウェアプロパティに基づいて、そのデバイスクラスを「hdd」、「ssd」、または「nvme」のいずれかに自動的に設定します。これらのデバイスクラスは<command>ceph osd tree</command>コマンド出力の新しい列でレポートされます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd tree
+ ID CLASS WEIGHT   TYPE NAME      STATUS REWEIGHT PRI-AFF
+ -1       83.17899 root default
+ -4       23.86200     host cpach
+ 2   hdd  1.81898         osd.2      up  1.00000 1.00000
+ 3   hdd  1.81898         osd.3      up  1.00000 1.00000
+ 4   hdd  1.81898         osd.4      up  1.00000 1.00000
+ 5   hdd  1.81898         osd.5      up  1.00000 1.00000
+ 6   hdd  1.81898         osd.6      up  1.00000 1.00000
+ 7   hdd  1.81898         osd.7      up  1.00000 1.00000
+ 8   hdd  1.81898         osd.8      up  1.00000 1.00000
+ 15  hdd  1.81898         osd.15     up  1.00000 1.00000
+ 10  nvme 0.93100         osd.10     up  1.00000 1.00000
+ 0   ssd  0.93100         osd.0      up  1.00000 1.00000
+ 9   ssd  0.93100         osd.9      up  1.00000 1.00000</screen>
+    <para>
+     たとえば、デバイスドライバがデバイスに関する情報を<filename>/sys/block</filename>を介して適切に公開していないためにデバイスクラスの自動検出に失敗する場合、コマンドラインからデバイスクラスを調整できます。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rm-device-class osd.2 osd.3
+done removing class of osd(s): 2,3
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush set-device-class ssd osd.2 osd.3
+set osd(s) 2,3 to class 'ssd'
+</screen>
+   </sect3>
+   <sect3 xml:id="crush-placement-rules">
+    <title>CRUSH配置ルールの設定</title>
+    <para>
+     CRUSHルールにより、特定のデバイスクラスへの配置を制限できます。たとえば、次のコマンドを実行して、SSD上にのみデータを分散する高速な「複製」プールを作成できます。<emphasis role="bold"/>
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rule create-replicated <replaceable>RULE_NAME</replaceable> <replaceable>ROOT</replaceable> <replaceable>FAILURE_DOMAIN_TYPE</replaceable> <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+    <para>
+     以下に例を示します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rule create-replicated fast default host ssd
+</screen>
+    <para>
+     「fast_pool」というプールを作成し、それを「fast」ルールに割り当てます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool create fast_pool 128 128 replicated fast</screen>
+    <para>
+     「イレージャコード」ルールを作成するプロセスはわずかに異なります。<emphasis role="bold"/>まず、目的のデバイスクラスのプロパティを含むイレージャコードプロファイルを作成します。その後、イレージャコーディングプールを作成する際にそのプロファイルを使用します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd erasure-code-profile set myprofile \
+ k=4 m=2 crush-device-class=ssd crush-failure-domain=host
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool create mypool 64 erasure myprofile
+</screen>
+    <para>
+     CRUSHマップを手動で編集してルールをカスタマイズする必要がある場合に備えて、デバイスクラスを指定できるように構文が拡張されています。たとえば、上のコマンドによって生成されたCRUSHルールは次のようになります。
+    </para>
+<screen>
+rule ecpool {
+  id 2
+  type erasure
+  min_size 3
+  max_size 6
+  step set_chooseleaf_tries 5
+  step set_choose_tries 100
+  step take default <emphasis role="bold">class ssd</emphasis>
+  step chooseleaf indep 0 type host
+  step emit
+}
+</screen>
+    <para>
+     ここでの重要な違いは、「take」コマンドに追加のサフィックス「class <replaceable>CLASS_NAME</replaceable>」が含まれている点です。
+    </para>
+   </sect3>
+   <sect3 xml:id="crush-additional-commands">
+    <title>追加のコマンド</title>
+    <para>
+     CRUSHマップで使用されるデバイスクラスを一覧にするには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush class ls
+[
+  "hdd",
+  "ssd"
+]
+</screen>
+    <para>
+     既存のCRUSHルールを一覧にするには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush rule ls
+replicated_rule
+fast</screen>
+    <para>
+     「fast」という名前のCRUSHルールの詳細を表示するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush rule dump fast
+{
+		"rule_id": 1,
+		"rule_name": "fast",
+		"ruleset": 1,
+		"type": 1,
+		"min_size": 1,
+		"max_size": 10,
+		"steps": [
+						{
+										"op": "take",
+										"item": -21,
+										"item_name": "default~ssd"
+						},
+						{
+										"op": "chooseleaf_firstn",
+										"num": 0,
+										"type": "host"
+						},
+						{
+										"op": "emit"
+						}
+		]
+}</screen>
+    <para>
+     「ssd」クラスに属するOSDを一覧にするには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush class ls-osd ssd
+0
+1
+</screen>
+   </sect3>
+   <sect3 xml:id="device-classes-reclassify">
+    <title>古いSSDルールからデバイスクラスへの移行</title>
+    <para>
+     バージョン5より前のSUSE Enterprise Storageでは、SSDなどのデバイスに適用されるルールを作成するには、CRUSHマップを手動で編集し、特殊なデバイスタイプ(SSDなど)それぞれに対して並列階層を維持する必要がありました。SUSE Enterprise Storage 5から、この処理は、デバイスクラス機能によって透過的に有効になりました。
+    </para>
+    <para>
+     <command>crushtool</command>コマンドを使用して、古いルールと階層を新しいクラスベースのルールに変換できます。次のように複数のタイプの変換が可能です。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>crushtool --reclassify-root <replaceable>ROOT_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        このコマンドは、以下を使用して、<replaceable>ROOT_NAME</replaceable>の下の階層にあるものをすべて取得し、そのルートを参照するルールをすべて調整します。
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable>
+</screen>
+       <para>
+        これを代わりに以下に調整します。
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable> class <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+       <para>
+        さらに、指定したクラスの「シャドウツリー」に古いIDを使用するよう、バケットの番号を再割り当てします。そのため、データの移動は発生しません。
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-root</command></title>
+        <para>
+         次のような既存のルールについて考えてみてください。
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+        <para>
+         ルート「default」をクラス「hdd」として再分類した場合、このルールは次のようになります。
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default class hdd
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+       </example>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --set-subtree-class <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        この方法は、<replaceable>BUCKET_NAME</replaceable>をルートとするサブツリー内にあるすべてのデバイスに、指定したデバイスクラスのマークを付けます。
+       </para>
+       <para>
+        <option>--set-subtree-class</option>は通常、<option>--reclassify-root</option>オプションと組み合わせて使用し、そのルートにあるすべてのデバイスに正しいクラスのラベルが付けられるようにします。ただし、これらのデバイスによっては意図的に異なるクラスを使用しているものがあるため、再度ラベルを付けたくない場合があります。このような場合は、<option>--set-subtree-class</option>オプションを除外してください。このような再マッピングは完全ではないことに注意してください。以前のルールは複数のクラスのデバイスにわたって分散されますが、調整されたルールは指定したデバイスクラスのデバイスにのみマップされるためです。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>MATCH_PATTERN</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>DEFAULT_PATTERN</replaceable></command></term>
+      <listitem>
+       <para>
+        この方法では、並列タイプに固有の階層を通常の階層にマージできます。たとえば、多くのユーザが次のようなCRUSHマップを使用しています。
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-bucket</command></title>
+<screen>
+host node1 {
+   id -2           # do not change unnecessarily
+   # weight 109.152
+   alg straw
+   hash 0  # rjenkins1
+   item osd.0 weight 9.096
+   item osd.1 weight 9.096
+   item osd.2 weight 9.096
+   item osd.3 weight 9.096
+   item osd.4 weight 9.096
+   item osd.5 weight 9.096
+   [...]
+}
+
+host node1-ssd {
+   id -10          # do not change unnecessarily
+   # weight 2.000
+   alg straw
+   hash 0  # rjenkins1
+   item osd.80 weight 2.000
+   [...]
+}
+
+root default {
+   id -1           # do not change unnecessarily
+   alg straw
+   hash 0  # rjenkins1
+   item node1 weight 110.967
+   [...]
+}
+
+root ssd {
+   id -18          # do not change unnecessarily
+   # weight 16.000
+   alg straw
+   hash 0  # rjenkins1
+   item node1-ssd weight 2.000
+   [...]
+}
+</screen>
+       </example>
+       <para>
+        この機能は、指定したパターンに一致する各バケットを再分類します。パターンは<literal>%suffix</literal>または<literal>prefix%</literal>のようになります。上の例では、パターン<literal>%-ssd</literal>を使用します。一致した各バケットに対し、ワイルドカード「%」に一致する、名前の残りの部分にベースバケットが指定されます。一致したバケットのすべてのデバイスに指定したデバイスクラスのラベルが付けられ、デバイスがベースバケットに移動されます。ベースバケットが存在しない場合(たとえば、「node12-ssd」は存在するものの「node12」は存在しない場合)、指定したデフォルトの親バケットの下にベースバケットが作成されてリンクされます。古いバケットIDは新しいシャドウバケット用に保持されるため、データの移動は行われません。古いバケットを参照する<literal>take</literal>ステップが含まれるルールが調整されます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>BASE_BUCKET</replaceable></command></term>
+      <listitem>
+       <para>
+        <option>--reclassify-bucket</option>オプションをワイルドカードなしで使用して、単一のバケットをマップできます。たとえば、前の例では、「ssd」バケットをデフォルトのバケットにマッピングしたいと考えています。
+       </para>
+       <para>
+        上のフラグメントで構成されるマップを変換する最後のコマンドは、次のとおりです。
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd getcrushmap -o original
+<prompt>cephuser@adm &gt; </prompt>crushtool -i original --reclassify \
+  --set-subtree-class default hdd \
+  --reclassify-root default hdd \
+  --reclassify-bucket %-ssd ssd default \
+  --reclassify-bucket ssd ssd default \
+  -o adjusted
+</screen>
+       <para>
+        正しく変換されたことを確認するために、<option>--compare</option>オプションがあります。このオプションは、CRUSHマップへの大量の入力サンプルをテストし、同じ結果が返されるかどうかを比較するものです。これらの入力は、<option>--test</option>に適用されるオプションと同じオプションで制御します。上の例では、コマンドは次のようになります。
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>crushtool -i original --compare adjusted
+rule 0 had 0/10240 mismatched mappings (0)
+rule 1 had 0/10240 mismatched mappings (0)
+maps appear equivalent
+</screen>
+       <tip>
+        <para>
+         違いがあった場合は、再マップされる入力の比率がかっこ内に表示されます。
+        </para>
+       </tip>
+       <para>
+        調整されたCRUSHマップに問題がなければ、マップをクラスタに適用できます。
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd setcrushmap -i adjusted
+</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>詳細の参照先</title>
+    <para>
+     CRUSHマップの詳細については、<xref linkend="op-crush"/>を参照してください。
+    </para>
+    <para>
+     Cephプールの一般的な詳細については、<xref linkend="ceph-pools"/>を参照してください。
+    </para>
+    <para>
+     イレージャコーディングプールの詳細については、<xref linkend="cha-ceph-erasure"/>を参照してください。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="datamgm-buckets">
+  <title>バケット</title>
+
+  <para>
+   CRUSHマップにはOSDのリストが含まれており、これをツリー構造のバケット配置に編成してデバイスを物理的な場所に集約できます。個々のOSDはツリーの葉にあたります。
+  </para>
+
+  <informaltable frame="none">
+   <tgroup cols="3">
+    <colspec colwidth="10*"/>
+    <colspec colwidth="30*"/>
+    <colspec colwidth="70*"/>
+    <tbody>
+     <row>
+      <entry>
+       <para>
+        0
+       </para>
+      </entry>
+      <entry>
+       <para>
+        osd
+       </para>
+      </entry>
+      <entry>
+       <para>
+        特定のデバイスまたはOSD(<literal>osd.1</literal>、<literal>osd.2</literal>、など)。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        1
+       </para>
+      </entry>
+      <entry>
+       <para>
+        ホスト
+       </para>
+      </entry>
+      <entry>
+       <para>
+        1つ以上のOSDを含むホストの名前。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        2
+       </para>
+      </entry>
+      <entry>
+       <para>
+        シャーシ
+       </para>
+      </entry>
+      <entry>
+       <para>
+        ラック内のどのシャーシに<literal>ホスト</literal>が存在するかを識別するID。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        3
+       </para>
+      </entry>
+      <entry>
+       <para>
+        ラック
+       </para>
+      </entry>
+      <entry>
+       <para>
+        コンピュータラック。デフォルトは<literal>unknownrack</literal>です。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        4
+       </para>
+      </entry>
+      <entry>
+       <para>
+        列
+       </para>
+      </entry>
+      <entry>
+       <para>
+        一連のラックの列。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        5
+       </para>
+      </entry>
+      <entry>
+       <para>
+        pdu
+       </para>
+      </entry>
+      <entry>
+       <para>
+        「Power Distribution Unit」(配電ユニット)の略語。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        6
+       </para>
+      </entry>
+      <entry>
+       <para>
+        ポッド
+       </para>
+      </entry>
+      <entry>
+       <para>
+        「Point of Delivery」の略語。ここでは、ひとかたまりのPDUやラック列を指します。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        7
+       </para>
+      </entry>
+      <entry>
+       <para>
+        ルーム
+       </para>
+      </entry>
+      <entry>
+       <para>
+        ラック列が設置されている部屋。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        8
+       </para>
+      </entry>
+      <entry>
+       <para>
+        データセンター
+       </para>
+      </entry>
+      <entry>
+       <para>
+        1つ以上のルームを含む、物理的なデータセンター。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        9
+       </para>
+      </entry>
+      <entry>
+       <para>
+        地域
+       </para>
+      </entry>
+      <entry>
+       <para>
+        世界の地理的地域(たとえば、NAM、LAM、EMEA、APACなど)。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        10
+       </para>
+      </entry>
+      <entry>
+       <para>
+        root
+       </para>
+      </entry>
+      <entry>
+       <para>
+        OSDバケットツリーのルートノード(通常は、<literal>default</literal>に設定されます)。
+       </para>
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </informaltable>
+
+  <tip>
+   <para>
+    既存のタイプを変更して独自のバケットタイプを作成できます。
+   </para>
+  </tip>
+
+  <para>
+   Cephの展開ツールは、各ホストのバケットと「default」という名前のrootが含まれるCRUSHマップを生成します。これは、デフォルトの<literal>rbd</literal>プールで役立ちます。残りのバケットタイプは、ノード/バケットの物理的な場所の情報を保存するための手段を提供します。OSD、ホスト、またはネットワークハードウェアが正常に機能しておらず、管理者が物理的なハードウェアにアクセスする必要がある場合、これによってクラスタ管理が大幅に容易になります。
+  </para>
+
+  <para>
+   バケットには、タイプ、固有の名前(文字列)、負の整数で表される固有のID、項目の合計容量/機能を基準にした相対的な重み、バケットアルゴリズム(デフォルトは<literal>straw2</literal>)、およびハッシュ(デフォルトは<literal>0</literal>で、CRUSHハッシュ<literal>rjenkins1</literal>を反映)が含まれます。1つのバケットには1つ以上の項目を含めることができます。項目は他のバケットやOSDで構成できます。また、項目には、その項目の相対的な重みを反映した重みを設定できます。
+  </para>
+
+<screen>[bucket-type] [bucket-name] {
+  id [a unique negative numeric ID]
+  weight [the relative capacity/capability of the item(s)]
+  alg [the bucket type: uniform | list | tree | straw2 | straw ]
+  hash [the hash type: 0 by default]
+  item [item-name] weight [weight]
+}</screen>
+
+  <para>
+   次の例は、バケットを使用して、プールと、データセンター、ルーム、ラック、列などの物理的な場所をどのように集約できるかを示しています。
+  </para>
+
+<screen>host ceph-osd-server-1 {
+        id -17
+        alg straw2
+        hash 0
+        item osd.0 weight 0.546
+        item osd.1 weight 0.546
+}
+
+row rack-1-row-1 {
+        id -16
+        alg straw2
+        hash 0
+        item ceph-osd-server-1 weight 2.00
+}
+
+rack rack-3 {
+        id -15
+        alg straw2
+        hash 0
+        item rack-3-row-1 weight 2.00
+        item rack-3-row-2 weight 2.00
+        item rack-3-row-3 weight 2.00
+        item rack-3-row-4 weight 2.00
+        item rack-3-row-5 weight 2.00
+}
+
+rack rack-2 {
+        id -14
+        alg straw2
+        hash 0
+        item rack-2-row-1 weight 2.00
+        item rack-2-row-2 weight 2.00
+        item rack-2-row-3 weight 2.00
+        item rack-2-row-4 weight 2.00
+        item rack-2-row-5 weight 2.00
+}
+
+rack rack-1 {
+        id -13
+        alg straw2
+        hash 0
+        item rack-1-row-1 weight 2.00
+        item rack-1-row-2 weight 2.00
+        item rack-1-row-3 weight 2.00
+        item rack-1-row-4 weight 2.00
+        item rack-1-row-5 weight 2.00
+}
+
+room server-room-1 {
+        id -12
+        alg straw2
+        hash 0
+        item rack-1 weight 10.00
+        item rack-2 weight 10.00
+        item rack-3 weight 10.00
+}
+
+datacenter dc-1 {
+        id -11
+        alg straw2
+        hash 0
+        item server-room-1 weight 30.00
+        item server-room-2 weight 30.00
+}
+
+root data {
+        id -10
+        alg straw2
+        hash 0
+        item dc-1 weight 60.00
+        item dc-2 weight 60.00
+}</screen>
+ </sect1>
+ <sect1 xml:id="datamgm-rules">
+  <title>ルールセット</title>
+
+  <para>
+   CRUSHマップは、プールのデータ配置を決定するルールである「CRUSHルール」の概念をサポートしています。大規模クラスタでは、ほとんどの場合、プールを大量に作成し、各プールが専用のCRUSHルールセットとルールを持つようにします。デフォルトのCRUSHマップには、デフォルトのルート用のルールがあります。ルートやルールがさらに必要な場合は、後で作成する必要があります。作成しない場合、新しいプールを作成するときに自動的に作成されます。
+  </para>
+
+  <note>
+   <para>
+    ほとんどの場合、デフォルトのルールを変更する必要はありません。新しいプールを作成する場合、そのデフォルトのルールセットは0です。
+   </para>
+  </note>
+
+  <para>
+   ルールは次の形式を取ります。
+  </para>
+
+<screen>rule <replaceable>rulename</replaceable> {
+
+        ruleset <replaceable>ruleset</replaceable>
+        type <replaceable>type</replaceable>
+        min_size <replaceable>min-size</replaceable>
+        max_size <replaceable>max-size</replaceable>
+        step <replaceable>step</replaceable>
+
+}</screen>
+
+  <variablelist>
+   <varlistentry>
+    <term>ruleset</term>
+    <listitem>
+     <para>
+      整数。ルールを、ルールのセットに属しているものとして分類します。プールでルールセットを設定することによって有効にします。このオプションは必須です。デフォルトは<literal>0</literal>です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>type</term>
+    <listitem>
+     <para>
+      文字列。「複製」プールまたは「イレージャ」コーディングプールのいずれかのルールを記述します。このオプションは必須です。デフォルトは<literal>replicated</literal>です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>min_size</term>
+    <listitem>
+     <para>
+      整数。プールグループが作成するレプリカがこの数より少ない場合、CRUSHはこのルールを選択しません。このオプションは必須です。デフォルトは<literal>2</literal>です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>max_size</term>
+    <listitem>
+     <para>
+      整数。プールグループが作成するレプリカがこの数より多い場合、CRUSHはこのルールを選択しません。このオプションは必須です。デフォルトは<literal>10</literal>です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step take <replaceable>bucket</replaceable></term>
+    <listitem>
+     <para>
+      名前で指定したバケットを取ります。ツリーの下方へ反復処理を開始します。このオプションは必須です。ツリー全体の反復処理の詳細については、<xref linkend="datamgm-rules-step-iterate"/>を参照してください。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step <replaceable>target</replaceable><replaceable>mode</replaceable><replaceable>num</replaceable> type <replaceable>bucket-type</replaceable></term>
+    <listitem>
+     <para>
+      <replaceable>target</replaceable>は<literal>choose</literal>または<literal>chooseleaf</literal>のいずれかにできます。<literal>choose</literal>に設定すると、大量のバケットが選択されます。<literal>chooseleaf</literal>は、バケットセット内の各バケットのサブツリーからOSD (リーフノード)を直接選択します。
+     </para>
+     <para>
+      <replaceable>mode</replaceable>は<literal>firstn</literal>または<literal>indep</literal>のいずれかにできます。<xref linkend="datamgm-rules-step-mode"/>を参照してください。
+     </para>
+     <para>
+      特定のタイプのバケットの数を指定します。Nを利用可能なオプションの数とすると、<replaceable>num</replaceable> &gt; 0 &amp;&amp; &lt; Nの場合、それと同じ数のバケットを選択します。<replaceable>num</replaceable> &lt; 0の場合、N - <replaceable>num</replaceable>を意味します。<replaceable>num</replaceable> == 0の場合、N個のバケット(利用可能なものすべて)を選択します。<literal>step take</literal>または<literal>step choose</literal>に従います。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step emit</term>
+    <listitem>
+     <para>
+      現在の値を出力してスタックを空にします。一般的にはルールの最後で使用しますが、同じルール内の別のツリーを形成する場合にも使用できます。<literal>step choose</literal>に従います。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <sect2 xml:id="datamgm-rules-step-iterate">
+   <title>ノードツリーの反復処理</title>
+   <para>
+    バケットで定義された構造はノードツリーと見なすことができます。このツリーのバケットがノードで、OSDがリーフに当たります。
+   </para>
+   <para>
+    CRUSHマップのルールは、このツリーからどのような方法でOSDを選択するかを定義します。ルールは特定のノードから処理を始めて、ツリーの下方へと反復処理を行い、OSDのセットを返します。どのブランチを選択する必要があるかを定義することはできません。その代わりに、CRUSHアルゴリズムにより、OSDのセットがレプリケーション要件を満足し、データを均等に分散するよう保証されます。
+   </para>
+   <para>
+    <literal>step take</literal> <replaceable>bucket</replaceable>を使用すると、ノードツリー全体の反復処理は、指定したバケット(バケットタイプではありません)から始まります。ツリー内のすべてのブランチのOSDを返す場合は、指定したバケットがルートバケットである必要があります。そうしないと、以降の手順はサブツリーでのみ反復処理されます。
+   </para>
+   <para>
+    ルール定義の<literal>step take</literal>の後には<literal>step choose</literal>エントリが1つ以上続きます。それぞれの<literal>step choose</literal>は、直前に選択されていた上位ノードから、定義された数のノード(またはブランチ)を選択します。
+   </para>
+   <para>
+    最後に、<literal>step emit</literal>で、選択されたOSDが返されます。
+   </para>
+   <para>
+    <literal>step chooseleaf</literal>は、指定したバケットのブランチからOSDを直接選択する便利な機能です。
+   </para>
+   <para>
+    <xref linkend="datamgm-rules-step-iterate-figure"/>に、<literal>step</literal>を使用してツリー全体で反復処理を行う例を示します。次のルール定義では、オレンジ色の矢印と番号は<literal>example1a</literal>と<literal>example1b</literal>に対応し、青色は<literal>example2</literal>に対応します。
+   </para>
+   <figure xml:id="datamgm-rules-step-iterate-figure">
+    <title>ツリーの例</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-step.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-step.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+<screen># orange arrows
+rule example1a {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2)
+        step choose firstn 0 host
+        # orange (3)
+        step choose firstn 1 osd
+        step emit
+}
+
+rule example1b {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2) + (3)
+        step chooseleaf firstn 0 host
+        step emit
+}
+
+# blue arrows
+rule example2 {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # blue (1)
+        step take room1
+        # blue (2)
+        step chooseleaf firstn 0 rack
+        step emit
+}</screen>
+  </sect2>
+
+  <sect2 xml:id="datamgm-rules-step-mode">
+   <title><literal>firstn</literal>と<literal>indep</literal></title>
+   <para>
+    CRUSHルールは、障害ノードまたはOSDの置換を定義します(<xref linkend="datamgm-rules"/>を参照してください)。キーワード<literal>step</literal>には、パラメータとして<literal>firstn</literal>または<literal>indep</literal>が必要です。<xref linkend="datamgm-rules-step-mode-indep-figure"/>に例を示します。
+   </para>
+   <para>
+    <literal>firstn</literal>は、アクティブノードのリストの最後に置換ノードを追加します。障害ノードの場合、以降の正常なノードが左側に移動されて、障害ノードの隙間を埋めます。これは、「複製プール」<emphasis/>に対するデフォルトかつ適切な方法です。2つ目のノードにはすでにすべてのデータがあるため、プライマリノードの権限をただちに引き継ぐことができるからです。
+   </para>
+   <para>
+    <literal>indep</literal>は、各アクティブノードに対して修復済みの置換ノードを選択します。障害ノードを置換する際に、残りのノードの順序は変更されません。これは「イレージャコーディングプール」<emphasis/>にとって適切です。イレージャコーディングプールでは、ノードに保存されるデータは、ノード選択時の位置によって異なります。ノードの順序が変更されると、影響を受けるノードのすべてのデータを再配置しなければなりません。
+   </para>
+   <figure xml:id="datamgm-rules-step-mode-indep-figure">
+    <title>ノードの置換方法</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-firstn-indep.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-firstn-indep.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-pgs">
+  <title>配置グループ</title>
+
+  <para>
+   Cephは、オブジェクトをPG (配置グループ)にマップします。配置グループは、オブジェクトをグループとしてOSDに配置する、論理オブジェクトプールのシャードまたはフラグメントです。配置グループにより、CephがOSDにデータを保存する際のオブジェクトごとのメタデータの量が削減されます。配置グループの数が多いほど(たとえば、OSDあたり100など)、バランスが向上します。
+  </para>
+
+  <sect2 xml:id="op-pgs-usage">
+   <title>配置グループの使用</title>
+   <para>
+    PG (配置グループ)は複数のオブジェクトを1つのプール内に集約します。この主な理由は、オブジェクトごとにオブジェクトの配置とメタデータを追跡すると、計算コストが高くなるためです。たとえば、何百万ものオブジェクトが存在するシステムでは、その各オブジェクトの配置を直接追跡することはできません。
+   </para>
+   <figure>
+    <title>プール内の配置グループ</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Cephクライアントは、オブジェクトが属する配置グループを計算します。このために、オブジェクトIDをハッシュし、定義されたプール内のPGの数と、プールのIDに基づいて操作を適用します。
+   </para>
+   <para>
+    配置グループ内のオブジェクトのコンテンツは、一連のOSDに保存されます。たとえば、サイズが2の複製プールでは、各配置グループは次のように2つのOSDにオブジェクトを保存します。
+   </para>
+   <figure>
+    <title>配置グループとOSD</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    OSD #2に障害が発生した場合、別のOSDが配置グループ#1に割り当てられ、OSD #1内にあるすべてのオブジェクトのコピーで埋められます。プールサイズを2から3に変更すると、追加のOSDが配置グループに割り当てられ、配置グループ内にあるすべてのオブジェクトのコピーを受け取ります。
+   </para>
+   <para>
+    配置グループはOSDを所有するのではなく、同じプール(他のプールの場合もあり)の他の配置グループとOSDを共有するものです。OSD #2に障害が発生した場合、配置グループ#2は、OSD #3を使用してオブジェクトのコピーを復元する必要もあります。
+   </para>
+   <para>
+    配置グループの数が増えると、新しい配置グループにOSDが割り当てられます。CRUSH機能の結果も変化し、以前の配置グループの一部のオブジェクトは新しい配置グループにコピーされ、古い配置グループから削除されます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pg-num">
+   <title><replaceable>PG_NUM</replaceable>の値の決定</title>
+   <note>
+    <para>
+     Ceph Nautilus (v14.x)以降はCeph Managerの<literal>pg_autoscaler</literal>モジュールを使用することで、必要に応じて配置グループを自動拡張できます。この機能を有効にしたい場合は、<xref linkend="default-pg-and-pgp-counts"/>を参照してください。
+    </para>
+   </note>
+   <para>
+    新しいプールを作成するときに、<replaceable>PG_NUM</replaceable>の値を従来通り手動で選択することも可能です。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool create <replaceable>POOL_NAME</replaceable> <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    <replaceable>PG_NUM</replaceable>を自動的に計算することはできません。次に、クラスタ内のOSDの数に応じた、一般的に使用される値をいくつか示します。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>OSDが5未満の場合:</term>
+     <listitem>
+      <para>
+       <replaceable>PG_NUM</replaceable>を128に設定します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>OSDが5～10の場合:</term>
+     <listitem>
+      <para>
+       <replaceable>PG_NUM</replaceable>を512に設定します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>OSDが10～50の場合:</term>
+     <listitem>
+      <para>
+       <replaceable>PG_NUM</replaceable>を1024に設定します。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    OSDの数が増えるにつれて、<replaceable>PG_NUM</replaceable>の適切な値を選択することがより重要になってきます。<replaceable>PG_NUM</replaceable>は、OSDに障害が発生した場合のクラスタの動作とデータの耐久性に強く影響します。
+   </para>
+   <sect3 xml:id="op-pgs-choosing">
+    <title>OSDが50を超える場合の配置グループの計算</title>
+    <para>
+     OSDが50未満の場合は、<xref linkend="op-pgs-pg-num"/>で説明されている事前選択値を使用してください。OSDが50を超える場合は、リソース使用量、データ耐久性、および分散のバランスが取れるよう、OSDあたり約50～100の配置グループを推奨します。単一プールのオブジェクトの場合、次の式を使用してベースラインを取得できます。
+    </para>
+<screen>total PGs = (OSDs * 100) / <replaceable>POOL_SIZE</replaceable></screen>
+    <para>
+     ここで、<replaceable>POOL_SIZE</replaceable>は複製プールのレプリカ数か、<command>ceph osd erasure-code-profile get</command>コマンドによって返されるイレージャコーディングプールの「k」+「m」の合計です。結果は、最も近い2の累乗値まで切り上げる必要があります。CRUSHアルゴリズムが配置グループ間でオブジェクト数をバランスよく均等に配置できるよう、切り上げを推奨します。
+    </para>
+    <para>
+     たとえば、OSDの数が200で、プールサイズが3つのレプリカであるクラスタの場合、次のようにPGの数を見積もります。
+    </para>
+<screen>
+          (200 * 100) / 3 = 6667
+</screen>
+    <para>
+     最も近い2の累乗値は「8192」<emphasis role="bold"/>です。
+    </para>
+    <para>
+     複数のデータプールを使用してオブジェクトを保存する場合、プールあたりの配置グループの数と、OSDあたりの配置グループの数のバランスを取るようにする必要があります。システムリソースの過剰な使用やピアリングプロセスの大幅な低速化を招くことなく、OSDごとの違いが適度に小さくなるような妥当な配置グループ合計数を算出する必要があります。
+    </para>
+    <para>
+     たとえば、10個のプールで構成されるクラスタがあり、各プールについて10個のOSDに512個の配置グループが存在する場合、合計5,120個の配置グループが10個のOSDに分散されます。つまり、OSDあたり512個の配置グループになります。このようなセットアップでは、リソースを使用し過ぎることはありません。ただし、それぞれに512個の配置グループが含まれるプールを1,000個作成した場合、OSDはそれぞれ約50,000個の配置グループを処理することになり、ピアリングに必要なリソースと時間が大幅に増えます。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-pg-set">
+   <title>配置グループ数の設定</title>
+   <note>
+    <para>
+     Ceph Nautilus (v14.x)以降はCeph Managerの<literal>pg_autoscaler</literal>モジュールを使用することで、必要に応じて配置グループを自動拡張できます。この機能を有効にしたい場合は、<xref linkend="default-pg-and-pgp-counts"/>を参照してください。
+    </para>
+   </note>
+   <para>
+    従来通りプールの配置グループ数を手動で指定する必要がある場合は、プールの作成時に指定する必要があります(<xref linkend="ceph-pools-operate-add-pool"/>を参照してください)。プールに配置グループを設定した後であれば、次のコマンドを実行して配置グループ数を増やすことができます。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_num <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    配置グループの数を増やした後、クラスタの再バランスを行う前に、配置対象の配置グループの数(<option>PGP_NUM</option>)を増やす必要もあります。<option>PGP_NUM</option>は、配置の際にCRUSHアルゴリズムによって考慮される配置グループの数です。<option>PG_NUM</option>を増やすと配置グループが分割されますが、データは<option>PGP_NUM</option>を増やすまで新しい配置グループに移行されません。<option>PGP_NUM</option>は<option>PG_NUM</option>と等しくなければなりません。配置対象の配置グループの数を増やすには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pgp_num <replaceable>PGP_NUM</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-get">
+   <title>配置グループ数の確認</title>
+   <para>
+    プールの配置グループ数を確認するには、次の<command>get</command>コマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool get <replaceable>POOL_NAME</replaceable> pg_num
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getpgstat">
+   <title>クラスタの配置グループの統計情報の確認</title>
+   <para>
+    クラスタの配置グループの統計情報を確認するには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg dump [--format <replaceable>FORMAT</replaceable>]
+</screen>
+   <para>
+    有効な形式は「plain」(デフォルト)と「json」です。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getstuckstat">
+   <title>スタックしている配置グループの統計情報の確認</title>
+   <para>
+    指定した状態でスタックしているすべての配置グループの統計情報を確認するには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg dump_stuck <replaceable>STATE</replaceable> \
+ [--format <replaceable>FORMAT</replaceable>] [--threshold <replaceable>THRESHOLD</replaceable>]
+</screen>
+   <para>
+    <replaceable>STATE</replaceable>は、「inactive」(PGは最新のデータが含まれるOSDが起動するのを待機しているため、読み込みまたは書き込みを処理できない)、「unclean」(必要な回数複製されていないオブジェクトがPGに含まれている)、「stale」(PGは不明な状態で、それらのPGをホストしているOSDが<option>mon_osd_report_timeout</option>オプションで指定された時間間隔でモニタクラスタにレポートしていない)、「undersized」、または「degraded」のいずれかです。
+   </para>
+   <para>
+    有効な形式は「plain」(デフォルト)と「json」です。
+   </para>
+   <para>
+    このしきい値は、配置グループがスタックしてから、返される統計情報にそれを含めるまでの最小秒数を定義します(デフォルトでは300秒)。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pgmap">
+   <title>配置グループマップの検索</title>
+   <para>
+    特定の配置グループの配置グループマップを検索するには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg map <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Cephは、配置グループマップ、配置グループ、およびOSDステータスを返します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg map 1.6c
+osdmap e13 pg 1.6c (1.6c) -&gt; up [1,0] acting [1,0]
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-pgstats">
+   <title>配置グループの統計情報の取得</title>
+   <para>
+    特定の配置グループの統計情報を取得するには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg <replaceable>PG_ID</replaceable> query
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-scrubpg">
+   <title>配置グループのスクラブ</title>
+   <para>
+    配置グループをスクラブ(<xref linkend="scrubbing-pgs"/>)するには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg scrub <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Cephは、プライマリノードとレプリカノードを確認し、配置グループ内にあるすべてのオブジェクトのカタログを生成し、それらを比較して、欠落しているオブジェクトや一致しないオブジェクトがないかと、コンテンツに整合性があるかどうかを確認します。レプリカがすべて一致していれば、最後にセマンティックを一括処理して、スナップショットに関連するすべてのオブジェクトメタデータに整合性があることを確認します。エラーはログでレポートされます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-backfill">
+   <title>配置グループのバックフィルと回復の優先度の設定</title>
+   <para>
+    複数の配置グループで回復やバックフィルが必要になった場合に、一部のグループに他のグループよりも重要なデータが格納されている状況が発生することがあります。たとえば、一部のPGには稼働中のマシンで使用されているイメージのデータが格納されていて、他のPGは非アクティブなマシンや関連性の低いデータで使用されている場合があります。このような場合、これらのグループの回復の優先度を設定して、該当するグループに保存されているデータのパフォーマンスと可用性を先に復元できます。バックフィルまたは回復中に特定の配置グループに優先のマークを付けるには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt role="root">root # </prompt>ceph pg force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    これにより、Cephは、他の配置グループより先に、まず指定した配置グループに対して回復またはバックフィルを実行します。これは、現在進行中のバックフィルや回復を中断するのではなく、指定したPGをできるだけ早く処理するものです。考えが変わった場合、または間違ったグループに優先度を設定した場合は、次のコマンドを使用して、優先度の設定をキャンセルします。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg cancel-force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt role="root">root # </prompt>ceph pg cancel-force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    <command>cancel-*</command>コマンドを使用すると、PGから「force」フラグが削除され、PGはデフォルトの順序で処理されるようになります。このコマンドも、現在処理中の配置グループには影響せず、まだキューに入っている配置グループにのみ影響します。グループの回復またはバックフィルが完了すると、「force」フラグは自動的にクリアされます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-revert">
+   <title>失われたオブジェクトを元に戻す</title>
+   <para>
+    クラスタで1つ以上のオブジェクトが失われ、失われたデータの検索を中止する場合は、見つからないオブジェクトに「喪失」のマークを付ける必要があります。
+   </para>
+   <para>
+    可能性がある場所すべてに対してクエリを実行してもまだオブジェクトが失われた状態である場合、失なわれたオブジェクトを放棄しなければならないことがあります。これは、書き込みそのものが回復される前に実行された書き込みをクラスタが認識できるような複数の障害がまれな組み合わせで起きた場合に発生する可能性があります。
+   </para>
+   <para>
+    現在サポートされている唯一のオプションは「revert」で、以前のバージョンのオブジェクトにロールバックするか、新しいオブジェクトの場合はその情報を完全に消去します。「見つからない」オブジェクトに「喪失」のマークを付けるには、次のコマンドを実行します。
+   </para>
+<screen>
+  <prompt>cephuser@adm &gt; </prompt>ceph pg <replaceable>PG_ID</replaceable> mark_unfound_lost revert|delete
+  </screen>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-autoscaler">
+   <title>配置グループの自動拡張の有効化</title>
+   <para>
+    配置グループ(PG)とは、Cephのデータ分散方法を内部で実装している詳細部分です。配置グループの自動拡張を有効化することで、クラスタの使用方法に応じてクラスタが配置グループの作成や自動調整を行えるようにします。
+   </para>
+   <para>
+    システム上の各プールには<option>pg_autoscale_mode</option>というプロパティがあり、<literal>off</literal>、<literal>on</literal>、<literal>warn</literal>に設定することが可能です。
+   </para>
+   <para>
+    自動拡張はプールごとに設定します。また、次の3つのモードで動作します。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>off</term>
+     <listitem>
+      <para>
+       このプールの自動拡張を無効化します。管理者の判断で、各プールに適切な数の配置グループを選択してください。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>on</term>
+     <listitem>
+      <para>
+       対象プールで配置グループ数の自動調整を有効化します。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>warn</term>
+     <listitem>
+      <para>
+       配置グループ数を調整する必要がある場合に、ヘルスアラートを発します。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    既存のプールに自動拡張モードを設定するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_autoscale_mode <replaceable>mode</replaceable></screen>
+   <para>
+    デフォルトの<option>pg_autoscale_mode</option>を設定することもできます。この設定は今後作成されるすべてのプールに適用されます。コマンドは次の通りです。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set global osd_pool_default_pg_autoscale_mode <replaceable>MODE</replaceable></screen>
+   <para>
+    次のコマンドを実行することで、各プール、その相対的な使用率、推奨される配置グループ数の変更を確認できます。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool autoscale-status</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-crush">
+  <title>CRUSHマップの操作</title>
+
+  <para>
+   このセクションでは、CRUSHマップの編集やパラメータの変更、OSDの追加/移動/削除など、CRUSHマップの基本的な操作方法を紹介します。
+  </para>
+
+  <sect2>
+   <title>CRUSHマップの編集</title>
+   <para>
+    既存のCRUSHマップを編集するには、次の手順に従います。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      CRUSHマップを取得します。クラスタのCRUSHマップを取得するには、次のコマンドを実行します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd getcrushmap -o <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Cephにより、指定したファイル名に、コンパイル済みのCRUSHマップが出力(<option>-o</option>)されます。CRUSHマップはコンパイル済み形式なので、編集する前に逆コンパイルする必要があります。
+     </para>
+    </step>
+    <step>
+     <para>
+      CRUSHマップを逆コンパイルします。CRUSHマップを逆コンパイルするには、次のコマンドを実行します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>crushtool -d <replaceable>compiled-crushmap-filename</replaceable> \
+ -o <replaceable>decompiled-crushmap-filename</replaceable></screen>
+     <para>
+      Cephにより、コンパイル済みのCRUSHマップが逆コンパイル(<option>-d</option>)されて、指定したファイル名に出力(<option>-o</option>)されます。
+     </para>
+    </step>
+    <step>
+     <para>
+      デバイス、バケット、およびルールのパラメータを少なくとも1つ編集します。
+     </para>
+    </step>
+    <step>
+     <para>
+      CRUSHマップをコンパイルします。CRUSHマップをコンパイルするには、次のコマンドを実行します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>crushtool -c <replaceable>decompiled-crush-map-filename</replaceable> \
+ -o <replaceable>compiled-crush-map-filename</replaceable></screen>
+     <para>
+      Cephにより、指定したファイル名に、コンパイル済みのCRUSHマップが保存されます。
+     </para>
+    </step>
+    <step>
+     <para>
+      CRUSHマップを設定します。クラスタのCRUSHマップを設定するには、次のコマンドを実行します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd setcrushmap -i <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Cephにより、指定したファイル名のコンパイル済みCRUSHマップがクラスタのCRUSHマップとして入力されます。
+     </para>
+    </step>
+   </procedure>
+   <tip>
+    <title>バージョン管理システムの使用</title>
+    <para>
+     エクスポートおよび変更したCRUSHマップファイルには、gitやsvnなどのバージョン管理システムを使用します。これにより、ロールバックを簡単に行うことができます。
+    </para>
+   </tip>
+   <tip>
+    <title>新しいCRUSHマップのテスト</title>
+    <para>
+     調整した新しいCRUSHマップは、<command>crushtool --test</command>コマンドを使用してテストし、新しいCRUSHマップを適用する前の状態と比較します。次のコマンドスイッチが役立つ場合があります。<option>--show-statistics</option>、<option>--show-mappings</option>、<option>--show-bad-mappings</option>、<option>--show-utilization</option>、<option>--show-utilization-all</option>、<option>--show-choose-tries</option>
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addosd">
+   <title>OSDの追加または移動</title>
+   <para>
+    実行中のクラスタのCRUSHマップでOSDを追加または移動するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush set <replaceable>id_or_name</replaceable> <replaceable>weight</replaceable> root=<replaceable>pool-name</replaceable>
+<replaceable>bucket-type</replaceable>=<replaceable>bucket-name</replaceable> ...</screen>
+   <variablelist>
+    <varlistentry>
+     <term>id</term>
+     <listitem>
+      <para>
+       整数。OSDの数値ID。このオプションは必須です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>name</term>
+     <listitem>
+      <para>
+       文字列。OSDの完全な名前。このオプションは必須です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>weight</term>
+     <listitem>
+      <para>
+       倍精度。OSDのCRUSHの重み。このオプションは必須です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>root</term>
+     <listitem>
+      <para>
+       キー/値のペア。CRUSH階層には、デフォルトでそのルートとしてプールが含まれます。このオプションは必須です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bucket-type</term>
+     <listitem>
+      <para>
+       キー/値のペア。CRUSH階層におけるOSDの場所を指定できます。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    次の例は、<literal>osd.0</literal>を階層に追加するか、前の場所からそのOSDを移動します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush set osd.0 1.0 root=data datacenter=dc1 room=room1 \
+row=foo rack=bar host=foo-bar-1</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdweight">
+   <title><command>ceph osd reweight</command>と<command>ceph osd crush reweight</command>の違い</title>
+   <para>
+    Ceph OSDの「重み」を変更する、類似するコマンドが2つあります。これらを使用するコンテキストは異なるため、混乱を招く可能性があります。
+   </para>
+   <sect3 xml:id="ceph-osd-reweight">
+    <title><command>ceph osd reweight</command></title>
+    <para>
+     使用方法:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     <command>ceph osd reweight</command>はCeph OSDに上書きの重みを設定します。この値は0～1の範囲です。それ以外の値に設定すると、CRUSHは、通常であればこのドライブ上に存続するデータを強制的に再配置します。OSD上のバケットに割り当てられた重みは変更「しません」。これは、CRUSHによる通常の分散が適切に機能しない場合の修正手段です。<emphasis role="bold"/>たとえば、OSDの1つが90%で、その他が40%の場合、この重みを減らして補正を試してみることができます。
+    </para>
+    <note>
+     <title>OSDの重みは一時的である</title>
+     <para>
+      <command>ceph osd reweight</command>は永続的な設定ではないことに注意してください。あるOSDにマークを付けるとその重みは0に設定され、もう一度マークを付けるとその重みは1に変更されます。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="ceph-osd-crush-reweight">
+    <title><command>ceph osd crush reweight</command></title>
+    <para>
+     使用方法:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     <command>ceph osd crush reweight</command>は、OSDの「<emphasis role="bold"/>CRUSH」の重みを設定します。この重みは任意の値(一般的にはディスクのTB単位のサイズ)で、システムがOSDに割り当てようとするデータの量を制御します。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdremove">
+   <title>OSDの削除</title>
+   <para>
+    実行中のクラスタのCRUSHマップからOSDを削除するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush remove <replaceable>OSD_NAME</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addbaucket">
+   <title>バケットの追加</title>
+   <para>
+    実行中のクラスタのCRUSHマップにバケットを追加するには、<command>ceph osd crush add-bucket</command>コマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush add-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-movebucket">
+   <title>バケットの移動</title>
+   <para>
+    CRUSHマップ階層の別の場所または位置へバケットを移動するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush move <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable>=<replaceable>BUCKET_NAME</replaceable> [...]</screen>
+   <para>
+    以下に例を示します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush move bucket1 datacenter=dc1 room=room1 row=foo rack=bar host=foo-bar-1
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-rmbucket">
+   <title>バケットの削除</title>
+   <para>
+    CRUSHマップ階層からバケットを削除するには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush remove <replaceable>BUCKET_NAME</replaceable>
+</screen>
+   <note>
+    <title>空のバケットのみ</title>
+    <para>
+     CRUSH階層からバケットを削除する前に、バケットを空にする必要があります。
+    </para>
+   </note>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="scrubbing-pgs">
+  <title>配置グループのスクラブ</title>
+
+  <para>
+   オブジェクトの複数のコピーを作成するほかに、Cephは、配置グループを「スクラブ」<emphasis/>することによってデータの整合性を保証します(配置グループの詳細については、<xref linkend="storage-intro-structure-pg"/>を参照)。Cephのスクラブは、Object Storage層に対して<command>fsck</command>を実行することに似ています。各配置グループについて、Cephは、すべてのオブジェクトのカタログを生成し、各プライマリオブジェクトとそのレプリカを比較して、オブジェクトの欠落や不一致がないことを確認します。日次の軽量スクラブではオブジェクトのサイズと属性を確認するのに対し、週次の詳細スクラブではデータを読み込み、チェックサムを使用してデータの整合性を保証します。
+  </para>
+
+  <para>
+   スクラブはデータの整合性を維持するために重要ですが、パフォーマンスを低下させる可能性があります。次の設定を調整して、スクラブ操作を増減できます。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>osd max scrubs</option></term>
+    <listitem>
+     <para>
+      Ceph OSDの同時スクラブ操作の最大数。デフォルトは1です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub begin hour</option>、<option>osd scrub end hour</option></term>
+    <listitem>
+     <para>
+      スクラブを実行可能な時間枠を定義する時間(0～24)。デフォルトでは、0から始まり24に終了します。
+     </para>
+     <important>
+      <para>
+       配置グループのスクラブ間隔が<option>osd scrub max interval</option>の設定を超えている場合、スクラブは、定義した時間枠とは関係なく実行されます。
+      </para>
+     </important>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub during recovery</option></term>
+    <listitem>
+     <para>
+      回復時のスクラブを許可します。「false」に設定すると、アクティブな回復がある間は、新しいスクラブのスケジューリングが無効になります。すでに実行中のスクラブは続行されます。このオプションは、高負荷のクラスタの負荷を下げる場合に役立ちます。デフォルトは「true」です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub thread timeout</option></term>
+    <listitem>
+     <para>
+      スクラブスレッドがタイムアウトするまでの最大時間(秒単位)。デフォルトは60です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub finalize thread timeout</option></term>
+    <listitem>
+     <para>
+      スクラブ最終処理スレッドがタイムアウトするまでの最大時間(秒単位)。デフォルトは60*10です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub load threshold</option></term>
+    <listitem>
+     <para>
+      正規化された最大負荷。システム負荷(<literal>getloadavg()</literal> / <literal>online cpus</literal>の数の比率で定義)がこの数字を超えた場合、Cephはスクラブを実行しません。デフォルトは0.5です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub min interval</option></term>
+    <listitem>
+     <para>
+      Cephクラスタの負荷が低い場合にCeph OSDをスクラブする最小間隔(秒単位)。デフォルトは60*60*24 (1日1回)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub max interval</option></term>
+    <listitem>
+     <para>
+      クラスタの負荷に関係なくCeph OSDをスクラブする最大間隔(秒単位)。デフォルトは7*60*60*24 (週1回)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk min</option></term>
+    <listitem>
+     <para>
+      1回の操作でスクラブするObject Storeチャンクの最大数。スクラブ中、Cephは1つのチャンクへの書き込みをブロックします。デフォルトは5です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk max</option></term>
+    <listitem>
+     <para>
+      1回の操作でスクラブするObject Storeチャンクの最大数。デフォルトは25です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub sleep</option></term>
+    <listitem>
+     <para>
+      チャンクの次のグループをスクラブするまでのスリープ時間。この値を増やすとスクラブ操作全体の速度が低下しますが、クライアントの操作への影響は少なくなります。デフォルトは0です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub interval</option></term>
+    <listitem>
+     <para>
+      「詳細」スクラブ(すべてのデータを完全に読み込み)の間隔。<option>osd scrub load threshold</option>オプションはこの設定に影響しません。デフォルトは60*60*24*7 (週1回)です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub interval randomize ratio</option></term>
+    <listitem>
+     <para>
+      配置グループに対して次のスクラブジョブをスケジューリングする際に、<option>osd scrub min interval</option>の値にランダムな遅延を追加します。この遅延は、<option>osd scrub min interval</option> * <option>osd scrub interval randomized ratio</option>の結果よりも小さいランダムな値です。したがって、デフォルト設定では、許可された時間枠である[1, 1.5] * <option>osd scrub min interval</option>の中で実質的にランダムにスクラブが分散されます。デフォルトは0.5です。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub stride</option></term>
+    <listitem>
+     <para>
+      詳細スクラブ実行時の読み込みサイズ。デフォルトは524288 (512KB)です。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+</chapter>

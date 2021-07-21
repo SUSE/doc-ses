@@ -1,0 +1,1631 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deploy_cephadm.xml" version="5.0" xml:id="deploy-cephadm">
+ <title>使用 cephadm 進行部署</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  SUSE Enterprise Storage 7 使用基於 Salt 的 <systemitem class="resource">ceph-salt</systemitem> 工具在每個參與叢集節點上準備作業系統，以透過 cephadm 進行部署。cephadm 透過 SSH 從 Ceph 管理員精靈連接至主機，以部署和管理 Ceph 叢集。cephadm 管理 Ceph 叢集的整個生命週期。它會首先在單個節點 (一個 MON 和 MGR 服務) 上將一個小型叢集開機，然後使用協調程序介面擴充叢集，以包含所有主機並佈建所有 Ceph 服務。您可以透過 Ceph 指令行介面 (CLI) 或部分透過 Ceph Dashboard (GUI) 執行此操作。
+ </para>
+ <important>
+  <para>
+   請注意，在初始部署期間，Ceph 社群文件使用 <command>cephadm bootstrap</command> 指令。<systemitem class="resource">ceph-salt</systemitem> 會呼叫 <command>cephadm bootstrap</command> 指令，不應直接執行該指令。不支援使用 <command>cephadm bootstrap</command> 進行任何手動 Ceph 叢集部署。
+  </para>
+ </important>
+ <para>
+  若要使用 cephadm 部署 Ceph 叢集，需要完成以下任務：
+ </para>
+ <orderedlist>
+  <listitem>
+   <para>
+    在所有叢集節點上安裝 SUSE Linux Enterprise Server 15 SP2 並執行基礎作業系統的基本組態。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    在所有叢集節點上部署 Salt 基礎架構，以便透過 <systemitem class="resource">ceph-salt</systemitem> 執行初始部署準備。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    透過 <systemitem class="resource">ceph-salt</systemitem> 設定叢集的基本內容並進行部署。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    為叢集新增新的節點和角色，並使用 cephadm 為其部署服務。
+   </para>
+  </listitem>
+ </orderedlist>
+ <sect1 xml:id="deploy-os">
+  <title>安裝和設定 SUSE Linux Enterprise Server</title>
+
+  <procedure>
+   <step>
+    <para>
+     在每個叢集節點上安裝並註冊 SUSE Linux Enterprise Server 15 SP2。在安裝 SUSE Enterprise Storage 期間，需要存取更新儲存庫，因此必須註冊。至少包含以下模組：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Basesystem 模組
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Server Applications Module
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     如需如何安裝 SUSE Linux Enterprise Server 的更多詳細資料，請參閱 <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-install.html"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     在每個叢集節點上安裝 <emphasis>SUSE Enterprise Storage 7</emphasis> 延伸。
+    </para>
+    <tip>
+     <title>將 SUSE Enterprise Storage 與 SUSE Linux Enterprise Server 一併安裝</title>
+     <para>
+      您可以在安裝 SUSE Linux Enterprise Server 15 SP2 之後單獨安裝 SUSE Enterprise Storage 7 延伸，也可以在 SUSE Linux Enterprise Server 15 SP2 安裝程序期間新增該延伸。
+     </para>
+    </tip>
+    <para>
+     如需如何安裝延伸的更多詳細資料，請參閱 <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-register-sle.html"/>。
+    </para>
+   </step>
+   <step>
+    <para>
+     在每個節點上設定網路設定，包括正確的 DNS 名稱解析。如需設定網路的詳細資訊，請參閱 <link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#sec-network-yast"/>。如需設定 DNS 伺服器的詳細資訊，請參閱 <link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#cha-dns"/>。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-salt">
+  <title>部署 Salt</title>
+
+  <para>
+   SUSE Enterprise Storage 使用 Salt 和 <systemitem class="resource">ceph-salt</systemitem> 進行初始叢集準備。Salt 可協助您從一個名為 <emphasis>Salt Master</emphasis> 的專屬主機同時針對多個叢集節點設定和執行指令。在部署 Salt 之前，請考慮以下重要事項：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>Salt Minion</emphasis> 是由一個名為 Salt Master 的專屬節點控制的節點。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     如果 Salt Master 主機應屬於 Ceph 叢集的一部分，則它需要執行自己的 Salt Minion，但這不是必須的。
+    </para>
+    <tip>
+     <title>每部伺服器共用多個角色</title>
+     <para>
+      如果將每個角色都部署在一個獨立節點上，則 Ceph 叢集的效能是最佳的。但實際部署有時會要求多個角色共用一個節點。為避免效能欠佳以及升級程序出現問題，請勿向管理節點部署 Ceph OSD、中繼資料伺服器或 Ceph 監控程式角色。
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     Salt Minion 需要能透過網路正確解析 Salt Master 的主機名稱。依預設，Minion 會尋找 <systemitem>salt</systemitem> 主機名稱，但您可以在 <filename>/etc/salt/minion</filename> 檔案中指定可透過網路連接的其他任何主機名稱。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <procedure>
+   <step>
+    <para>
+     在 Salt Master 節點上安裝 <literal>salt-master</literal>：
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master</screen>
+   </step>
+   <step>
+    <para>
+     檢查 <systemitem>salt-master</systemitem> 服務是否已啟用並啟動，並視需要進行啟用和啟動：
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     如果您要使用防火牆，請確認 Salt Master 節點是否為所有 Salt Minion 節點開啟了連接埠 4505 和 4506。如果這些連接埠處於關閉狀態，您可以使用 <command>yast2 firewall</command> 指令並透過允許相應區域的 <guimenu>salt-master</guimenu> 服務來開啟這些連接埠。例如，<literal>public</literal>。
+    </para>
+   </step>
+   <step>
+    <para>
+     在所有 Minion 節點上安裝 <literal>salt-minion</literal> 套件。
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+   </step>
+   <step>
+    <para>
+     編輯 <filename>/etc/salt/minion</filename> 並取消註解下行：
+    </para>
+<screen>#log_level_logfile: warning</screen>
+    <para>
+     將 <literal>warning</literal> 記錄層級變更為 <literal>info</literal>。
+    </para>
+    <note>
+     <title><option>log_level_logfile</option> 和 <option>log_level</option></title>
+     <para>
+      <option>log_level</option> 用於控制螢幕上將顯示的記錄訊息，而 <option>log_level_logfile</option> 用於控制哪些記錄訊息將寫入到 <filename>/var/log/salt/minion</filename>。
+     </para>
+    </note>
+    <note>
+     <para>
+      請務必變更<emphasis>所有</emphasis>叢集 (Minion) 節點上的記錄層級。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     確定所有其他節點都可以將每個節點的<emphasis>完全合格網域名稱</emphasis>解析為公用叢集網路上的 IP 位址。
+    </para>
+   </step>
+   <step>
+    <para>
+     將所有 Minion 設定為連接至 Master。如果無法透過主機名稱 <literal>salt</literal> 連接 Salt Master，請編輯檔案 <filename>/etc/salt/minion</filename>，或建立包含以下內容的新檔案 <filename>/etc/salt/minion.d/master.conf</filename>：
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     如果對上述組態檔案執行了任何變更，請在所有相關的 Salt Minion 上重新啟動 Salt 服務：
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     檢查所有節點上是否已啟用並啟動 <systemitem>salt-minion</systemitem> 服務。依據需要啟用並啟動該服務：
+    </para>
+<screen><prompt role="root">root # </prompt>systemctl enable salt-minion.service
+<prompt role="root">root # </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     確認每個 Salt Minion 的指紋，如果指紋相符，則接受 Salt Master 上的所有 Salt 金鑰。
+    </para>
+    <note>
+     <para>
+      如果 Salt Minion 指紋傳回空白，請確定 Salt Minion 具有 Salt Master 組態且可與 Salt Master 通訊。
+     </para>
+    </note>
+    <para>
+     檢視每個 Minion 的指紋：
+    </para>
+<screen><prompt>root@minion &gt; </prompt>salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     收集到所有 Salt Minion 的指紋後，將列出 Salt Master 上所有未接受 Minion 金鑰的指紋：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     如果 Minion 的指紋相符，則接受這些金鑰：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     驗證是否已接受金鑰：
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step>
+    <para>
+     測試是否所有 Salt Minion 都回應：
+    </para>
+<screen><prompt>root@master # </prompt>salt-run manage.status</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day1">
+  <title>部署 Ceph 叢集</title>
+
+  <para>
+   本節將引導您完成部署基本 Ceph 叢集的程序。請仔細閱讀下面的小節，並依給定的順序執行所包含的指令。
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-cephsalt">
+   <title>安裝 <systemitem class="resource">ceph-salt</systemitem></title>
+   <para>
+    <systemitem class="resource">ceph-salt</systemitem> 提供了用於部署由 cephadm 管理的 Ceph 叢集的工具。<systemitem class="resource">ceph-salt</systemitem> 使用 Salt 基礎架構來執行作業系統管理 (例如，軟體更新或時間同步)，並為 Salt Minion 定義角色。
+   </para>
+   <para>
+    在 Salt Master 上，安裝 <package>ceph-salt</package> 套件：
+   </para>
+<screen><prompt>root@master # </prompt>zypper install ceph-salt</screen>
+   <para>
+    以上指令將做為相依項安裝 <package>ceph-salt-formula</package> ，它透過在 <filename>/etc/salt/master.d</filename> 目錄中插入額外檔案來修改 Salt Master 組態。若要套用變更，請重新啟動 <systemitem class="daemon">salt-master.service</systemitem> 並同步 Salt 模組：
+   </para>
+<screen>
+<prompt>root@master # </prompt>systemctl restart salt-master.service
+<prompt>root@master # </prompt>salt \* saltutil.sync_all
+</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-configure">
+   <title>設定叢集內容</title>
+   <para>
+    使用 <command>ceph-salt config</command> 指令可設定叢集的基本內容。
+   </para>
+   <important>
+    <para>
+     <filename>/etc/ceph/ceph.conf</filename> 檔案由 cephadm 管理，使用者<emphasis>不得</emphasis>編輯該檔案。應使用新的 <command>ceph config</command> 指令設定 Ceph 組態參數。如需詳細資訊，請參閱<xref linkend="cha-ceph-configuration-db"/>。
+    </para>
+   </important>
+   <sect3 xml:id="deploy-cephadm-configure-shell">
+    <title>使用 <systemitem class="resource">ceph-salt</systemitem> 外圍程序</title>
+    <para>
+     如果在不附帶任何路徑或子指令的情況下執行 <command>ceph-salt config</command>，您將進入互動 <systemitem class="resource">ceph-salt</systemitem> 外圍程序。如果您需要在一個批次中設定多個內容，並且不想輸入完整的指令語法，使用外圍程序會非常方便。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config
+<prompt>/&gt;</prompt> ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [no minions]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [no minions]
+  |   o- bootstrap ........................................... [no minion]
+  |   o- cephadm ............................................ [no minions]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path .................................. [ no image path]
+  | o- dashboard ................................................... [...]
+  | | o- force_password_update ................................. [enabled]
+  | | o- password ................................................ [admin]
+  | | o- ssl_certificate ....................................... [not set]
+  | | o- ssl_certificate_key ................................... [not set]
+  | | o- username ................................................ [admin]
+  | o- mon_ip .................................................. [not set]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh ............................................... [no key pair set]
+  | o- private_key .................................. [no private key set]
+  | o- public_key .................................... [no public key set]
+  o- time_server ........................... [enabled, no server host set]
+    o- external_servers .......................................... [empty]
+    o- servers ................................................... [empty]
+    o- subnet .................................................. [not set]
+</screen>
+    <para>
+     從 <systemitem class="resource">ceph-salt</systemitem> 的 <command>ls</command> 指令輸出中您會看到，叢集組態以樹狀結構組織。若要在 <systemitem class="resource">ceph-salt</systemitem> 外圍程序中設定叢集的特定內容，可使用以下兩個選項：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       從目前位置執行指令，並輸入內容的絕對路徑做為第一個引數：
+      </para>
+<screen>
+<prompt>/&gt;</prompt> /cephadm_bootstrap/dashboard ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username .................................................... [admin]
+<prompt>/&gt; /cephadm_bootstrap/dashboard/username set ceph-admin</prompt>
+Value set.
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       變更為需要設定的內容的路徑，並執行指令：
+      </para>
+<screen>
+<prompt>/&gt;</prompt> cd /cephadm_bootstrap/dashboard/
+<prompt>/ceph_cluster/minions&gt;</prompt> ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username ................................................[ceph-admin]
+</screen>
+     </listitem>
+    </itemizedlist>
+    <tip>
+     <title>自動完成組態程式碼片段</title>
+     <para>
+      在 <systemitem class="resource">ceph-salt</systemitem> 外圍程序中，您可以使用類似於一般 Linux 外圍程序 (Bash) 自動完成的自動完成功能。它可以完成組態路徑、子指令或 Salt Minion 名稱。自動完成組態路徑時，可使用以下兩個選項：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        若要讓外圍程序完成您目前位置的相對路徑，請按 TAB 鍵 <keycap function="tab"/> 兩次。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        若要讓外圍程序完成絕對路徑，請輸入 <keycap>/</keycap> 並按 TAB 鍵 <keycap function="tab"/> 兩次。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </tip>
+    <tip>
+     <title>使用游標鍵導覽</title>
+     <para>
+      如果從 <systemitem class="resource">ceph-salt</systemitem> 外圍程序輸入 <command>cd</command> 而不附帶任何路徑，則該指令將列印叢集組態的樹狀結構，其中目前路徑對應的行處於使用中狀態。您可以使用向上和向下游標鍵在各行之間導覽。按一下 <keycap function="enter"/> 進行確認後，組態路徑將變更為最後一個使用中路徑。
+     </para>
+    </tip>
+    <important>
+     <title>基本規則</title>
+     <para>
+      為了保持文件的一致性，我們將使用單一指令語法，而不輸入 <systemitem class="resource">ceph-salt</systemitem> 外圍程序。例如，您可以使用以下指令列出叢集組態樹：
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config ls</screen>
+    </important>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-minions">
+    <title>新增 Salt Minion</title>
+    <para>
+     將我們在<xref linkend="deploy-salt"/>中部署並接受的所有或部分 Salt Minion 包含到 Ceph 叢集組態中。您可以透過其全名指定 Salt Minion，也可以使用 glob 運算式「*」和「？」一次包含多個 Salt Minion。在 <literal>/ceph_cluster/minions</literal> 路徑下使用 <command>add</command> 子指令。以下指令包含所有已接受的 Salt Minion：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions add '*'</screen>
+    <para>
+     確認是否新增了指定的 Salt Minion：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions ls
+o- minions ................................................. [Minions: 5]
+  o- ses-master.example.com .................................. [no roles]
+  o- ses-min1.example.com .................................... [no roles]
+  o- ses-min2.example.com .................................... [no roles]
+  o- ses-min3.example.com .................................... [no roles]
+  o- ses-min4.example.com .................................... [no roles]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-cephadm">
+    <title>指定由 cephadm 管理的 Salt Minion</title>
+    <para>
+     指定哪些節點將屬於 Ceph 叢集並由 cephadm 管理。包含將執行 Ceph 服務的所有節點以及管理節點：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/cephadm add '*'</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-admin">
+    <title>指定管理節點</title>
+    <para>
+     管理節點是安裝 <filename>ceph.conf</filename> 組態檔案和 Ceph 管理金鑰圈的節點。您通常會在管理節點上執行與 Ceph 相關的指令。
+    </para>
+    <tip>
+     <title>Salt Master 和管理節點位於同一節點</title>
+     <para>
+      在所有或大多數主機都屬於 SUSE Enterprise Storage 的同質環境中，建議您將管理節點與 Salt Master 置於同一主機。
+     </para>
+     <para>
+      而對於一個 Salt 基礎架構代管多個叢集 (例如 SUSE Enterprise Storage 和 SUSE Manager) 的異質環境，請<emphasis>勿</emphasis>將管理節點與 Salt Master 置於同一主機。
+     </para>
+    </tip>
+    <para>
+     若要指定管理節點，請執行以下指令：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin add ses-master.example.com
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin ls
+o- admin ................................................... [Minions: 1]
+  o- ses-master.example.com ...................... [Other roles: cephadm]
+</screen>
+    <tip>
+     <title>在多個節點上安裝 <filename>ceph.conf</filename> 和管理金鑰圈</title>
+     <para>
+      如果是部署所需，您可以在多個節點上安裝 Ceph 組態檔案和管理金鑰圈。出於安全原因，請避免將其安裝在叢集的所有節點上。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-mon">
+    <title>指定第一個 MON/MGR 節點</title>
+    <para>
+     您需要指定將叢集開機的叢集 Salt Minion。此 Minion 將成為第一個執行 Ceph 監控程式和 Ceph 管理員服務的 Minion。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap set ses-min1.example.com
+Value set.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap ls
+o- bootstrap ..................................... [ses-min1.example.com]
+</screen>
+    <para>
+     此外，您還需要在公用網路上指定開機 MON 的 IP 位址，以確定 <option>public_network</option> 參數設定正確，例如：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/mon_ip set 192.168.10.20
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-tuned-profiles">
+    <title>指定調整的設定檔</title>
+    <para>
+     您需要指定叢集的哪些 Minion 具有主動調整的設定檔。為此，請使用以下指令明確新增這些角色：
+    </para>
+    <note>
+     <para>
+      一個 Minion 不能同時擁有 <literal>latency</literal> 和 <literal>throughput</literal> 角色。
+     </para>
+    </note>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/latency add ses-min1.example.com
+Adding ses-min1.example.com...
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/throughput add ses-min2.example.com
+Adding ses-min2.example.com...
+1 minion added.
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ssh">
+    <title>產生 SSH 金鑰組</title>
+    <para>
+     cephadm 使用 SSH 通訊協定與叢集節點通訊。將自動建立名為 <literal>cephadm</literal> 的使用者帳戶並用於 SSH 通訊。
+    </para>
+    <para>
+     您需要產生 SSH 金鑰組的私人和公用部分：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ssh generate
+Key pair generated.
+<prompt>root@master # </prompt>ceph-salt config /ssh ls
+o- ssh .................................................. [Key Pair set]
+  o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ntp">
+    <title>設定時間伺服器</title>
+    <para>
+     所有叢集節點都需要與可靠的時間來源進行時間同步。有以下幾種方案可以實現時間同步：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       如果所有叢集節點都已設定為使用所選 NTP 服務同步其時間，請完全停用時間伺服器處理：
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server disable
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       如果您的站台已有單一時間來源，請指定時間來源的主機名稱：
+      </para>
+<screen>
+ <prompt>root@master # </prompt>ceph-salt config /time_server/servers add <replaceable>time-server.example.com</replaceable>
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       另外，<systemitem class="resource">ceph-salt</systemitem> 可以設定一個 Salt Minion 來充當叢集其餘 Minion 的時間伺服器。有時，它被稱為「內部時間伺服器」。在此方案中，<systemitem class="resource">ceph-salt</systemitem> 將設定內部時間伺服器 (應為其中一個 Salt Minion) 以使其時間與外部時間伺服器 (例如 <literal>pool.ntp.org</literal>) 同步，並將所有其他 Minion 設定為從內部時間伺服器獲取時間。可透過以下指令來實現：
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/servers add ses-master.example.com
+<prompt>root@master # </prompt>ceph-salt config /time_server/external_servers add pool.ntp.org
+</screen>
+      <para>
+       <option>/time_server/subnet</option> 選項指定允許 NTP 用戶端透過其存取 NTP 伺服器的子網路。當您指定 <option>/time_server/servers</option> 時，會自動設定該選項。如果需要變更該選項或手動指定，請執行：
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/subnet set 10.20.6.0/24
+</screen>
+     </listitem>
+    </itemizedlist>
+    <para>
+     檢查時間伺服器設定：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server ls
+o- time_server ................................................ [enabled]
+  o- external_servers ............................................... [1]
+  | o- pool.ntp.org ............................................... [...]
+  o- servers ........................................................ [1]
+  | o- ses-master.example.com ..................................... [...]
+  o- subnet .............................................. [10.20.6.0/24]
+</screen>
+    <para>
+     如需設定時間同步的詳細資訊，請參閱 <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-ntp.html#sec-ntp-yast"/>。
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-dashboardlogin">
+    <title>設定 Ceph Dashboard 登入身分證明</title>
+    <para>
+     部署基本叢集後便可使用 Ceph Dashboard。若要存取 Ceph Dashboard，您需要設定有效的使用者名稱和密碼，例如：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/username set admin
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/password set <replaceable>PWD</replaceable>
+</screen>
+    <tip>
+     <title>強制密碼更新</title>
+     <para>
+      依預設，系統將強制第一位儀表板使用者在首次登入儀表板時變更其密碼。若要停用此功能，請執行以下指令：
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/force_password_update disable</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-imagepath">
+    <title>設定容器影像的路徑</title>
+    <para>
+     cephadm 需要知道將在部署步驟中使用的容器影像的有效 URI 路徑。確認是否設定了預設路徑：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path ls</screen>
+    <para>
+     如果未設定預設路徑或者您的部署需要特定路徑，請使用以下指令新增該路徑：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path set registry.suse.com/ses/7/ceph/ceph</screen>
+    <note>
+     <para>
+      對於監控堆疊，需要更多的容器影像。對於實體隔離部署以及從本地登錄的部署，此時您可能想要獲取這些影像，以便相應地準備您的本地登錄。
+     </para>
+     <para>
+      請注意，<systemitem class="resource">ceph-salt</systemitem> 不會將這些容器影像用於部署。而只是為後面的步驟做準備，在後面的步驟中將使用 cephadm 來部署或移轉監控元件。
+     </para>
+     <para>
+      如需有關監控堆疊所使用的影像以及如何自訂這些影像的詳細資訊，請瀏覽<xref linkend="monitoring-custom-images"/>頁面。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-registry">
+    <title>設定容器登錄</title>
+    <para>
+     (選擇性) 您可以設定本地容器登錄。它將充當 <literal>registry.suse.com</literal> 登錄的鏡像。請記住，每當 <systemitem class="systemname">registry.suse.com</systemitem> 中提供了新的更新容器，就需要重新同步本地登錄。
+
+    </para>
+    <para>
+     在以下情況下，建立本地登錄非常有用：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       您有許多叢集節點，希望透過建立容器影像的本地鏡像來節省下載時間和頻寬。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       您的叢集無法存取線上登錄 (實體隔離部署)，您需要一個本地鏡像來從中提取容器影像。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       如果因組態或網路問題而阻止您的叢集透過安全連結存取遠端登錄，則您需要一個本地的未加密登錄。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <important>
+     <para>
+      若要在支援的系統上部署程式暫時修復 (PTF)，您需要部署本地容器登錄。
+     </para>
+    </important>
+    <para>
+     若要設定本地登錄 URL 以及存取身分證明，請執行以下操作：
+    </para>
+    <procedure>
+     <step>
+      <para>
+       設定本地登錄的 URL：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/registry set <replaceable>REGISTRY_URL</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       設定使用者名稱和密碼以存取本地登錄：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/username set <replaceable>REGISTRY_USERNAME</replaceable></screen>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/password set <replaceable>REGISTRY_PASSWORD</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       執行 <command>ceph-salt apply</command> 以更新所有 Minion 上的 Salt pillar。
+      </para>
+     </step>
+    </procedure>
+    <tip>
+     <title>登錄快取</title>
+     <para>
+      若要避免在出現新的更新容器時重新同步本地登錄，您可以設定<emphasis>登錄快取</emphasis>。
+
+     </para>
+    </tip>
+    <para>
+     雲端原生應用程式開發和傳遞方法需要一個登錄和一個 CI/CD (連續整合/傳遞) 例項來開發和生產容器影像。在此例項中，您可以使用私人登錄。
+
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-inflight-encryption">
+    <title>啟用資料傳輸中加密 (msgr2)</title>
+    <para>
+     Messenger v2 通訊協定 (MSGR2) 是 Ceph 的線上傳輸通訊協定。它提供了一種可對正在透過網路傳輸的所有資料進行加密的安全模式，封裝了驗證封包內容，並支援未來整合新的驗證模式 (例如 Kerberos)。
+    </para>
+    <important>
+     <para>
+      Linux 核心 Ceph 用戶端 (例如 CephFS 和 RADOS 區塊裝置) 目前不支援 msgr2。
+     </para>
+    </important>
+    <para>
+     Ceph 精靈可以結合到多個連接埠，以便讓舊 Ceph 用戶端和支援 v2 的新用戶端能夠連接至同一叢集。依預設，針對新的 v2 通訊協定，MON 現在會結合到 IANA 指定的新連接埠 3300 (CE4h 或 0xCE4)，而針對舊版 v1 通訊協定，則會結合到舊的預設連接埠 6789。
+    </para>
+    <para>
+     v2 通訊協定 (MSGR2) 支援以下兩種連接模式：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>crc 模式</term>
+      <listitem>
+       <para>
+        建立連接時進行強初始驗證和 CRC32C 完整性檢查。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>secure 模式</term>
+      <listitem>
+       <para>
+        建立連接時進行強初始驗證，並對所有驗證後流量進行完全加密，包括加密完整性檢查。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     對於大多數連接，有一些選項可以控制使用哪種模式：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_cluster_mode</term>
+      <listitem>
+       <para>
+        用於 Ceph 精靈之間的叢集內通訊的連接模式 (或允許的模式)。如果列出了多種模式，則偏好最先列出的模式。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_service_mode</term>
+      <listitem>
+       <para>
+        連接至叢集時允許用戶端使用的模式清單。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_client_mode</term>
+      <listitem>
+       <para>
+        與 Ceph 叢集通訊時，供用戶端使用 (或允許) 的連接模式清單，依偏好設定排序。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     有一組專用於監控程式的平行選項集，可讓管理員設定與監控程式通訊的不同 (通常更安全) 要求。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_mon_cluster_mode</term>
+      <listitem>
+       <para>
+        在監控程式之間使用的連接模式 (或允許的模式)。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_service_mode</term>
+      <listitem>
+       <para>
+        連接至監控程式時，供用戶端或其他 Ceph 精靈使用的允許模式清單。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_client_mode</term>
+      <listitem>
+       <para>
+        連接至監控程式時，供用戶端或非監控程式精靈使用的連接模式的清單，依偏好設定排序。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     若要在部署期間啟用 MSGR2 加密模式，您需要在執行 <command>ceph-salt apply</command> 之前向 <systemitem class="resource">ceph-salt</systemitem> 組態新增一些組態選項。
+    </para>
+    <para>
+     若要使用 <literal>secure</literal> 模式，請執行以下指令。
+    </para>
+    <para>
+     向 <systemitem class="resource">ceph-salt</systemitem> 組態工具中的 <filename>ceph_conf</filename> 新增全域區段。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global</screen>
+    <para>
+     設定下列選項：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode "secure crc"
+</screen>
+    <note>
+     <para>
+      確定 <literal>secure</literal> 先於 <literal>crc</literal>。
+     </para>
+    </note>
+    <para>
+     若要<emphasis>強制使用</emphasis> <literal>secure</literal> 模式，請執行以下指令：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode secure
+</screen>
+    <tip xml:id="update-inflight-encryption-settings">
+     <title>更新設定</title>
+     <para>
+      如果您要變更上述任何設定，請在監控程式組態儲存中設定組態變更。可使用 <command>ceph config set</command> 指令實現。
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global <replaceable>CONNECTION_OPTION</replaceable> <replaceable>CONNECTION_MODE</replaceable> [--force]</screen>
+     <para>
+      例如：
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global ms_cluster_mode "secure crc"</screen>
+     <para>
+      如果要檢查目前值 (包括預設值)，請執行以下指令：
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get <replaceable>CEPH_COMPONENT</replaceable> <replaceable>CONNECTION_OPTION</replaceable></screen>
+     <para>
+      例如，若要獲取 OSD 的 <literal>ms_cluster_mode</literal>，請執行：
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get osd ms_cluster_mode</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-enable-network">
+    <title>設定叢集網路</title>
+    <para>
+     (選擇性) 如果執行的是獨立的叢集網路，則可能需要設定叢集網路 IP 位址並後接斜線符號及子網路遮罩部分，例如 <literal>192.168.10.22/24</literal>。
+    </para>
+    <para>
+     執行以下指令可啟用 <literal>cluster_network</literal>：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set cluster_network <replaceable>NETWORK_ADDR</replaceable>
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-verify">
+    <title>確認叢集組態</title>
+    <para>
+     最低叢集組態已完成。請檢查是否存在明顯錯誤：
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [Minions: 5]
+  | | o- ses-master.example.com .................................. [admin]
+  | | o- ses-min1.example.com ......................... [bootstrap, admin]
+  | | o- ses-min2.example.com ................................. [no roles]
+  | | o- ses-min3.example.com ................................. [no roles]
+  | | o- ses-min4.example.com ................................. [no roles]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [Minions: 2]
+  |   | o- ses-master.example.com ....................... [no other roles]
+  |   | o- ses-min1.example.com ................. [other roles: bootstrap]
+  |   o- bootstrap ................................ [ses-min1.example.com]
+  |   o- cephadm ............................................ [Minions: 5]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path ............... [registry.suse.com/ses/7/ceph/ceph]
+  | o- dashboard ................................................... [...]
+  |   o- force_password_update ................................. [enabled]
+  |   o- password ................................... [randomly generated]
+  |   o- username ................................................ [admin]
+  | o- mon_ip ............................................ [192.168.10.20]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh .................................................. [Key Pair set]
+  | o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  | o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- time_server ............................................... [enabled]
+    o- external_servers .............................................. [1]
+    | o- 0.pt.pool.ntp.org ......................................... [...]
+    o- servers ....................................................... [1]
+    | o- ses-master.example.com .................................... [...]
+    o- subnet ............................................. [10.20.6.0/24]
+</screen>
+    <tip>
+     <title>叢集組態的狀態</title>
+     <para>
+      您可以透過執行以下指令檢查叢集的組態是否有效：
+     </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt status
+cluster: 5 minions, 0 hosts managed by cephadm
+config: OK
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-export">
+    <title>輸出叢集組態</title>
+    <para>
+     在設定了基本叢集並且確認其組態有效之後，最好將其組態輸出至檔案中：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt export &gt; cluster.json</screen>
+    <warning>
+     <para>
+      <command>ceph-salt export</command> 的輸出中包含 SSH 私密金鑰。如果您擔心安全問題，請不要在未採取適當預防措施的情況下執行此指令。
+     </para>
+    </warning>
+    <para>
+     如果叢集組態損毀並需要復原到備份狀態，請執行：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt import cluster.json</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-deploy">
+   <title>更新節點並將最小叢集開機</title>
+   <para>
+    部署叢集之前，請更新所有節點上的所有軟體套件：
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update</screen>
+   <para>
+    如果節點在更新期間報告 <literal>Reboot is needed</literal>，則表示重要的作業系統套件 (例如核心) 已更新至更新版本，您需要將節點重新開機才能套用變更。
+   </para>
+   <para>
+    若要將所有需要重新開機的節點重新開機，請附加 <option>--reboot</option> 選項
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update --reboot</screen>
+   <para>
+    或者在單獨的步驟中將這些節點重新開機：
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt reboot</screen>
+   <important>
+    <para>
+     永遠不會透過 <command>ceph-salt update --reboot</command> 或 <command>ceph-salt reboot</command> 指令將 Salt Master 重新開機。如果 Salt Master 需要重新開機，您需要手動進行重新開機。
+    </para>
+   </important>
+   <para>
+    更新節點後，請將最小叢集開機：
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply</screen>
+   <note>
+    <para>
+     開機完成後，叢集將擁有一個 Ceph 監控程式和一個 Ceph 管理員。
+    </para>
+   </note>
+   <para>
+    以上指令將開啟一個互動使用者介面，其中會顯示每個 Minion 的目前進度。
+   </para>
+   <figure>
+    <title>部署最小叢集</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <tip>
+    <title>非互動模式</title>
+    <para>
+     如果您需要從程序檔套用組態，還有一種非互動的部署模式。此模式在從遠端機器部署叢集時也很有用，因為透過網路不斷更新螢幕上的進度資訊可能會對使用者造成干擾：
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply --non-interactive</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="deploy-min-cluster-final-steps">
+   <title>檢視最後的步驟</title>
+   <para>
+    在 <command>ceph-salt apply</command> 指令完成後，您便應該會擁有一個 Ceph 監控程式和一個 Ceph 管理員。您應該能夠在任何以 <literal>root</literal> 身分或使用 <literal>sudo</literal> 的 <literal>cephadm</literal> 使用者身分被授予 <literal>admin</literal> 角色的 Minion 上成功執行 <command>ceph status</command> 指令。
+   </para>
+   <para>
+    後續步驟包括使用 cephadm 部署額外的 Ceph 監控程式、Ceph 管理員、OSD、監控堆疊和閘道。
+   </para>
+   <para>
+    繼續之前，請檢視新叢集的網路設定。此時，已依據在 <literal>ceph-salt</literal> 組態中針對 <literal>/cephadm_bootstrap/mon_ip</literal> 輸入的值填入了 <literal>public_network</literal> 設定。不過，此設定僅適用於 Ceph 監控程式。您可以使用以下指令檢視此設定：
+   </para>
+<screen><prompt>root@master # </prompt>ceph config get mon public_network</screen>
+   <para>
+    這是 Ceph 正常工作所需的最低設定，但還是建議您將此 <literal>public_network</literal> 設定為 <literal>global</literal>，這表示它將套用於所有類型的 Ceph 精靈，而不僅套用於 MON：
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set global public_network "$(ceph config get mon public_network)"</screen>
+   <note>
+    <para>
+     此步驟不是必需的。但如果不使用此設定，Ceph OSD 和其他精靈 (Ceph 監控程式除外) 將監聽<emphasis>所有位址</emphasis>。
+    </para>
+    <para>
+     如果您希望在各 OSD 之間使用完全獨立的網路進行通訊，請執行以下指令：
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global cluster_network "<replaceable>cluster_network_in_cidr_notation</replaceable>"</screen>
+    <para>
+     執行此指令將確保您部署中所建立的 OSD 從一開始就使用預期的叢集網路。
+    </para>
+   </note>
+   <para>
+    如果您的叢集設定為具有密集節點 (每個主機有超過 62 個 OSD)，請確保為 Ceph OSD 指定足夠的連接埠。預設範圍 (6800-7300) 目前允許每個主機有不超過 62 個 OSD。對於具有密集節點的叢集，請將設定 <literal>ms_bind_port_max</literal> 調整到適當的值。每個 OSD 將使用 8 個額外的連接埠。例如，如果一部主機設定為執行 96 個 OSD，則需要 768 個連接埠。透過執行以下指令，應將 <literal>ms_bind_port_max</literal> 至少設定為 7568：
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set osd.* ms_bind_port_max 7568</screen>
+   <para>
+    您需要相應地調整防火牆設定才能使其正常工作。如需詳細資訊，請參閱<xref linkend="storage-bp-net-firewall"/>。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day2">
+  <title>部署服務和閘道</title>
+
+  <para>
+   部署基本 Ceph 叢集之後，請將核心服務部署到更多叢集節點。為使用戶端能夠存取叢集資料，還需要部署額外的服務。
+  </para>
+
+  <para>
+   目前，我們支援使用 Ceph orchestrator (<command>ceph orch</command> 子指令) 在指令行上部署 Ceph 服務。
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch">
+   <title><command>ceph orch</command> 指令</title>
+   <para>
+    Ceph orchestrator 指令 <command>ceph orch</command> 是 cephadm 模組的介面，它負責列出叢集元件並在新的叢集節點上部署 Ceph 服務。
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-orch-status">
+    <title>顯示 orchestrator 狀態</title>
+    <para>
+     以下指令會顯示目前模式和 Ceph orchestrator 的狀態。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch status</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-orch-list">
+    <title>列出裝置、服務和精靈</title>
+    <para>
+     若要列出所有磁碟裝置，請執行以下指令：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch device ls
+Hostname   Path      Type  Serial  Size   Health   Ident  Fault  Available
+ses-master /dev/vdb  hdd   0d8a... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdc  hdd   8304... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdd  hdd   7b81... 10.7G  Unknown  N/A    N/A    No
+[...]
+</screen>
+    <tip>
+     <title>服務和精靈</title>
+     <para>
+      <emphasis>服務</emphasis>是表示特定類型的 Ceph 服務的一般術語，例如 Ceph 管理員。
+     </para>
+     <para>
+      <emphasis>精靈</emphasis>表示服務的特定例項，例如在名為 <literal>ses-min1</literal> 的節點上執行的程序 <literal>mgr.ses-min1.gdlcik</literal>。
+     </para>
+    </tip>
+    <para>
+     若要列出 cephadm 已知的所有服務，請執行：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls
+NAME  RUNNING  REFRESHED  AGE  PLACEMENT  IMAGE NAME                  IMAGE ID
+mgr       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+mon       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+</screen>
+    <tip>
+     <para>
+      您可以使用選擇性的 <option>-–host</option> 參數將清單限制為某個特定節點上的服務，也可使用選擇性的 <option>--service-type</option> 參數 (可接受的類型包括 <literal>mon</literal>、<literal>osd</literal>、<literal>mgr</literal>、<literal>mds</literal> 和 <literal>rgw</literal>) 將清單限制為某種特定類型的服務。
+     </para>
+    </tip>
+    <para>
+     若要列出由 cephadm 部署的所有執行中精靈，請執行：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps
+NAME            HOST     STATUS   REFRESHED AGE VERSION    IMAGE ID     CONTAINER ID
+mgr.ses-min1.gd ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd b8104e09814c
+mon.ses-min1    ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd a719e0087369
+</screen>
+    <tip>
+     <para>
+      若要查詢某個特定精靈的狀態，請使用 <option>--daemon_type</option> 和 <option>--daemon_id</option>。對於 OSD，ID 為數字 OSD ID。對於 MDS，ID 為檔案系統名稱：
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type osd --daemon_id 0
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type mds --daemon_id my_cephfs
+</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="cephadm-service-and-placement-specs">
+   <title>服務和放置規格</title>
+   <para>
+    指定 Ceph 服務部署的推薦方法是建立一個 YAML 格式的檔案，其中包含所要部署服務的規格。
+   </para>
+   <sect3 xml:id="cephadm-service-spec">
+    <title>建立服務規格</title>
+    <para>
+     您可以為每種類型的服務建立單獨的規格檔案，例如：
+    </para>
+<screen>
+<prompt>root@master # </prompt>cat nfs.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <para>
+     或者，您可以在一個描述哪些節點將執行特定服務的檔案 (例如 <filename>cluster.yml</filename>) 中指定多個 (或所有) 服務類型。請記得使用三個破折號 (<literal>---</literal>) 分隔各個服務類型：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+---
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+---
+[...]
+</screen>
+    <para>
+     上述內容的含義如下：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><literal>service_type</literal></term>
+      <listitem>
+       <para>
+        服務的類型。它可以是 Ceph 服務 (<literal>mon</literal>、<literal>mgr</literal>、<literal>mds</literal>、<literal>crash</literal>、<literal>osd</literal> 或 <literal>rbd-mirror</literal>)、閘道 (<literal>nfs</literal> 或 <literal>rgw</literal>) 或部分監控堆疊 (<literal>alertmanager</literal>、<literal>grafana</literal>、<literal>node-exporter</literal> 或 <literal>prometheus</literal>)。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>service_id</literal></term>
+      <listitem>
+       <para>
+        服務的名稱。<literal>mon</literal>、<literal>mgr</literal>、<literal>alertmanager</literal>、<literal>grafana</literal>、<literal>node-exporter</literal> 和 <literal>prometheus</literal> 類型的規格不需要 <literal>service_id</literal> 內容。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>placement</literal></term>
+      <listitem>
+       <para>
+        指定哪些節點將執行服務。如需更多詳細資料，請參閱<xref linkend="cephadm-placement-specs"/>。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>spec</literal></term>
+      <listitem>
+       <para>
+        與服務類型相關的其他規格。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <tip>
+     <title>套用特定服務</title>
+     <para>
+      Ceph 叢集服務通常具有許多專屬內容。如需各個服務規格的範例和詳細資料，請參閱<xref linkend="deploy-cephadm-day2-services"/>。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="cephadm-placement-specs">
+    <title>建立放置規格</title>
+    <para>
+     若要部署 Ceph 服務，cephadm 需要知道要在其上部署這些服務的節點。請使用 <literal>placement</literal> 內容並列出要套用服務的節點的主機簡短名稱：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+[...]
+placement:
+  hosts:
+  - host1
+  - host2
+  - host3
+[...]
+</screen>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs">
+    <title>套用叢集規格</title>
+    <para>
+     建立包含所有服務及其放置的規格的完整 <filename>cluster.yml</filename> 檔案後，您便可透過執行以下指令來套用叢集：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i cluster.yml</screen>
+    <para>
+     若要檢視叢集的狀態，請執行 <command>ceph orch status</command> 指令。如需詳細資訊，請參閱<xref linkend="deploy-cephadm-day2-orch-status"/>。
+    </para>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs-">
+    <title>輸出執行中叢集的規格</title>
+    <para>
+     雖然您使用<xref linkend="cephadm-service-and-placement-specs"/>中所述的規格檔案將服務部署到 Ceph 叢集，但在實際操作期間，叢集的組態可能會偏離原始規格。另外，您也可能會無意間移除規格檔案。
+    </para>
+    <para>
+     若要擷取執行中叢集的完整規格，請執行：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls --export
+placement:
+  hosts:
+  - hostname: ses-min1
+    name: ''
+    network: ''
+service_id: my_cephfs
+service_name: mds.my_cephfs
+service_type: mds
+---
+placement:
+  count: 2
+service_name: mgr
+service_type: mgr
+---
+[...]
+</screen>
+    <tip>
+     <para>
+      您可以附加 <option>--format</option> 選項以變更預設的 <literal>yaml</literal> 輸出格式。您可以從 <literal>json</literal>、<literal>json-pretty</literal> 或 <literal>yaml</literal> 中進行選取。例如：
+     </para>
+<screen>ceph orch ls --export --format json</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-services">
+   <title>部署 Ceph 服務</title>
+   <para>
+    在執行基本叢集之後，您可以將 Ceph 服務部署到其他節點。
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-service-mon">
+    <title>部署 Ceph 監控程式和 Ceph 管理員</title>
+    <para>
+     Ceph 叢集的不同節點之間部署了三個或五個 MON。如果叢集中有五個或更多節點，則建議部署五個 MON。好的做法是，將 MGR 部署在與 MON 相同的節點上。
+    </para>
+    <important>
+     <title>包含開機 MON</title>
+     <para>
+      在部署 MON 和 MGR 時，請記得包含在<xref linkend="deploy-cephadm-configure-mon"/>中設定基本叢集時新增的第一個 MON。
+     </para>
+    </important>
+    <para>
+     若要部署 MON，請套用以下規格：
+    </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <note>
+     <para>
+      如果需要新增另一個節點，請在同一 YAML 清單中附加主機名稱。例如：
+     </para>
+<screen>
+service_type: mon
+placement:
+ hosts:
+ - ses-min1
+ - ses-min2
+ - ses-min3
+ - ses-min4
+</screen>
+    </note>
+    <para>
+     同樣，若要部署 MGR，請套用以下規格：
+    </para>
+    <important>
+     <para>
+      確定您的部署在每個部署中至少具有三個 Ceph 管理員。
+     </para>
+    </important>
+<screen>
+service_type: mgr
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <tip>
+     <para>
+      如果 MON 或 MGR <emphasis>不</emphasis>在同一子網路中，則需要附加子網路位址。例如：
+     </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1:10.1.2.0/24
+  - ses-min2:10.1.5.0/24
+  - ses-min3:10.1.10.0/24
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-osd">
+    <title>部署 Ceph OSD</title>
+    <important>
+     <title>當儲存裝置可用時</title>
+     <para>
+      如果滿足以下所有條件，則儲存裝置將被視為<emphasis>可用</emphasis>：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        裝置沒有分割區。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        裝置沒有任何 LVM 狀態。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        裝置未掛接。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        裝置不包含檔案系統。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        裝置不包含 BlueStore OSD。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        裝置大於 5 GB。
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      如果不滿足上述條件，Ceph 將拒絕佈建此類 OSD。
+     </para>
+    </important>
+    <para>
+     可以使用以下兩種方式來部署 OSD：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       告知 Ceph 使用所有可用和未使用的儲存裝置：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd --all-available-devices</screen>
+     </listitem>
+     <listitem>
+      <para>
+       使用 DriveGroups (參閱<xref linkend="drive-groups"/>) 建立 OSD 規格，該規格描述了將依據裝置內容 (例如裝置類型 (SSD 或 HDD)、裝置型號名稱、大小或裝置所在的節點) 部署的裝置。然後透過執行以下指令套用規格：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd -i drive_groups.yml</screen>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-mds">
+    <title>部署中繼資料伺服器</title>
+    <para>
+     CephFS 需要一或多個中繼資料伺服器 (MDS) 服務。若要建立 CephFS，首先要透過套用以下規格來建立 MDS 伺服器：
+    </para>
+    <note>
+     <para>
+      在套用以下規格之前，請確定至少建立了兩個池，一個用於儲存 CephFS 資料，另一個用於儲存 CephFS 中繼資料。
+     </para>
+    </note>
+<screen>
+service_type: mds
+service_id: <replaceable>CEPHFS_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <para>
+     MDS 正常執行後，建立 CephFS：
+    </para>
+<screen>ceph fs new <replaceable>CEPHFS_NAME</replaceable> <replaceable>metadata_pool</replaceable> <replaceable>data_pool</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-ogw">
+    <title>部署物件閘道</title>
+    <para>
+     cephadm 會將物件閘道部署為管理特定<emphasis>領域</emphasis>和<emphasis>區域</emphasis>的精靈的集合。
+    </para>
+    <para>
+     您可以將物件閘道服務與現有的領域和區域相關聯 (如需更多詳細資料，請參閱<xref linkend="ceph-rgw-fed"/>)，也可以指定不存在的 <replaceable>REALM_NAME</replaceable> 和 <replaceable>ZONE_NAME</replaceable>，套用以下組態後會自動建立相應領域和區域：
+    </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+</screen>
+    <sect4 xml:id="cephadm-deploy-using-secure-ssl-access">
+     <title>使用安全 SSL 存取</title>
+     <para>
+      若要使用連接至物件閘道的安全 SSL 連接，您需要一組有效的 SSL 證書和金鑰檔案 (如需更多詳細資料，請參閱<xref linkend="ceph-rgw-https"/>)。您需要啟用 SSL，指定 SSL 連接的連接埠號碼以及 SSL 證書和金鑰檔案。
+     </para>
+     <para>
+      若要啟用 SSL 並指定連接埠號碼，請在規格中包含以下內容：
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+</screen>
+     <para>
+      若要指定 SSL 證書和金鑰，可以將其內容直接貼至 YAML 規格檔案中。行末的縱線符號 (<literal>|</literal>) 告知剖析程式預期的值為多行字串。例如：
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+  rgw_frontend_ssl_certificate: |
+   -----BEGIN CERTIFICATE-----
+   MIIFmjCCA4KgAwIBAgIJAIZ2n35bmwXTMA0GCSqGSIb3DQEBCwUAMGIxCzAJBgNV
+   BAYTAkFVMQwwCgYDVQQIDANOU1cxHTAbBgNVBAoMFEV4YW1wbGUgUkdXIFNTTCBp
+   [...]
+   -----END CERTIFICATE-----
+   rgw_frontend_ssl_key: |
+   -----BEGIN PRIVATE KEY-----
+   MIIJRAIBADANBgkqhkiG9w0BAQEFAASCCS4wggkqAgEAAoICAQDLtFwg6LLl2j4Z
+   BDV+iL4AO7VZ9KbmWIt37Ml2W6y2YeKX3Qwf+3eBz7TVHR1dm6iPpCpqpQjXUsT9
+   [...]
+   -----END PRIVATE KEY-----
+</screen>
+     <tip>
+      <para>
+       您可以省略 <literal>rgw_frontend_ssl_certificate:</literal> 和 <literal>rgw_frontend_ssl_key:</literal> 關鍵字，並將它們上傳到組態資料庫，而不是粘貼 SSL 證書和金鑰檔案的內容：
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.crt \
+ -i <replaceable>SSL_CERT_FILE</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.key \
+ -i <replaceable>SSL_KEY_FILE</replaceable>
+</screen>
+     </tip>
+    </sect4>
+    <sect4 xml:id="cephadm-deploy-with-subcluster">
+     <title>使用子叢集部署</title>
+     <para>
+      <emphasis>子叢集</emphasis>可協助您組織叢集中的節點，以隔離工作負載，讓彈性縮放更輕鬆。如果使用子叢集進行部署，請套用以下組態：
+     </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>.<replaceable>SUBCLUSTER</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+  subcluster: <replaceable>SUBCLUSTER</replaceable>
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-igw">
+    <title>部署 iSCSI 閘道</title>
+    <para>
+     cephadm 可部署 iSCSI 閘道，它是一種儲存區域網路 (SAN) 通訊協定，可讓用戶端 (稱為啟動器) 將 SCSI 指令傳送至遠端伺服器上的 SCSI 儲存裝置 (目標)。
+    </para>
+    <para>
+     套用以下組態進行部署。確定 <literal>trusted_ip_list</literal> 包含所有 iSCSI 閘道和 Ceph 管理員節點的 IP 位址 (請參閱下面的輸出範例)。
+    </para>
+    <note>
+     <para>
+      請確定在套用以下規格之前建立池。
+     </para>
+    </note>
+<screen>
+service_type: iscsi
+service_id: <replaceable>EXAMPLE_ISCSI</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  api_user: <replaceable>EXAMPLE_USER</replaceable>
+  api_password: <replaceable>EXAMPLE_PASSWORD</replaceable>
+  trusted_ip_list: "<replaceable>IP_ADDRESS_1</replaceable>,<replaceable>IP_ADDRESS_2</replaceable>"
+</screen>
+    <note>
+     <para>
+      請確定針對 <literal>trusted_ip_list</literal> 列出的 IP 在逗號分隔後<emphasis>沒有</emphasis>空白。
+     </para>
+    </note>
+    <sect4>
+     <title>安全 SSL 組態</title>
+     <para>
+      若要在 Ceph Dashboard 和 iSCSI 目標 API 之間使用安全 SSL 連接，您需要一組有效的 SSL 證書和金鑰檔案。它們可以是 CA 核發的，也可以是自行簽署的 (參閱<xref linkend="self-sign-certificates"/>)。若要啟用 SSL，請在您的規格檔案中包含 <literal>api_secure: true</literal> 設定：
+     </para>
+<screen>
+spec:
+  api_secure: true
+</screen>
+     <para>
+      若要指定 SSL 證書和金鑰，可以將其內容直接貼至 YAML 規格檔案中。行末的縱線符號 (<literal>|</literal>) 告知剖析程式預期的值為多行字串。例如：
+     </para>
+<screen>
+spec:
+  pool: EXAMPLE_POOL
+  api_user: EXAMPLE_USER
+  api_password: EXAMPLE_PASSWORD
+  trusted_ip_list: "IP_ADDRESS_1,IP_ADDRESS_2"
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-nfs">
+    <title>部署 NFS Ganesha</title>
+    <para>
+     cephadm 可使用預先定義的 RADOS 池和選擇性的名稱空間來部署 NFS Ganesha。若要部署 NFS Ganesha，請套用以下規格：
+    </para>
+    <note>
+     <para>
+      您需要有一個預先定義的 RADOS 池，否則 <command>ceph orch apply</command> 操作將失敗。如需建立池的詳細資訊，請參閱<xref linkend="ceph-pools-operate-add-pool"/>。
+     </para>
+    </note>
+<screen>
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_NFS</replaceable>，包含用於識別 NFS 輸出項的任意字串。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_POOL</replaceable>，包含將要儲存 NFS Ganesha RADOS 組態物件的池的名稱。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_NAMESPACE</replaceable> (選擇性)，包含所需的物件閘道 NFS 名稱空間 (例如，<literal>ganesha</literal>)。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-rbdmirror">
+    <title>部署 <systemitem class="daemon">rbd-mirror</systemitem></title>
+    <para>
+     <systemitem class="daemon">rbd-mirror</systemitem> 服務負責在兩個 Ceph 叢集之間同步 RADOS 區塊裝置影像 (如需更多詳細資料，請參閱<xref linkend="ceph-rbd-mirror"/>)。若要部署 <systemitem class="daemon">rbd-mirror</systemitem>，請使用以下規格：
+    </para>
+<screen>
+service_type: rbd-mirror
+service_id: <replaceable>EXAMPLE_RBD_MIRROR</replaceable>
+placement:
+  hosts:
+  - ses-min3
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-monitoring">
+    <title>部署監控堆疊</title>
+    <para>
+     監控堆疊包含 Prometheus、Prometheus 輸出程式、Prometheus 警示管理員和 Grafana。Ceph Dashboard 使用這些元件來儲存並直觀呈現有關叢集使用率和效能的詳細度量。
+    </para>
+    <tip>
+     <para>
+      如果您的部署需要監控堆疊服務的自訂或本地提供的容器影像，請參閱<xref linkend="monitoring-custom-images"/>。
+     </para>
+    </tip>
+    <para>
+     若要部署監控堆疊，請執行以下步驟：
+    </para>
+    <procedure>
+     <step>
+      <para>
+       在 Ceph 管理員精靈中啟用 <literal>prometheus</literal> 模組。這將公開內部 Ceph 度量，以便 Prometheus 可以讀取這些資訊：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable prometheus</screen>
+      <note>
+       <para>
+        請確定在部署 Prometheus 之前執行此指令。如果部署前未執行該指令，則必須重新部署 Prometheus 才能更新 Prometheus 的組態：
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch redeploy prometheus</screen>
+      </note>
+     </step>
+     <step>
+      <para>
+       建立包含如下內容的規格檔案 (例如 <filename>monitoring.yaml</filename>)：
+      </para>
+<screen>
+service_type: prometheus
+placement:
+  hosts:
+  - ses-min2
+---
+service_type: node-exporter
+---
+service_type: alertmanager
+placement:
+  hosts:
+  - ses-min4
+---
+service_type: grafana
+placement:
+  hosts:
+  - ses-min3
+</screen>
+     </step>
+     <step>
+      <para>
+       透過執行以下指令套用監控服務：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i monitoring.yaml</screen>
+      <para>
+       部署監控服務可能需要一到兩分鐘。
+      </para>
+     </step>
+    </procedure>
+    <important>
+     <para>
+      Prometheus、Grafana 和 Ceph Dashboard 全都會自動設定為相互通訊，因此如上述般進行部署時，Ceph Dashboard 中將實現功能完整的 Grafana 整合。
+     </para>
+     <para>
+      但使用 RBD 影像進行監控時不適用於此規則。如需詳細資訊，請參閱<xref linkend="monitoring-rbd-image"/>。
+     </para>
+    </important>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

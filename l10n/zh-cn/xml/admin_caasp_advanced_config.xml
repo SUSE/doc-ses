@@ -1,0 +1,724 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_caasp_advanced_config.xml" version="5.0" xml:id="admin-caasp-advanced-config">
+
+ <title>Advanced configuration</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <sect1 xml:id="advanced-configuration">
+  <title>Performing advanced configuration tasks</title>
+
+  <para>
+   These examples show how to perform advanced configuration tasks on your Rook
+   storage cluster.
+  </para>
+
+  <itemizedlist spacing="compact">
+   <listitem>
+    <para>
+     <xref linkend="advanced-config-prerequisites"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="use-custom-ceph-user-and-secret-for-mounting"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="log-collection"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="osd-information"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="separate-storage-groups"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="configuring-pools"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="custom-cephconf-settings"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="osd-crush-settings"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="phantom-osd-removal"/>
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <xref linkend="change-failure-domain"/>
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <sect2 xml:id="advanced-config-prerequisites">
+   <title>Prerequisites</title>
+   <para>
+    Most of the examples make use of the <command>ceph</command> client
+    command. A quick way to use the Ceph client suite is from a
+    <link xlink:href="ceph-toolbox.md">Rook Toolbox container</link>.
+   </para>
+   <para>
+    The Kubernetes based examples assume Rook OSD pods are in the
+    <literal>rook-ceph</literal> namespace. If you run them in a different
+    namespace, modify <command>kubectl -n rook-ceph [...]</command> to fit your
+    situation.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="use-custom-ceph-user-and-secret-for-mounting">
+   <title>Using custom Ceph user and secret for mounting</title>
+   <note>
+    <para>
+     For extensive info about creating Ceph users, refer to
+     <xref linkend="storage-cephx-keymgmt-usermgmt"/>
+    </para>
+   </note>
+   <para>
+    Using a custom Ceph user and secret key can be done for both file system
+    and block storage.
+   </para>
+   <para>
+    Create a custom user in Ceph with read-write access in the
+    <filename>/bar</filename> directory on CephFS (For Ceph Mimic or newer,
+    use <literal>data=POOL_NAME</literal> instead of
+    <literal>pool=POOL_NAME</literal>):
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph auth get-or-create-key client.user1 mon \
+ 'allow r' osd 'allow rw tag cephfs <replaceable>pool=YOUR_FS_DATA_POOL</replaceable>' \
+ mds 'allow r, allow rw path=/bar'</screen>
+   <para>
+    The command will return a Ceph secret key. This key should be added as a
+    secret in Kubernetes like this:
+   </para>
+<screen><prompt>kubectl@adm &gt; </prompt>kubectl create secret generic ceph-user1-secret --from-literal=key=YOUR_CEPH_KEY</screen>
+   <note>
+    <para>
+     This secret key must be created with the same name in each namespace where
+     the StorageClass will be used.
+    </para>
+   </note>
+   <para>
+    In addition to this secret key, you must create a RoleBinding to allow the
+    Rook Ceph agent to get the secret from each namespace. The RoleBinding is
+    optional if you are using a ClusterRoleBinding for the Rook Ceph agent
+    secret-key access. A ClusterRole which contains the permissions which are
+    needed and used for the Bindings is shown as an example after the next
+    step.
+   </para>
+   <para>
+    On a StorageClass <literal>parameters</literal> set the following options:
+   </para>
+<screen>
+mountUser: user1
+mountSecret: ceph-user1-secret
+</screen>
+   <para>
+    If you want the Rook Ceph agent to require a <literal>mountUser</literal>
+    and <literal>mountSecret</literal> to be set in StorageClasses using Rook,
+    you need to set the environment variable
+    <varname>AGENT_MOUNT_SECURITY_MODE</varname> to
+    <literal>Restricted</literal> on the Rook Ceph operator deployment.
+   </para>
+   <para>
+    For more information on using the Ceph feature to limit access to
+    CephFS paths, see
+    <link xlink:href="http://docs.ceph.com/docs/mimic/cephfs/client-auth/#path-restriction"/>.
+   </para>
+   <sect3 xml:id="clusterrole">
+    <title>Creating the <literal>ClusterRole</literal></title>
+    <note>
+     <para>
+      When you are using the Helm chart to install the Rook Ceph operator,
+      and have set <literal>mountSecurityMode</literal> to—for
+      example— <literal>Restricted</literal>, then the below
+      <literal>ClusterRole</literal> has already been created for you.
+     </para>
+    </note>
+    <para>
+     <emphasis role="strong">This <literal>ClusterRole</literal> is needed no
+     matter whether you want to use one <literal>RoleBinding</literal> per
+     namespace or a <literal>ClusterRoleBinding</literal>.</emphasis>
+    </para>
+<screen>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rook-ceph-agent-mount
+  labels:
+    operator: rook
+    storage-backend: ceph
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+</screen>
+   </sect3>
+   <sect3 xml:id="rolebinding">
+    <title>Creating the <literal>RoleBinding</literal></title>
+    <note>
+     <para>
+      You either need a <literal>RoleBinding</literal> in each namespace in
+      which a mount secret resides in, or create a
+      <literal>ClusterRoleBinding</literal> with which the Rook Ceph agent
+      has access to Kubernetes secrets in all namespaces.
+     </para>
+    </note>
+    <para>
+     Create the <literal>RoleBinding</literal> shown here in each namespace for
+     which the Rook Ceph agent should read secrets for mounting. The
+     <literal>RoleBinding</literal> subjects' <literal>namespace</literal> must
+     be the one the Rook Ceph agent runs in (default
+     <literal>rook-ceph</literal> for version 1.0 and newer; for previous
+     versions, the default namespace was <literal>rook-ceph-system</literal>).
+    </para>
+    <para>
+     Replace <literal>namespace:
+     <replaceable>name-of-namespace-with-mountsecret</replaceable></literal>
+     according to the name of all namespaces a <literal>mountSecret</literal>
+     can be in.
+    </para>
+<screen>
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: rook-ceph-agent-mount
+  namespace: <replaceable>name-of-namespace-with-mountsecret</replaceable>
+  labels:
+    operator: rook
+    storage-backend: ceph
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rook-ceph-agent-mount
+subjects:
+- kind: ServiceAccount
+  name: rook-ceph-system
+  namespace: rook-ceph
+</screen>
+   </sect3>
+   <sect3 xml:id="clusterrolebinding">
+    <title>Creating the <literal>ClusterRoleBinding</literal></title>
+    <para>
+     This <literal>ClusterRoleBinding</literal> only needs to be created once,
+     as it covers the whole cluster.
+    </para>
+<screen>
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: rook-ceph-agent-mount
+  labels:
+    operator: rook
+    storage-backend: ceph
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rook-ceph-agent-mount
+subjects:
+- kind: ServiceAccount
+  name: rook-ceph-system
+  namespace: rook-ceph
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="log-collection">
+   <title>Collecting logs</title>
+   <para>
+    All Rook logs can be collected in a Kubernetes environment with the following
+    command:
+   </para>
+<screen>
+for p in $(kubectl -n rook-ceph get pods -o jsonpath='{.items[*].metadata.name}')
+do
+  for c in $(kubectl -n rook-ceph get pod ${p} -o jsonpath='{.spec.containers[*].name}')
+  do
+    echo "BEGIN logs from pod: ${p} ${c}"
+    kubectl -n rook-ceph logs -c ${c} ${p}
+    echo "END logs from pod: ${p} ${c}"
+  done
+done
+</screen>
+   <para>
+    This gets the logs for every container in every Rook pod, and then
+    compresses them into a <literal>.gz</literal> archive for easy sharing.
+    Note that instead of <literal>gzip</literal>, you could instead pipe to
+    <command>less</command> or to a single text file.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="osd-information">
+   <title>OSD information</title>
+   <para>
+    Keeping track of OSDs and their underlying storage devices can be
+    difficult. The following scripts will clear things up quickly.
+   </para>
+   <sect3 xml:id="kubernetes">
+    <title>Kubernetes</title>
+<screen>
+# Get OSD Pods
+# This uses the example/default cluster name "rook"
+OSD_PODS=$(kubectl get pods --all-namespaces -l \
+app=rook-ceph-osd,rook_cluster=rook-ceph -o jsonpath='{.items[*].metadata.name}')
+
+# Find node and drive associations from OSD pods
+for pod in $(echo ${OSD_PODS})
+do
+  echo "Pod:  ${pod}"
+  echo "Node: $(kubectl -n rook-ceph get pod ${pod} -o jsonpath='{.spec.nodeName}')"
+  kubectl -n rook-ceph exec ${pod} -- sh -c '\
+  for i in /var/lib/ceph/osd/ceph-*; do
+    [ -f ${i}/ready ] || continue
+    echo -ne "-$(basename ${i}) "
+    echo $(lsblk -n -o NAME,SIZE ${i}/block 2&gt; /dev/null || \
+    findmnt -n -v -o SOURCE,SIZE -T ${i}) $(cat ${i}/type)
+  done | sort -V
+  echo'
+done
+</screen>
+    <para>
+     The output should look as follows:
+    </para>
+<screen>
+Pod:  osd-m2fz2
+Node: node1.zbrbdl
+-osd0  sda3  557.3G  bluestore
+-osd1  sdf3  110.2G  bluestore
+-osd2  sdd3  277.8G  bluestore
+-osd3  sdb3  557.3G  bluestore
+-osd4  sde3  464.2G  bluestore
+-osd5  sdc3  557.3G  bluestore
+
+Pod:  osd-nxxnq
+Node: node3.zbrbdl
+-osd6   sda3  110.7G  bluestore
+-osd17  sdd3  1.8T    bluestore
+-osd18  sdb3  231.8G  bluestore
+-osd19  sdc3  231.8G  bluestore
+
+Pod:  osd-tww1h
+Node: node2.zbrbdl
+-osd7   sdc3  464.2G  bluestore
+-osd8   sdj3  557.3G  bluestore
+-osd9   sdf3  66.7G   bluestore
+-osd10  sdd3  464.2G  bluestore
+-osd11  sdb3  147.4G  bluestore
+-osd12  sdi3  557.3G  bluestore
+-osd13  sdk3  557.3G  bluestore
+-osd14  sde3  66.7G   bluestore
+-osd15  sda3  110.2G  bluestore
+-osd16  sdh3  135.1G  bluestore
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="separate-storage-groups">
+   <title>Separate storage groups</title>
+   <note>
+    <para>
+     Instead of manually needing to set this, the
+     <literal>deviceClass</literal> property can be used on Pool structures in
+     <literal>CephBlockPool</literal>, <literal>CephFilesystem</literal> and
+     <literal>CephObjectStore</literal> CRD objects.
+    </para>
+   </note>
+   <para>
+    By default Rook-Ceph puts all storage under one replication rule in the
+    CRUSH Map which provides the maximum amount of storage capacity for a
+    cluster. If you would like to use different storage endpoints for different
+    purposes, you need to create separate storage groups.
+   </para>
+   <para>
+    In the following example we will separate SSD drives from spindle-based
+    drives, a common practice for those looking to target certain workloads
+    onto faster (database) or slower (file archive) storage.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="configuring-pools">
+   <title>Configure pools</title>
+   <sect3 xml:id="placement-group-sizing">
+    <title>Sizing placement groups</title>
+    <note>
+     <para>
+      Since Ceph Nautilus (v14.x), you can use the Ceph Manager
+      <literal>pg_autoscaler</literal> module to auto-scale the PGs as needed.
+      If you want to enable this feature, please refer to
+      <xref linkend="default-pg-and-pgp-counts"/>.
+     </para>
+    </note>
+    <para>
+     The general rules for deciding how many PGs your pool(s) should contain
+     is:
+    </para>
+    <itemizedlist spacing="compact">
+     <listitem>
+      <para>
+       Less than five OSDs: set <option>pg_num</option> to 128.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Between 5 and 10 OSDs: set <option>pg_num</option> to 512.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Between 10 and 50 OSDs: set <option>pg_num</option> to 1024.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     If you have more than 50 OSDs, you need to know how to calculate the
+     <option>pg_num</option> value by yourself. For calculating
+     <option>pg_num</option> yourself, please make use of the <emphasis>pgcalc
+     </emphasis> tool at <link xlink:href="http://ceph.com/pgcalc/"/>.
+    </para>
+    <para>
+     If you are already using a pool, it is generally safe to set
+     <option>pg_count</option> on the fly (see
+     <xref linkend="setting-pg-count"/>). Decreasing the PG count is not
+     recommended on a pool that is in use. The safest way to decrease the PG
+     count is to back up the data, delete the pool, and recreate it.
+    </para>
+   </sect3>
+   <sect3 xml:id="setting-pg-count">
+    <title>Setting PG count</title>
+    <para>
+     Be sure to read the <xref linkend="placement-group-sizing"/> section
+     before changing the number of PGs.
+    </para>
+<screen>
+# Set the number of PGs in the rbd pool to 512
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool set rbd pg_num 512
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="custom-cephconf-settings">
+   <title>Creating custom <filename>ceph.conf</filename> settings</title>
+   <warning>
+    <para>
+     The advised method for controlling Ceph configuration is to manually use
+     the Ceph CLI or the Ceph Dashboard, because this offers the most
+     flexibility. It is highly recommended that this is used only when
+     absolutely necessary, and that the <literal>config</literal> is reset to
+     an empty string if or when the configurations are no longer necessary.
+     Configurations in the config file will make the Ceph cluster less
+     configurable from the CLI and Ceph Dashboard and may make future tuning or
+     debugging difficult.
+    </para>
+   </warning>
+   <para>
+    Setting configs via Ceph's CLI requires that at least one MON is
+    available for the configs to be set, and setting configs via Ceph Dashboard
+    requires at least one MGR to be available. Ceph may also have a small
+    number of very advanced settings that are not able to be modified easily
+    via CLI or Ceph Dashboard. In order to set configurations before MONs are
+    available or to set problematic configuration settings, the
+    <literal>rook-config-override</literal> ConfigMap exists, and the
+    <literal>config</literal> field can be set with the contents of a
+    <filename>ceph.conf</filename> file. The contents will be propagated to all
+    MON, MGR, OSD, MDS, and RGW daemons as an
+    <filename>/etc/ceph/ceph.conf</filename> file.
+   </para>
+   <warning>
+    <para>
+     Rook performs no validation on the config, so the validity of the
+     settings is the user's responsibility.
+    </para>
+   </warning>
+   <para>
+    If the <literal>rook-config-override</literal> ConfigMap is created before
+    the cluster is started, the Ceph daemons will automatically pick up the
+    settings. If you add the settings to the ConfigMap after the cluster has
+    been initialized, each daemon will need to be restarted where you want the
+    settings applied:
+   </para>
+   <itemizedlist spacing="compact">
+    <listitem>
+     <para>
+      MONs: ensure all three MONs are online and healthy before restarting each
+      mon pod, one at a time.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      MGRs: the pods are stateless and can be restarted as needed, but note
+      that this will disrupt the Ceph dashboard during restart.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      OSDs: restart your the pods by deleting them, one at a time, and running
+      <command>ceph -s</command> between each restart to ensure the cluster
+      goes back to <quote>active/clean</quote> state.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      RGW: the pods are stateless and can be restarted as needed.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      MDS: the pods are stateless and can be restarted as needed.
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    After the pod restart, the new settings should be in effect. Note that if
+    the ConfigMap in the Ceph cluster's namespace is created before the
+    cluster is created, the daemons will pick up the settings at first launch.
+   </para>
+   <sect3 xml:id="example">
+    <title>Custom <filename>ceph.conf</filename> example</title>
+    <para>
+     In this example we will set the default pool <literal>size</literal> to
+     two, and tell OSD daemons not to change the weight of OSDs on startup.
+    </para>
+    <warning>
+     <para>
+      Modify Ceph settings carefully. You are leaving the sandbox tested by
+      Rook. Changing the settings could result in unhealthy daemons or even
+      data loss if used incorrectly.
+     </para>
+    </warning>
+    <para>
+     When the Rook Operator creates a cluster, a placeholder ConfigMap is
+     created that will allow you to override Ceph configuration settings.
+     When the daemon pods are started, the settings specified in this ConfigMap
+     will be merged with the default settings generated by Rook.
+    </para>
+    <para>
+     The default override settings are blank. Cutting out the extraneous
+     properties, we would see the following defaults after creating a cluster:
+    </para>
+<screen>
+<prompt>kubectl@adm &gt; </prompt>kubectl -n rook-ceph get ConfigMap rook-config-override -o yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: rook-config-override
+  namespace: rook-ceph
+data:
+  config: ""
+</screen>
+    <para>
+     To apply your desired configuration, you will need to update this
+     ConfigMap. The next time the daemon pod(s) start, they will use the
+     updated configs.
+    </para>
+<screen>
+<prompt>kubectl@adm &gt; </prompt>kubectl -n rook-ceph edit configmap rook-config-override
+</screen>
+    <para>
+     Modify the settings and save. Each line you add should be indented from
+     the <literal>config</literal> property as such:
+    </para>
+<screen>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rook-config-override
+  namespace: rook-ceph
+data:
+  config: |
+    [global]
+    osd crush update on start = false
+    osd pool default size = 2
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="osd-crush-settings">
+   <title>OSD CRUSH settings</title>
+   <para>
+    A useful view of the CRUSH Map (see <xref linkend="cha-storage-datamgm"/>
+    for more details) is generated with the following command:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd tree
+</screen>
+   <para>
+    In this section we will be tweaking some of the values seen in the output.
+   </para>
+   <sect3 xml:id="osd-weight">
+    <title>OSD weight</title>
+    <para>
+     The CRUSH weight controls the ratio of data that should be distributed to
+     each OSD. This also means a higher or lower amount of disk I/O operations
+     for an OSD with higher or lower weight, respectively.
+    </para>
+    <para>
+     By default, OSDs get a weight relative to their storage capacity, which
+     maximizes overall cluster capacity by filling all drives at the same rate,
+     even if drive sizes vary. This should work for most use-cases, but the
+     following situations could warrant weight changes:
+    </para>
+    <itemizedlist spacing="compact">
+     <listitem>
+      <para>
+       Your cluster has some relatively slow OSDs or nodes. Lowering their
+       weight can reduce the impact of this bottleneck.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       You are using BlueStore drives provisioned with Rook v0.3.1 or older.
+       In this case you may notice OSD weights did not get set relative to
+       their storage capacity. Changing the weight can fix this and maximize
+       cluster capacity.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     This example sets the weight of osd.0 which is 600 GiB.
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush reweight osd.0 .600
+</screen>
+   </sect3>
+   <sect3 xml:id="osd-primary-affinity">
+    <title>OSD primary affinity</title>
+    <para>
+     When pools are set with a size setting greater than one, data is
+     replicated between nodes and OSDs. For every chunk of data a Primary OSD
+     is selected to be used for reading that data to be sent to clients. You
+     can control how likely it is for an OSD to become a Primary using the
+     Primary Affinity setting. This is similar to the OSD weight setting,
+     except it only affects reads on the storage device, not capacity or
+     writes.
+    </para>
+    <para>
+     In this example, we will make sure <literal>osd.0</literal> is only
+     selected as Primary if all other OSDs holding replica data are
+     unavailable:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt> osd primary-affinity osd.0 0</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="phantom-osd-removal">
+   <title>Removing phantom OSD</title>
+   <para>
+    If you have OSDs in which are not showing any disks, you can remove those
+    <quote>Phantom OSDs</quote> by following the instructions below. To check
+    for <quote>Phantom OSDs</quote>, you can run:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd tree</screen>
+   <para>
+    An example output looks like this:
+   </para>
+<screen>
+ID  CLASS WEIGHT   TYPE NAME                STATUS REWEIGHT PRI-AFF
+-1        57.38062 root default
+-13        7.17258 host node1.example.com
+2   hdd    3.61859      osd.2               up     1.00000  1.00000
+-7              0  host node2.example.com   down   0        1.00000
+</screen>
+   <para>
+    The host <literal>node2.example.com</literal> in the output has no disks,
+    so it is most likely a <quote>Phantom OSD</quote>.
+   </para>
+   <para>
+    Now to remove it, use the ID in the first column of the output and replace
+    <literal>&lt;ID&gt;</literal> with it. In the example output above the ID
+    would be <literal>-7</literal>. The commands are:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd out <replaceable>ID</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush remove osd.<replaceable>ID</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph auth del osd.<replaceable>ID</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph osd rm <replaceable>ID</replaceable>
+</screen>
+   <para>
+    To recheck that the Phantom OSD was removed, re-run the following command
+    and check if the OSD with the ID does not show up anymore:
+   </para>
+<screen>
+ceph osd tree
+</screen>
+  </sect2>
+
+  <sect2 xml:id="change-failure-domain">
+   <title>Changing the failure domain</title>
+   <para>
+    In Rook, it is now possible to indicate how the default CRUSH failure
+    domain rule must be configured in order to ensure that replicas or erasure
+    code shards are separated across hosts, and a single host failure does not
+    affect availability. For instance, this is an example manifest of a block
+    pool named <literal>replicapool</literal> configured with a
+    <literal>failureDomain</literal> set to <literal>osd</literal>:
+   </para>
+<screen>
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: replicapool
+  namespace: rook
+spec:
+  # The failure domain will spread the replicas of the data across different failure zones
+  failureDomain: osd
+[...]
+</screen>
+   <para>
+    However, due to several reasons, we may need to change such failure domain
+    to its other value: <literal>host</literal>. Unfortunately, changing it
+    directly in the YAML manifest is not currently handled by Rook, so we need
+    to perform the change directly using Ceph commands using the Rook tools
+    pod, for instance:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool get replicapool crush_rule
+crush_rule: replicapool
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rule create-replicated replicapool_host_rule default host
+</screen>
+   <para>
+    Notice that the suffix <literal>host_rule</literal> in the name of the rule
+    is just for clearness about the type of rule we are creating here, and can
+    be anything else as long as it is different from the existing one. Once the
+    new rule has been created, we simply apply it to our block pool:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool set replicapool crush_rule replicapool_host_rule</screen>
+   <para>
+    And validate that it has been actually applied properly:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool get replicapool crush_rule
+crush_rule: replicapool_host_rule
+</screen>
+   <para>
+    If the cluster's health was <literal>HEALTH_OK</literal> when we performed
+    this change, immediately, the new rule is applied to the cluster
+    transparently without service disruption.
+   </para>
+   <para>
+    Exactly the same approach can be used to change from
+    <literal>host</literal> back to <literal>osd</literal>.
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

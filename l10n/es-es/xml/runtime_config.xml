@@ -1,0 +1,1298 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="runtime_config.xml" version="5.0" xml:id="cha-ceph-configuration">
+ <title>Configuración del clúster de Ceph</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>sí</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  En este capítulo se describe cómo configurar el clúster de Ceph mediante las opciones de configuración.
+ </para>
+ <sect1 xml:id="cha-ceph-configuration-ceph-conf">
+  <title>Configuración del archivo <filename>ceph.conf</filename></title>
+
+  <para>
+   cephadm utiliza un archivo <filename>ceph.conf</filename> básico que solo contiene un conjunto mínimo de opciones para conectarse a los MON, autenticarse y obtener información de configuración. En la mayoría de los casos, esto se limita a la opción <option>mon_host</option> (aunque se puede evitar mediante el uso de registros SRV de DNS).
+  </para>
+
+  <important>
+   <para>
+    El archivo <filename>ceph.conf</filename> ya no sirve como lugar central para almacenar la configuración del clúster. Ahora se usa la base de datos de configuración (consulte la <xref linkend="cha-ceph-configuration-db"/>).
+   </para>
+   <para>
+    Si aún necesita cambiar la configuración del clúster mediante el archivo <filename>ceph.conf</filename> (por ejemplo, porque utiliza un cliente que no admite opciones de lectura de la base de datos de configuración), debe ejecutar el comando siguiente y encargarse de mantener y distribuir el archivo <filename>ceph.conf</filename> en todo el clúster:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set mgr mgr/cephadm/manage_etc_ceph_ceph_conf false</screen>
+  </important>
+
+  <sect2 xml:id="cha-ceph-configuration-ceph-conf-containers">
+   <title>Acceso a <filename>ceph.conf</filename> dentro de imágenes de contenedor</title>
+   <para>
+    Aunque los daemons de Ceph se ejecutan en contenedores, aún puede acceder a su archivo de configuración <filename>ceph.conf</filename>. Se <emphasis>monta mediante asociación</emphasis> como el siguiente archivo en el sistema host:
+   </para>
+<screen>/var/lib/ceph/<replaceable>CLUSTER_FSID</replaceable>/<replaceable>DAEMON_NAME</replaceable>/config</screen>
+   <para>
+    Sustituya <replaceable>CLUSTER_FSID</replaceable> por el FSID exclusivo del clúster en ejecución tal y como lo devuelve el comando <command>ceph fsid</command> y <replaceable>DAEMON_NAME</replaceable> por el nombre del daemon específico que aparece en el comando <command>ceph orch ps</command>. Por ejemplo:
+   </para>
+<screen>/var/lib/ceph/b4b30c6e-9681-11ea-ac39-525400d7702d/osd.2/config</screen>
+   <para>
+    Para modificar la configuración de un daemon, edite su archivo <filename>config</filename> y reinícielo:
+   </para>
+<screen><prompt role="root">root # </prompt>systemctl restart ceph-<replaceable>CLUSTER_FSID</replaceable>-<replaceable>DAEMON_NAME</replaceable></screen>
+   <para>
+    Por ejemplo:
+   </para>
+<screen><prompt role="root">root # </prompt>systemctl restart ceph-b4b30c6e-9681-11ea-ac39-525400d7702d-osd.2</screen>
+   <important>
+    <para>
+     Todos los ajustes personalizados se perderán después de que cephadm vuelva a distribuir el daemon.
+    </para>
+   </important>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-configuration-db">
+  <title>Base de datos de configuración</title>
+
+  <para>
+   Los monitores Ceph Monitor gestionan una base de datos central de opciones de configuración que afectan al comportamiento de todo el clúster.
+  </para>
+
+  <sect2 xml:id="cha-ceph-configuration-db-sections">
+   <title>Configuración de secciones y máscaras</title>
+   <para>
+    Las opciones de configuración almacenadas por MON pueden encontrarse en una sección <emphasis>global</emphasis>, de <emphasis>tipo de daemon</emphasis> o de <emphasis>daemon específico</emphasis>. Además, las opciones también pueden tener una <emphasis>máscara</emphasis> asociada para restringir aún más a qué daemons o clientes se aplica la opción. Las máscaras tienen dos formas:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <replaceable>TIPO</replaceable>:<replaceable>UBICACIÓN</replaceable>, donde <replaceable>TIPO</replaceable> es una propiedad de CRUSH como <literal>rack</literal> o <literal>host</literal>, y <replaceable>UBICACIÓN</replaceable> es un valor para esa propiedad.
+     </para>
+     <para>
+      Por ejemplo, <literal>host: host_de_ejemplo</literal> limitará la opción solo a los daemons o clientes que se ejecutan en ese host concreto.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <replaceable>CLASE</replaceable>:<replaceable>CLASE_DE_DISPOSITiVO</replaceable>, donde <replaceable>CLASE_DE_DISPOSITIVO</replaceable> es el nombre de una clase de dispositivo CRUSH como <literal>hdd</literal> o <literal>ssd</literal>. Por ejemplo, <literal>class:ssd</literal> limitará la opción solo a los OSD respaldados por SSD. Esta máscara no tiene ningún efecto en los daemons o clientes que no sean OSD.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="cha-ceph-configuration-db-commands">
+   <title>Ajuste y lectura de opciones de configuración</title>
+   <para>
+    Utilice los comandos siguientes para definir o leer las opciones de configuración del clúster. El parámetro <replaceable>WHO</replaceable> puede ser un nombre de sección, una máscara o una combinación de ambos separados por un carácter de barra (/). Por ejemplo, <literal>osd/rack:foo</literal> representa todos los daemons OSD del bastidor denominado <literal>foo</literal>.
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><command>ceph config dump</command></term>
+     <listitem>
+      <para>
+       Vuelca toda la base de datos de configuración de un clúster completo.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config get <replaceable>WHO</replaceable></command></term>
+     <listitem>
+      <para>
+       Vuelca la configuración de un daemon o cliente específicos (por ejemplo, <literal>mds.a</literal>), tal como se almacena en la base de datos de configuración.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config set <replaceable>WHO</replaceable> <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></command></term>
+     <listitem>
+      <para>
+       Establece el valor especificado en la opción de configuración de la base de datos de configuración.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config show <replaceable>WHO</replaceable></command></term>
+     <listitem>
+      <para>
+       Muestra la configuración en ejecución notificada para un daemon en ejecución. Estos ajustes pueden diferir de los almacenados por los monitores si también hay en uso archivos de configuración locales o si se han anulado opciones en la línea de comandos o en el tiempo de ejecución. El origen de los valores de la opción se notifica como parte del resultado.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config assimilate-conf -i <replaceable>INPUT_FILE</replaceable> -o <replaceable>OUTPUT_FILE</replaceable></command></term>
+     <listitem>
+      <para>
+       Importa un archivo de configuración especificado como <replaceable>INPUT_FILE</replaceable> y almacena las opciones válidas en la base de datos de configuración. Cualquier ajuste que no se reconozca, que no sea válido o que el monitor no pueda controlar se devolverá en un archivo abreviado almacenado como <replaceable>OUTPUT_FILE</replaceable>. Este comando es útil para realizar la transición de archivos de configuración legados a una configuración centralizada basada en monitor.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="cha-ceph-configuration-db-runtime">
+   <title>Configuración de daemons en tiempo de ejecución</title>
+   <para>
+    En la mayoría de los casos, Ceph permite realizar cambios en la configuración de un daemon en tiempo de ejecución. Esto es útil, por ejemplo, cuando necesita aumentar o disminuir el volumen de salida del registro, o cuando se realiza la optimización del clúster en tiempo de ejecución.
+   </para>
+   <para>
+    Puede actualizar los valores de las opciones de configuración con el comando siguiente:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set <replaceable>DAEMON</replaceable> <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></screen>
+   <para>
+    Por ejemplo, para ajustar el nivel de registro de depuración en un OSD específico, ejecute:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set osd.123 debug_ms 20</screen>
+   <note>
+    <para>
+     Si la misma opción también se personaliza en un archivo de configuración local, el ajuste del monitor se ignorará porque tiene menos prioridad que el archivo de configuración.
+    </para>
+   </note>
+   <sect3 xml:id="cha-ceph-configuration-db-runtime-override">
+    <title>Anulación de valores</title>
+    <para>
+     Es posible modificar temporalmente el valor de una opción mediante los subcomandos <command>tell</command> o <command>daemon</command>. Dicha modificación solo afecta al proceso en ejecución y se descarta después de que el daemon o el proceso se reinicien.
+    </para>
+    <para>
+     Existen dos formas de anular valores:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Utilice el subcomando <command>tell</command> para enviar un mensaje a un daemon específico desde cualquier nodo del clúster:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph tell <replaceable>DAEMON</replaceable> config set <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></screen>
+      <para>
+       Por ejemplo:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph tell osd.123 config set debug_osd 20</screen>
+      <tip>
+       <para>
+        El subcomando <command>tell</command> acepta comodines como identificadores de daemon. Por ejemplo, para ajustar el nivel de depuración en todos los daemons de OSD, ejecute:
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph tell osd.* config set debug_osd 20</screen>
+      </tip>
+     </listitem>
+     <listitem>
+      <para>
+       Utilice el subcomando <command>daemon</command> para conectarse a un proceso de daemon específico mediante un zócalo en <filename>/var/run/ceph</filename> desde el nodo donde se ejecuta el proceso:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon <replaceable>DAEMON</replaceable> config set <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></screen>
+      <para>
+       Por ejemplo:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.4 config set debug_osd 20</screen>
+     </listitem>
+    </itemizedlist>
+    <tip>
+     <para>
+      Al visualizar los ajustes de tiempo de ejecución con el comando <command>ceph config show</command> (consulte la <xref linkend="cha-ceph-configuration-db-runtime-view"/>), los valores anulados temporalmente se mostrarán con <literal>override</literal> en origen.
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="cha-ceph-configuration-db-runtime-view">
+    <title>Visualización de los ajustes del tiempo de ejecución</title>
+    <para>
+     Para ver todas las opciones definidas para un daemon:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config show-with-defaults osd.0</screen>
+    <para>
+     Para ver todas las opciones que no están definidas por defecto para un daemon:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config show osd.0</screen>
+    <para>
+     Para inspeccionar una opción específica:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config show osd.0 debug_osd</screen>
+    <para>
+     También puede conectarse a un daemon en ejecución desde el nodo donde se está ejecutando su proceso y observar su configuración:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.0 config show</screen>
+    <para>
+     Para ver solo los ajustes que no son los ajustes por defecto:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.0 config diff</screen>
+    <para>
+     Para inspeccionar una opción específica:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.0 config get debug_osd</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-config-key-store">
+  <title>Almacén <systemitem class="resource">config-key</systemitem></title>
+
+  <para>
+   <systemitem class="resource">config-key</systemitem> es un servicio de uso general que ofrecen los monitores Ceph Monitor. Simplifica la gestión de las claves de configuración al almacenar pares clave-valor de forma permanente. <systemitem class="resource">config-key</systemitem> se utiliza principalmente en herramientas y daemons de Ceph.
+  </para>
+
+  <tip>
+   <para>
+    Después de añadir una clave nueva o modificar una existente, reinicie el servicio afectado para que los cambios surtan efecto. Encontrará más información sobre el funcionamiento de los servicios de Ceph en el <xref linkend="cha-ceph-operating"/>.
+   </para>
+  </tip>
+
+  <para>
+   Utilice el comando <command>config-key</command> para hacer funcionar el almacén <systemitem class="resource">config-key</systemitem>. El comando <command>config-key</command> utiliza los siguientes subcomandos:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><command>ceph config-key rm <replaceable>KEY</replaceable></command></term>
+    <listitem>
+     <para>
+      Suprime la clave especificada.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key exists <replaceable>KEY</replaceable></command></term>
+    <listitem>
+     <para>
+      Comprueba si la clave especificada existe.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key get <replaceable>KEY</replaceable></command></term>
+    <listitem>
+     <para>
+      Recupera el valor de la clave especificada.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key ls</command></term>
+    <listitem>
+     <para>
+      Muestra todas las claves.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key dump</command></term>
+    <listitem>
+     <para>
+      Vuelca todas las claves y sus valores.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key set <replaceable>KEY</replaceable> <replaceable>VALUE</replaceable></command></term>
+    <listitem>
+     <para>
+      Almacena la clave especificada con el valor especificado.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <sect2 xml:id="cha-ceph-config-key-store-iscsi">
+   <title>iSCSI Gateway</title>
+   <para>
+    iSCSI Gateway utiliza el almacén <systemitem class="resource">config-key</systemitem> para guardar o leer sus opciones de configuración. Todas las claves relacionadas con iSCSI Gateway tienen como prefijo la cadena <literal>iscsi</literal>, por ejemplo:
+   </para>
+<screen>
+iscsi/trusted_ip_list
+iscsi/api_port
+iscsi/api_user
+iscsi/api_password
+iscsi/api_secure
+</screen>
+   <para>
+    Si necesita, por ejemplo, dos conjuntos de opciones de configuración, extienda el prefijo con otra palabra clave descriptiva; por ejemplo, <literal>datacenterA</literal> y <literal>datacenterB</literal>:
+   </para>
+<screen>
+iscsi/datacenterA/trusted_ip_list
+iscsi/datacenterA/api_port
+[...]
+iscsi/datacenterB/trusted_ip_list
+iscsi/datacenterB/api_port
+[...]
+</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="config-osd-and-bluestore">
+  <title>Ceph OSD y BlueStore</title>
+
+  <sect2 xml:id="config-auto-cache-sizing">
+   <title>Configuración del tamaño automático del caché</title>
+   <para>
+    BlueStore se puede configurar para que cambie automáticamente el tamaño de sus cachés si se configura <option>tc_malloc</option> como asignador de memoria y el valor <option>bluestore_cache_autotune</option> está habilitado. Esta opción está habilitada por defecto. BlueStore intentará mantener el uso de memoria del montón OSD por debajo de un tamaño de destino designado mediante la opción de configuración <option>osd_memory_target</option>. Se trata de un algoritmo de mejor esfuerzo y las memorias caché no se reducirán a un tamaño más pequeño que el indicado por el valor de <option>osd_memory_cache_min</option>. Las relaciones de caché se elegirán en función de una jerarquía de prioridades. Si la información de prioridad no está disponible, las opciones <option>bluestore_cache_meta_ratio</option> y <option>bluestore_cache_kv_ratio</option> se utilizan como reserva.
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>bluestore_cache_autotune</term>
+     <listitem>
+      <para>
+       Ajusta automáticamente las relaciones asignadas a diferentes cachés de BlueStore respetando los valores mínimos. El valor por defecto es <option>True</option> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>osd_memory_target</term>
+     <listitem>
+      <para>
+       Si <option>tc_malloc</option> y <option>bluestore_cache_autotune</option> están habilitados, intenta mantener al menos este número de bytes asignados en la memoria.
+      </para>
+      <note>
+       <para>
+        Esto podría no coincidir exactamente con el uso de memoria de RSS del proceso. Aunque la cantidad total de memoria de montón asignada por el proceso generalmente debe ser aproximadamente la de este destino, no existe garantía alguna de que el kernel recupere la memoria cuya asignación se ha anulado.
+       </para>
+      </note>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>osd_memory_cache_min</term>
+     <listitem>
+      <para>
+       Si <option>tc_malloc</option> y <option>bluestore_cache_autotune</option> están habilitados, define la cantidad mínima de memoria que se utiliza para las memorias caché.
+      </para>
+      <note>
+       <para>
+        Si se define un valor demasiado bajo en esta opción, se podría producir una hiperpaginación significativa de caché.
+       </para>
+      </note>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="config-ogw">
+  <title>Ceph Object Gateway</title>
+
+  <para>
+   Puede influir en el comportamiento de Object Gateway mediante varias opciones. Si no se especifica ninguna opción, se utiliza su valor por defecto. A continuación se muestra una lista completa de las opciones de Object Gateway:
+  </para>
+
+  <sect2 xml:id="config-ogw-general-settings">
+   <title>Valores generales</title>
+   <variablelist>
+    <varlistentry>
+     <term>rgw_frontends</term>
+     <listitem>
+      <para>
+       Configura los front-ends HTTP. Puede especificar varios front-ends en una lista delimitada por comas. Cada configuración de front-end puede incluir una lista de opciones separadas por espacios, donde cada opción tiene el formato "clave-valor" o "clave". El valor por defecto es <literal>beast port=7480</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data</term>
+     <listitem>
+      <para>
+       Define la ubicación de los archivos de datos para Object Gateway. El valor por defecto es <filename>/var/lib/ceph/radosgw/<replaceable>ID_CLÚSTER</replaceable></filename>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_enable_apis</term>
+     <listitem>
+      <para>
+       Habilita las API especificadas. El valor por defecto es "s3, swift, swift_auth, admin All APIs".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_cache_enabled</term>
+     <listitem>
+      <para>
+       Habilita o inhabilita el caché de Object Gateway. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_cache_lru_size</term>
+     <listitem>
+      <para>
+       El número de entradas en caché de Object Gateway. El valor por defecto es 10000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_socket_path</term>
+     <listitem>
+      <para>
+       La vía del zócalo de dominio. <option>FastCgiExternalServer</option> utiliza este zócalo. Si no especifica una vía de zócalo, Object Gateway no se ejecutará como servidor externo. La vía que especifique aquí debe ser la misma que la especificada en el archivo <filename>rgw.conf</filename>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_fcgi_socket_backlog</term>
+     <listitem>
+      <para>
+       El backlog del zócalo para fcgi. El valor por defecto es 1024.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_host</term>
+     <listitem>
+      <para>
+       El host de la instancia de Object Gateway. Puede ser una dirección IP o un nombre de host. El valor por defecto es <literal>0.0.0.0</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_port</term>
+     <listitem>
+      <para>
+       El número de puerto en el que la instancia escucha las peticiones. Si no se especifica, Object Gateway ejecuta FastCGI externo.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_dns_name</term>
+     <listitem>
+      <para>
+       El nombre DNS del dominio provisto.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_script_uri</term>
+     <listitem>
+      <para>
+       El valor alternativo para SCRIPT_URI si no se establece en la petición.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_request_uri</term>
+     <listitem>
+      <para>
+       El valor alternativo para REQUEST_URI si no se establece en la petición.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_print_continue</term>
+     <listitem>
+      <para>
+       Habilite 100-continue si está operativo. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_remote_addr_param</term>
+     <listitem>
+      <para>
+       El parámetro de dirección remota. Por ejemplo, el campo HTTP que contiene la dirección remota o la dirección X-Forwarded-For si hay un proxy inverso operativo. El valor por defecto es <literal>REMOTE_ADDR</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_op_thread_timeout</term>
+     <listitem>
+      <para>
+       El tiempo límite en segundos para los hilos abiertos. El valor por defecto es 600.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_op_thread_suicide_timeout</term>
+     <listitem>
+      <para>
+       El tiempo límite en segundos antes de que el proceso de Object Gateway se interrumpa. Este valor está inhabilitado si se establece en 0 (por defecto).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_thread_pool_size</term>
+     <listitem>
+      <para>
+       El número de hilos para el servidor de Beast. Se incrementa a un valor superior si necesita atender más peticiones. Por defecto es 100 hilos.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_num_rados_handles</term>
+     <listitem>
+      <para>
+       El número de referencias de clúster de RADOS para Object Gateway. Cada hilo de trabajo de Object Gateway elige ahora una referencia de RADOS para toda su vida útil. Esta opción puede quedar obsoleta y eliminarse en futuras versiones. El valor por defecto es 1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_num_control_oids</term>
+     <listitem>
+      <para>
+       El número de objetos de notificación utilizados para la sincronización de caché entre diferentes instancias de Object Gateway. El valor por defecto es 8.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_init_timeout</term>
+     <listitem>
+      <para>
+       El número de segundos antes de que Object Gateway renuncie a la inicialización. El valor por defecto es 30.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_mime_types_file</term>
+     <listitem>
+      <para>
+       La vía y la ubicación de los tipos MIME. Se utiliza para la detección automática de Swift de tipos de objetos. El valor por defecto es <filename>/etc/mime.types</filename>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_max_objs</term>
+     <listitem>
+      <para>
+       El número máximo de objetos que puede controlar la recopilación de elementos no utilizados en un ciclo de procesamiento de recopilación de elementos no utilizados. El valor por defecto es 32.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_obj_min_wait</term>
+     <listitem>
+      <para>
+       El tiempo de espera mínimo antes de que el objeto se puede eliminar y controlar mediante el procesamiento de recopilación de elementos no utilizados. El valor por defecto es 2*3600.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_processor_max_time</term>
+     <listitem>
+      <para>
+       El tiempo máximo entre el comienzo de dos ciclos de procesamiento de recopilación de elementos no utilizados consecutivos. El valor por defecto es 3600.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_processor_period</term>
+     <listitem>
+      <para>
+       El tiempo de ciclo del procesamiento de recopilación de elementos no utilizados. El valor por defecto es 3600.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_s3_success_create_obj_status</term>
+     <listitem>
+      <para>
+       La respuesta alternativa del estado de éxito para <literal>create-obj</literal>. El valor por defecto es 0.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_resolve_cname</term>
+     <listitem>
+      <para>
+       Indica si Object Gateway debe usar el registro CNAME DNS del campo de nombre de host de la petición (si el nombre de host no es igual al nombre DNS de Object Gateway). El valor por defecto es <literal>false</literal> (falso).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_obj_stripe_size</term>
+     <listitem>
+      <para>
+       El tamaño de una repartición de objetos de Object Gateway. El valor por defecto es <literal>4 &lt;&lt; 20</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_extended_http_attrs</term>
+     <listitem>
+      <para>
+       Añade un nuevo conjunto de atributos que se pueden definir en una entidad (por ejemplo, un usuario, un depósito o un objeto). Estos atributos adicionales se pueden definir mediante campos de encabezado HTTP al colocar la entidad o modificarla mediante el método POST. Si se definen, estos atributos se devolverán como campos HTTP cuando se pida el GET/HEAD de la entidad. El valor por defecto es <literal>content_foo, content_bar, x-foo-bar</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_exit_timeout_secs</term>
+     <listitem>
+      <para>
+       Número de segundos que se esperará un proceso antes de salir incondicionalmente. El valor por defecto es 120.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_get_obj_window_size</term>
+     <listitem>
+      <para>
+       El tamaño de la ventana, en bytes, para una petición de un solo objeto. El valor por defecto es <literal>16 &lt;&lt; 20</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_get_obj_max_req_size</term>
+     <listitem>
+      <para>
+       El tamaño máximo de petición de una sola operación GET enviada al clúster de almacenamiento de Ceph. El valor por defecto es <literal>4 &lt;&lt; 20</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_relaxed_s3_bucket_names</term>
+     <listitem>
+      <para>
+       Habilita las reglas de nombre de depósito de S3 en expansión para depósitos de la región de EE. UU. El valor por defecto es <literal>false</literal> (falso).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_list_buckets_max_chunk</term>
+     <listitem>
+      <para>
+       El número máximo de depósitos que se van a recuperar en una sola operación al mostrar las depósitos de usuario. El valor por defecto es 1000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_override_bucket_index_max_shards</term>
+     <listitem>
+      <para>
+       Representa el número de fragmentos para el objeto de índice de depósito. El valor 0 (por defecto) indica que no hay partición. No se recomienda definir un valor demasiado grande (por ejemplo 1000) ya que aumenta el coste de la lista de depósitos. Esta variable se debe establecer en las secciones del cliente o en las globales, de forma que se aplique automáticamente a los comandos <command>radosgw-admin</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_curl_wait_timeout_ms</term>
+     <listitem>
+      <para>
+       El tiempo de espera en milisegundos para determinadas llamadas <command>curl</command>. El valor por defecto es 1000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_copy_obj_progress</term>
+     <listitem>
+      <para>
+       Habilita los resultados del progreso del objeto durante las operaciones de copia largas. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_copy_obj_progress_every_bytes</term>
+     <listitem>
+      <para>
+       Los bytes mínimos entre los resultados de progreso de las operaciones de copia. El valor por defecto es 1024*1024.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_admin_entry</term>
+     <listitem>
+      <para>
+       El punto de entrada de una dirección URL de petición de administrador. El valor por defecto es <literal>admin</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_content_length_compat</term>
+     <listitem>
+      <para>
+       Habilita el control de compatibilidad de las peticiones FCGI con CONTENT_LENGTH y HTTP_CONTENT_LENGTH definidos. El valor por defecto es <literal>false</literal> (falso).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_bucket_quota_ttl</term>
+     <listitem>
+      <para>
+       El tiempo en segundos durante el cual la información de cuota almacenada en caché es de confianza. Cuando transcurre este tiempo límite, la información de cuota se vuelve a recuperar del clúster. El valor por defecto es 600.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_quota_bucket_sync_interval</term>
+     <listitem>
+      <para>
+       El tiempo en segundos durante el cual se acumula la información de cuota del depósito antes de sincronizarse con el clúster. Durante este tiempo, las demás instancias de Object Gateway no verán los cambios en las estadísticas de cuota de depósito relacionados con las operaciones de esta instancia. El valor por defecto es 180.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_quota_sync_interval</term>
+     <listitem>
+      <para>
+       El tiempo en segundos durante el cual se acumula la información de cuota de usuario antes de sincronizarla con el clúster. Durante este tiempo, las demás instancias de Object Gateway no verán los cambios en las estadísticas de cuota de usuario relacionados con las operaciones de esta instancia. El valor por defecto es 180.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_bucket_default_quota_max_objects</term>
+     <listitem>
+      <para>
+       Número máximo por defecto de objetos por depósito. Se establece en los nuevos usuarios si no se especifica ninguna otra cuota y no tiene ningún efecto sobre los usuarios existentes. Esta variable se debe establecer en las secciones del cliente o en las globales, de forma que se aplique automáticamente a los comandos <command>radosgw-admin</command>. El valor por defecto es -1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_bucket_default_quota_max_size</term>
+     <listitem>
+      <para>
+       Capacidad máxima por defecto por depósito en bytes. Se establece en los nuevos usuarios si no se especifica ninguna otra cuota y no tiene ningún efecto sobre los usuarios existentes. El valor por defecto es -1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_default_quota_max_objects</term>
+     <listitem>
+      <para>
+       Número máximo por defecto de objetos para un usuario. Esto incluye todos los objetos de todos los depósitos propiedad del usuario. Se establece en los nuevos usuarios si no se especifica ninguna otra cuota y no tiene ningún efecto sobre los usuarios existentes. El valor por defecto es -1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_default_quota_max_size</term>
+     <listitem>
+      <para>
+       El valor de la cuota de tamaño máximo de usuario en bytes definido en los nuevos usuarios si no se especifica ninguna otra cuota. No tiene ningún efecto sobre los usuarios existentes. El valor por defecto es -1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_verify_ssl</term>
+     <listitem>
+      <para>
+       Verifique los certificados SSL mientras realiza las peticiones. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_max_chunk_size</term>
+     <listitem>
+      <para>
+       El tamaño máximo de una porción de datos que se leerá en una única operación. Si se aumenta el valor a 4 MB (4194304) se conseguirá un mejor rendimiento al procesar objetos grandes. El valor por defecto es 128 kB (131072).
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Configuración de varios sitios</title>
+    <varlistentry>
+     <term>rgw_zone</term>
+     <listitem>
+      <para>
+       El nombre de la zona de la instancia de pasarela. Si no se define ninguna zona, es posible configurar un valor por defecto para todo el clúster con el comando <command>radosgw-admin zone default</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_zonegroup</term>
+     <listitem>
+      <para>
+       El nombre del grupo de zonas de la instancia de pasarela. Si no se define ningún grupo de zonas, es posible configurar un valor por defecto para todo el clúster con el comando <command>radosgw-admin zonegroup default</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_realm</term>
+     <listitem>
+      <para>
+       El nombre del reino de la instancia de pasarela. Si no se define ningún reino, es posible configurar un valor por defecto para todo el clúster con el comando <command>radosgw-admin realm default</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_run_sync_thread</term>
+     <listitem>
+      <para>
+       Si hay otras zonas en el reino desde las que se deba sincronizar, genere hilos para controlar la sincronización de datos y metadatos. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_window</term>
+     <listitem>
+      <para>
+       La ventana de entradas del registro de datos en segundos. El valor por defecto es 30.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_changes_size</term>
+     <listitem>
+      <para>
+       El número de entradas en memoria que se deben conservar para el registro de cambios de datos. El valor por defecto es 1000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_obj_prefix</term>
+     <listitem>
+      <para>
+       El prefijo del nombre de objeto para el registro de datos. El valor por defecto es "data_log".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_num_shards</term>
+     <listitem>
+      <para>
+       El número de fragmentos (objetos) de los que se debe mantener el registro de cambios de datos. El valor por defecto es 128.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_md_log_max_shards</term>
+     <listitem>
+      <para>
+       El número máximo de fragmentos para el registro de metadatos. El valor por defecto es 64.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Configuración de Swift</title>
+    <varlistentry>
+     <term>rgw_enforce_swift_acls</term>
+     <listitem>
+      <para>
+       Aplica los valores de la lista de control de acceso (ACL) de Swift. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_token_expiration</term>
+     <listitem>
+      <para>
+       El tiempo en segundos que falta para que caduque el testigo de Swift. El valor por defecto es 24*3600.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_url</term>
+     <listitem>
+      <para>
+       La URL de la API de Swift de Ceph Object Gateway.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_url_prefix</term>
+     <listitem>
+      <para>
+       El prefijo de URL para StorageURL de Swift que precede a "/v1". Esto permite ejecutar varias instancias de pasarela en el mismo host. Por motivos de compatibilidad, si esta variable de configuración se deja vacía, se utilizará el indicador "/swift" por defecto. Utilice el prefijo explícito "/" para iniciar StorageURL en la raíz.
+      </para>
+      <warning>
+       <para>
+        Definir "/" en esta opción no funcionará si la API de S3 está habilitada. Tenga en cuenta que inhabilitar S3 hará que sea imposible distribuir Object Gateway en la configuración de varios sitios.
+       </para>
+      </warning>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_auth_url</term>
+     <listitem>
+      <para>
+       La URL por defecto para verificar los testigos de autenticación v1 si no se utiliza la autenticación interna de Swift.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_auth_entry</term>
+     <listitem>
+      <para>
+       El punto de entrada para una dirección URL de autenticación de Swift. El valor por defecto es <literal>auth</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_versioning_enabled</term>
+     <listitem>
+      <para>
+       Habilita el control de versiones de objetos de la API de almacenamiento de objetos de OpenStack. Esto permite a los clientes colocar el atributo <literal>X-Versions-Location</literal> en los contenedores que se deben versionar. El atributo especifica el nombre del contenedor donde se almacenan las versiones archivadas. Por motivos de verificación del control de acceso, debe ser propiedad del mismo usuario que el contenedor versionado: las ACL <emphasis>no</emphasis> se tienen en cuenta. Esos contenedores no pueden versionarse mediante el mecanismo de control de versiones de objetos de S3. El valor por defecto es <literal>false</literal> (falso).
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Ajustes de registro</title>
+    <varlistentry>
+     <term>rgw_log_nonexistent_bucket</term>
+     <listitem>
+      <para>
+       Permite que Object Gateway registre una petición para un depósito inexistente. El valor por defecto es <literal>false</literal> (falso).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_log_object_name</term>
+     <listitem>
+      <para>
+       El formato de registro de un nombre de objeto. Consulte la página man <command>man 1 date</command> para obtener más información sobre los especificadores de formato. El valor por defecto es <literal>%Y-%m-%d-%H-%i-%n</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_log_object_name_utc</term>
+     <listitem>
+      <para>
+       Indica si un nombre de objeto registrado incluye una hora UTC. Si se establece en <literal>false</literal> (valor por defecto), utiliza la hora local.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_max_shards</term>
+     <listitem>
+      <para>
+       El número máximo de fragmentos para el registro de uso. El valor por defecto es 32.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_max_user_shards</term>
+     <listitem>
+      <para>
+       El número máximo de fragmentos utilizados para el registro de uso de un solo usuario. El valor por defecto es 1.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_enable_ops_log</term>
+     <listitem>
+      <para>
+       Habilita el registro de cada operación de Object Gateway correcta. El valor por defecto es <literal>false</literal> (falso).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_enable_usage_log</term>
+     <listitem>
+      <para>
+       Habilita el registro de uso. El valor por defecto es <literal>false</literal> (falso).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_ops_log_rados</term>
+     <listitem>
+      <para>
+       Indica si el registro de operaciones debe escribirse en el back-end del clúster de almacenamiento de Ceph. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_ops_log_socket_path</term>
+     <listitem>
+      <para>
+       El zócalo de dominio Unix para escribir registros de operaciones.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_ops_log_data_backlog</term>
+     <listitem>
+      <para>
+       El tamaño máximo de datos de backlog de datos para los registros de operaciones escritos en un zócalo de dominio Unix. El valor por defecto es 5 &lt;&lt; 20.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_log_flush_threshold</term>
+     <listitem>
+      <para>
+       El número de entradas combinadas sucias en el registro de uso antes de vaciarlas de forma sincrónica. El valor por defecto es 1024.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_log_tick_interval</term>
+     <listitem>
+      <para>
+       Vacía los datos de registro de uso pendientes cada "n" segundos. El valor por defecto es 30.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_log_http_headers</term>
+     <listitem>
+      <para>
+       Lista delimitada por comas de encabezados HTTP que se deben incluir en las entradas de registro. Los nombres de encabezado no distinguen mayúsculas de minúsculas y usan el nombre de encabezado completo con palabras separadas por guiones bajos. Por ejemplo, "http_x_forwarded_for", "http_x_special_k".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_intent_log_object_name</term>
+     <listitem>
+      <para>
+       El formato de registro para el nombre del objeto de registro de intent. Consulte la página man <command>man 1 date</command> para obtener más información sobre los especificadores de formato. El valor por defecto es "%Y-%m-%d-%i-%n".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_intent_log_object_name_utc</term>
+     <listitem>
+      <para>
+       Indica si el nombre del objeto de registro de intent incluye una hora UTC. Si se establece en <literal>false</literal> (valor por defecto), utiliza la hora local.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Configuración de Keystone</title>
+    <varlistentry>
+     <term>rgw_keystone_url</term>
+     <listitem>
+      <para>
+       La URL del servidor de Keystone.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_api_version</term>
+     <listitem>
+      <para>
+       La versión (2 o 3) de la API de identidad de OpenStack que se debe utilizar para la comunicación con el servidor de Keystone. El valor por defecto es 2.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_domain</term>
+     <listitem>
+      <para>
+       El nombre del dominio de OpenStack con privilegios de administrador al utilizar la versión 3 de la API de identidad de OpenStack.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_project</term>
+     <listitem>
+      <para>
+       El nombre del proyecto de OpenStack con privilegios de administrador al utilizar la versión 3 de la API de identidad de OpenStack. Si no se define, se usará en su lugar el valor de <command>rgw keystone admin tenant</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_token</term>
+     <listitem>
+      <para>
+       El testigo de administrador de Keystone (secreto compartido). En Object Gateway, la autenticación con el testigo de administrador tiene prioridad sobre la autenticación con las credenciales de administrador (opciones <option>rgw keystone admin user</option>, <option>rgw keystone admin password</option>, <option>rgw keystone admin tenant</option>, <option>rgw keystone admin project</option> y <option>rgw keystone admin domain</option>). Se considera que la función de testigo de administrador está obsoleta.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_tenant</term>
+     <listitem>
+      <para>
+       El nombre del inquilino de OpenStack con privilegios de administrador (inquilino de servicio) al utilizar la versión 2 de la API de identidad de OpenStack.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_user</term>
+     <listitem>
+      <para>
+       El nombre del usuario de OpenStack con privilegios de administrador para la autenticación de Keystone (usuario de servicio) al utilizar la versión 2 de la API de identidad de OpenStack.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_password</term>
+     <listitem>
+      <para>
+       La contraseña del usuario administrador de OpenStack al utilizar la versión 2 de la API de identidad de OpenStack.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_accepted_roles</term>
+     <listitem>
+      <para>
+       Las funciones necesarias para atender las peticiones. Por defecto es "Member, admin".
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_token_cache_size</term>
+     <listitem>
+      <para>
+       El número máximo de entradas en cada caché del testigo de Keystone. El valor por defecto es 10000.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_revocation_interval</term>
+     <listitem>
+      <para>
+       El número de segundos entre comprobaciones de revocación del testigo. El valor por defecto es 15*60.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_verify_ssl</term>
+     <listitem>
+      <para>
+       Verifica los certificados SSL mientras se realizan peticiones de testigo a Keystone. El valor por defecto es <literal>true</literal> (verdadero).
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <sect3 xml:id="sec-ceph-rgw-configuration-notes">
+    <title>Notas adicionales</title>
+    <variablelist>
+     <varlistentry>
+      <term>rgw_dns_name</term>
+      <listitem>
+       <para>
+        Permite a los clientes utilizar depósitos de estilo <literal>vhost</literal>.
+       </para>
+       <para>
+        El acceso al estilo <literal>vhost</literal> hace referencia al uso <replaceable>bucketname</replaceable>.<replaceable>s3-endpoint</replaceable>/<replaceable>object-path</replaceable>. Esto es en comparación con el acceso de estilo <literal>path</literal>: <replaceable>s3-endpoint</replaceable>/<replaceable>bucket</replaceable>/<replaceable>object</replaceable>
+       </para>
+       <para>
+        Si se define <literal>rgw dns name</literal>, verifique que el cliente de S3 está configurado para dirigir las peticiones al puesto final especificado por <literal>rgw dns name</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="config-ogw-http-frontends">
+   <title>Configuración de procesadores frontales HTTP</title>
+   <sect3 xml:id="config-http-beast">
+    <title>Beast</title>
+    <variablelist>
+     <varlistentry>
+      <term>port, ssl_port</term>
+      <listitem>
+       <para>
+        Los números de puerto de escucha IPv4 e IPv6. Puede especificar varios números de puerto:
+       </para>
+<screen>port=80 port=8000 ssl_port=8080</screen>
+       <para>
+        El valor por defecto es 80.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>endpoint, ssl_endpoint</term>
+      <listitem>
+       <para>
+        Las direcciones de escucha con el formato "dirección[:puerto]", donde "dirección" es una cadena de dirección IPv4 en formato decimal con puntos o una dirección IPv6 en notación hexadecimal entre corchetes. Si se especifica un puesto final IPv6, solo se escucharían direcciones IPv6. El número de puerto opcional es por defecto el 80 para <option>endpoint</option> y el 443 para <option>ssl_endpoint</option>. Puede especificar varias direcciones:
+       </para>
+<screen>
+endpoint=[::1] endpoint=192.168.0.100:8000 ssl_endpoint=192.168.0.100:8080
+</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ssl_private_key</term>
+      <listitem>
+       <para>
+        Vía opcional al archivo de clave privada utilizado para los puestos finales habilitados para SSL. Si no se especifica, se usa el archivo <option>ssl_certificate</option> como clave privada.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>tcp_nodelay</term>
+      <listitem>
+       <para>
+        Si se especifica, la opción de zócalo inhabilitará el algoritmo de Nagle en la conexión. Significa que los paquetes se enviarán tan pronto como sea posible, en lugar de esperar a que se complete el búfer o a que se agote el tiempo límite.
+       </para>
+       <para>
+        "1" inhabilita el algoritmo de Nagle para todos los zócalos.
+       </para>
+       <para>
+        "0" mantiene habilitado el algoritmo de Nagle (opción por defecto).
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <example>
+     <title>Ejemplo de configuración de Beast</title>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set rgw.myrealm.myzone.ses-min1.kwwazo \
+ rgw_frontends beast port=8000 ssl_port=443 \
+ ssl_certificate=/etc/ssl/ssl.crt \
+ error_log_file=/var/log/radosgw/beast.error.log
+</screen>
+<screen>
+</screen>
+    </example>
+   </sect3>
+   <sect3 xml:id="config-http-civetweb">
+    <title>Civetweb</title>
+    <variablelist>
+     <varlistentry>
+      <term>port</term>
+      <listitem>
+       <para>
+        El número del puerto de escucha. En el caso de los puertos habilitados para SSL, añada un sufijo "s" (por ejemplo, "443s"). Para vincular una dirección IPv4 o IPv6 específica, utilice el formato "dirección:puerto". Puede especificar varios puestos finales uniéndolos con "+" o proporcionando varias opciones:
+       </para>
+<screen>
+port=127.0.0.1:8000+443s
+port=8000 port=443s
+</screen>
+       <para>
+        El valor por defecto es 7480.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>num_threads</term>
+      <listitem>
+       <para>
+        El número de hilos generados por Civetweb para controlar las conexiones HTTP entrantes. Esto limita de manera eficaz el número de conexiones simultáneas que el front-end puede atender.
+       </para>
+       <para>
+        El valor por defecto es el valor especificado por la opción <option>rgw_thread_pool_size</option>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>request_timeout_ms</term>
+      <listitem>
+       <para>
+        El tiempo en milisegundos que Civetweb esperará más datos entrantes antes de darse por vencido.
+       </para>
+       <para>
+        El valor por defecto es 30000 milisegundos.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>access_log_file</term>
+      <listitem>
+       <para>
+        Vía al archivo de registro de accesos. Puede especificar una vía completa o una relativa al directorio de trabajo actual. Si no se especifica (opción por defecto), los accesos no se registran.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>error_log_file</term>
+      <listitem>
+       <para>
+        Vía al archivo de registro de errores. Puede especificar una vía completa o una relativa al directorio de trabajo actual. Si no se especifica (opción por defecto), los errores no se registran.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <example>
+     <title>Ejemplo de configuración de Civetweb en <filename>/etc/ceph/ceph.conf</filename></title>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set rgw.myrealm.myzone.ses-min2.ingabw \
+ rgw_frontends civetweb port=8000+443s request_timeout_ms=30000 \
+ error_log_file=/var/log/radosgw/civetweb.error.log
+</screen>
+    </example>
+   </sect3>
+   <sect3 xml:id="config-http-common-options">
+    <title>Opciones comunes</title>
+    <variablelist>
+     <varlistentry>
+      <term>ssl_certificate</term>
+      <listitem>
+       <para>
+        Vía al archivo de certificado SSL utilizado para los puestos finales habilitados para SSL.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>prefix</term>
+      <listitem>
+       <para>
+        Cadena de prefijo que se inserta en el URI de todas las peticiones. Por ejemplo, un procesador frontal solo de Swift podría proporcionar el prefijo de URI <literal>/swift</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

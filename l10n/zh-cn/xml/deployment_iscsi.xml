@@ -1,0 +1,672 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_iscsi.xml" version="5.0" xml:id="cha-ceph-as-iscsi">
+
+ <title>安装 iSCSI 网关</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  iSCSI 是一种存储区域网络 (SAN) 协议，可让客户端（称作<emphasis>发起程序</emphasis>）将 SCSI 命令发送到远程服务器上的 SCSI 存储设备（<emphasis>目标</emphasis>）。SUSE Enterprise Storage 7 包含一个可通过 iSCSI 协议向异构客户端（例如 Microsoft Windows* 和 VMware* vSphere）开放 Ceph 存储管理的工具。多路径 iSCSI 访问可让这些客户端实现可用性与可伸缩性，此外，该标准化 iSCSI 协议在客户端与 SUSE Enterprise Storage 7 集群之间提供了一层额外的安全隔离。该配置工具名为 <systemitem class="daemon">ceph-iscsi</systemitem>。使用 <systemitem class="daemon">ceph-iscsi</systemitem>，Ceph 存储管理员可以定义精简配置的高可用性复制卷，该卷支持只读快照、读写克隆，以及 Ceph RADOS 块设备 (RBD) 的自动大小调整。然后，管理员可以通过单个 <systemitem class="daemon">ceph-iscsi</systemitem> 网关主机或支持多路径故障转移的多个网关主机来导出卷。Linux、Microsoft Windows 和 VMware 主机可以使用 iSCSI 协议连接到卷，因此可像任何其他 SCSI 块设备一样供您使用。这意味着，SUSE Enterprise Storage 7 客户实际上可在 Ceph 上运行具有传统 SAN 所有功能和优势的完整块存储基础架构子系统，从而在未来实现蓬勃发展。
+ </para>
+ <para>
+  本章详细介绍如何设置 Ceph 集群基础架构和 iSCSI 网关，使客户端主机能够通过 iSCSI 协议，像在本地存储设备上一样使用远程存储的数据。
+ </para>
+ <sect1 xml:id="ceph-iscsi-iscsi">
+  <title>iSCSI 块存储</title>
+
+  <para>
+   iSCSI 是 RFC 3720 中指定的、使用因特网协议 (IP) 的小型计算机系统接口 (SCSI) 命令集的一种实施。iSCSI 以服务形式实施，其中，客户端（发起程序）在 TCP 端口 3260 上通过会话来与服务器（目标）通讯。iSCSI 目标的 IP 地址和端口称为 <emphasis>iSCSI 门户</emphasis>，其中，一个目标可通过一个或多个端口公开。一个目标与一个或多个端口的组合称为<emphasis>目标门户组</emphasis> (TPG)。
+  </para>
+
+  <para>
+   iSCSI 的底层数据链路层协议通常为以太网。更具体地说，现代 iSCSI 基础架构使用 10 GigE 以太网或更快的网络实现最佳吞吐量。强烈建议在 iSCSI 网关与后端 Ceph 集群之间建立 10 Gb 以太网连接。
+  </para>
+
+  <sect2 xml:id="ceph-iscsi-iscsi-target">
+   <title>Linux 内核 iSCSI 目标</title>
+   <para>
+    Linux 内核 iSCSI 目标最初称作 <literal>linux-iscsi.or</literal> 的 LIO，它是项目的原始域和网站。在过去一段时间，适用于 Linux 平台的 iSCSI 目标实施竞争产品不少于四个，但 LIO 作为单一 iSCSI 参照目标最终获得了压倒性优势。LIO 的主流内核代码使用简单但有点含糊的名称“目标”，旨在区分“目标核心”与各种前端和后端目标扩展模块。
+   </para>
+   <para>
+    可以说，最常用的前端扩展模块就是 iSCSI。但是，LIO 也支持光纤通道 (FC)、基于以太网的光纤通道 (FCoE) 和其他多种前端协议。目前，SUSE Enterprise Storage 仅支持 iSCSI 协议。
+   </para>
+   <para>
+    最常用的目标后端扩展模块是能够方便地在目标主机上重新导出任何可用块设备的扩展模块。此模块名为 <emphasis>iblock</emphasis>。但是，LIO 还有一个 RBD 特定的后端扩展模块，该扩展模块支持对 RBD 映像进行并行化多路径 I/O 访问。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-iscsi-initiators">
+   <title>iSCSI 发起程序</title>
+   <para>
+    本节简要介绍 Linux、Microsoft Windows 和 VMware 平台上使用的 iSCSI 发起程序。
+   </para>
+   <sect3 xml:id="ceph-iscsi-initiators-linux">
+    <title>Linux</title>
+    <para>
+     Linux 平台的标准发起程序是 <systemitem>open-iscsi</systemitem>。<systemitem>open-iscsi</systemitem> 会起动守护进程 <systemitem>iscsid</systemitem>，然后，用户可以使用该守护进程来发现任何给定端口上的 iSCSI 目标、登录到目标，以及映射 iSCSI 卷。<systemitem>iscsid</systemitem> 会与 SCSI 中间层通讯以创建内核中块设备，然后，内核便可像对待系统中任何其他的 SCSI 块设备一样来处理这些设备。可以结合设备映射程序多路径 (<systemitem>dm-multipath</systemitem>) 工具一起部署 <systemitem>open-iscsi</systemitem> 发起程序，以提供高度可用的 iSCSI 块设备。
+    </para>
+   </sect3>
+   <sect3 xml:id="ceph-iscsi-mswin-hyperv">
+    <title>Microsoft Windows 和 Hyper-V</title>
+    <para>
+     Microsoft Windows 操作系统的默认 iSCSI 发起程序是 Microsoft iSCSI 发起程序。iSCSI 服务可通过图形用户界面 (GUI) 进行配置，并支持使用多路径 I/O 实现高可用性。
+    </para>
+   </sect3>
+   <sect3 xml:id="ceph-iscsi-vmware">
+    <title>VMware</title>
+    <para>
+     VMware vSphere 和 ESX 的默认 iSCSI 发起程序是 VMware ESX 软件 iSCSI 发起程序 <systemitem>vmkiscsi</systemitem>。启用该发起程序后，可通过 vSphere 客户端或使用 <command>vmkiscsi-tool</command> 命令对其进行配置。然后，可以使用 VMFS 来格式化通过 vSphere iSCSI 存储适配器连接的存储卷，并像使用任何其他 VM 存储设备一样使用它们。VMware 发起程序也支持使用多路径 I/O 实现高可用性。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-lrbd">
+  <title>有关 <systemitem class="daemon">ceph-iscsi</systemitem> 的一般信息</title>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> 兼具 RADOS 块设备的优势与 iSCSI 无所不在的通用性。通过在 iSCSI 目标主机（称为 iSCSI 网关）上应用 <systemitem class="daemon">ceph-iscsi</systemitem>，任何需要利用块存储的应用都可受益于 Ceph，即使不支持任何 Ceph 客户端协议的应用也不例外。而用户可以使用 iSCSI 或任何其他目标前端协议连接到 LIO 目标，从而可以转换针对 RBD 存储的所有目标 I/O。
+  </para>
+
+  <figure>
+   <title>包含单个 iSCSI 网关的 Ceph 集群</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme1.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> 先天就具有高可用性，并支持多路径操作。因此，下游发起程序主机可以使用多个 iSCSI 网关实现高可用性和可伸缩性。与包含多个网关的 iSCSI 配置通讯时，发起程序可在多个网关之间实现 iSCSI 请求的负载平衡。如果某个网关发生故障（暂时不可访问，或因为维护已被禁用），将通过另一个网关以透明方式继续处理 I/O。
+  </para>
+
+  <figure>
+   <title>包含多个 iSCSI 网关的 Ceph 集群</title>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="lrbd_scheme2.png" width="75%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-deploy">
+  <title>部署考虑事项</title>
+
+  <para>
+   包含 <systemitem class="daemon">ceph-iscsi</systemitem> 的最低 SUSE Enterprise Storage 7 配置由以下组件组成：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     一个 Ceph 存储集群。该 Ceph 集群至少包括四台物理服务器，其中每台服务器至少托管八个对象存储守护进程 (OSD)。在此类配置中，有三个 OSD 节点额外充当 Monitor (MON) 主机。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     一台通过 <systemitem class="daemon">ceph-iscsi</systemitem> 配置且运行 LIO iSCSI 目标的 iSCSI 目标服务器。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     一台 iSCSI 发起程序主机，它运行 <systemitem>open-iscsi</systemitem> (Linux)、Microsoft iSCSI 发起程序 (Microsoft Windows) 或任何其他兼容的 iSCSI 发起程序实施。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   包含 <systemitem class="daemon">ceph-iscsi</systemitem> 的建议 SUSE Enterprise Storage 7 生产配置由以下组件组成：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     一个 Ceph 存储集群。一个 Ceph 生产集群，它由任意数量（通常是 10 个以上）的 OSD 节点组成，其中每个节点通常运行 10-12 个对象存储守护进程 (OSD)，以及至少三台专用 MON 主机。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     多台通过 <systemitem class="daemon">ceph-iscsi</systemitem> 配置且运行 LIO iSCSI 目标的 iSCSI 目标服务器。为实现 iSCSI 故障转移和负载平衡，这些服务器必须运行支持 <systemitem>target_core_rbd</systemitem> 模块的内核。可通过 SUSE Linux Enterprise Server 维护渠道获取更新包。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     任意数量的 iSCSI 发起程序主机，这些主机运行 <systemitem>open-iscsi</systemitem> (Linux)、Microsoft iSCSI 发起程序 (Microsoft Windows) 或任何其他兼容的 iSCSI 发起程序实施。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-install">
+  <title>安装和配置</title>
+
+  <para>
+   本节介绍在 SUSE Enterprise Storage 的基础上安装和配置 iSCSI 网关的步骤。
+  </para>
+
+  <sect2 xml:id="ceph-iscsi-install-igw-ceph-cluster">
+   <title>将 iSCSI 网关部署到 Ceph 集群</title>
+   <para>
+    Ceph iSCSI 网关采用与其他 Ceph 服务相同的过程进行部署，即使用 cephadm。有关细节，请参见<xref linkend="deploy-cephadm-day2-service-igw"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-rbd-images">
+   <title>创建 RBD 映像</title>
+   <para>
+    RBD 映像创建于 Ceph 存储区中，随后会导出到 iSCSI。建议为此使用专用的 RADOS 存储池。您可以在能使用 Ceph <command>rbd</command> 命令行实用程序连接到存储集群的任何主机上创建卷。这需要客户端至少有一个精简的 <filename>ceph.conf</filename> 配置文件，以及相应的 CephX 身份验证身份凭证。
+   </para>
+   <para>
+    要通过 iSCSI 创建一个随后可供导出的新卷，请使用 <command>rbd create</command> 命令并指定卷大小（以 MB 为单位）。例如，要在名为 <literal>iscsi-images</literal> 的存储池中创建名为 <literal>testvol</literal> 的 100 GB 卷，请运行以下命令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rbd --pool iscsi-images create --size=102400 <replaceable>testvol</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-rbd-export">
+   <title>通过 iSCSI 导出 RBD 映像</title>
+   <para>
+    要通过 iSCSI 导出 RBD 映像，您可以使用 Ceph Dashboard Web 界面或 <systemitem class="daemon">ceph-iscsi</systemitem> gwcli 实用程序。在本节中，我们只重点介绍 gwcli，演示如何使用命令行创建导出 RBD 映像的 iSCSI 目标。
+   </para>
+   <note>
+    <para>
+     无法通过 iSCSI 导出具有以下属性的 RBD 映像：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       启用 <option>journaling</option> 功能的映像
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <option>stripe unit</option> 小于 4096 字节的映像
+      </para>
+     </listitem>
+    </itemizedlist>
+   </note>
+   <para>
+    以 <systemitem class="username">root</systemitem> 身份进入 iSCSI 网关容器：
+   </para>
+<screen><prompt role="root">root # </prompt>cephadm enter --name <replaceable>CONTAINER_NAME</replaceable></screen>
+   <para>
+    以 <systemitem class="username">root</systemitem> 身份启动 iSCSI 网关命令行界面：
+   </para>
+<screen><prompt role="root">root # </prompt>gwcli</screen>
+   <para>
+    转到 <literal>iscsi-targets</literal>，然后创建名为 <literal>iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol</literal> 的目标：
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; create iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol
+</screen>
+   <para>
+    通过指定网关<literal>名称</literal>和 <literal>IP</literal> 地址创建 iSCSI 网关：
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; cd iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/gateways
+<prompt>gwcli &gt; </prompt> /iscsi-target...tvol/gateways&gt; create iscsi1 192.168.124.104
+<prompt>gwcli &gt; </prompt> /iscsi-target...tvol/gateways&gt; create iscsi2 192.168.124.105
+</screen>
+   <tip>
+    <para>
+     使用 <literal>help</literal> 命令可显示当前配置节点中的可用命令列表。
+    </para>
+   </tip>
+   <para>
+    在存储池 <literal>iscsi-images</literal> 中添加名为 <literal>testvol</literal> 的 RBD 映像：
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-target...tvol/gateways&gt; cd /disks
+<prompt>gwcli &gt; </prompt> /disks&gt; attach iscsi-images/testvol
+</screen>
+   <para>
+    将 RBD 映像映射到目标：
+   </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /disks&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/disks
+<prompt>gwcli &gt; </prompt> /iscsi-target...testvol/disks&gt; add iscsi-images/testvol
+</screen>
+   <note>
+    <para>
+     您可以使用级别较低的工具（例如 <command>targetcli</command>）来查询本地配置，但无法修改配置。
+    </para>
+   </note>
+   <tip>
+    <para>
+     您可以使用 <command>ls</command> 命令查看配置。有些配置节点还支持 <command>info</command> 命令，该命令可用于显示更多详细信息。
+    </para>
+   </tip>
+   <para>
+    请注意，系统默认会启用 ACL 身份验证，因此目前尚不可访问此目标。有关身份验证和访问控制的详细信息，请参见<xref linkend="iscsi-lrbd-authentication"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="iscsi-lrbd-authentication">
+   <title>身份验证和访问控制</title>
+   <para>
+    iSCSI 身份验证十分灵活，涵盖了许多身份验证可能性。
+   </para>
+   <sect3 xml:id="iscsi-no-auth">
+    <title>禁用 ACL 身份验证</title>
+    <para>
+     <emphasis>无身份验证</emphasis>意味着任何发起程序均能访问相应目标上的任何 LUN。您可以通过禁用 ACL 身份验证来启用<emphasis>无身份验证</emphasis>：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/hosts
+<prompt>gwcli &gt; </prompt> /iscsi-target...testvol/hosts&gt; auth disable_acl
+</screen>
+   </sect3>
+   <sect3 xml:id="iscsi-acl-auth">
+    <title>使用 ACL 身份验证</title>
+    <para>
+     使用基于发起程序名称的 ACL 身份验证时，只允许定义的发起程序进行连接。您可以通过运行以下命令来定义发起程序：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/hosts
+<prompt>gwcli &gt; </prompt> /iscsi-target...testvol/hosts&gt; create iqn.1996-04.de.suse:01:e6ca28cc9f20
+</screen>
+    <para>
+     定义的发起程序虽然能够连接，但只能访问已明确添加到该发起程序的 RBD 映像：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-target...:e6ca28cc9f20&gt; disk add rbd/testvol
+</screen>
+   </sect3>
+   <sect3 xml:id="chap-auth-password">
+    <title>启用 CHAP 身份验证</title>
+    <para>
+     除了 ACL 以外，您还可以通过为每个发起程序指定用户名和密码来启用 CHAP 身份验证：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol/hosts/iqn.1996-04.de.suse:01:e6ca28cc9f20
+<prompt>gwcli &gt; </prompt> /iscsi-target...:e6ca28cc9f20&gt; auth username=common12 password=pass12345678
+</screen>
+    <note>
+     <para>
+      用户名长度必须为 8 至 64 个字符，可以包含字母数字字符、<literal>.</literal>、<literal>@</literal>、<literal>-</literal>、<literal>_</literal> 或 <literal>:</literal>。
+     </para>
+     <para>
+      密码长度必须为 12 至 16 个字符，可以包含字母数字字符、<literal>@</literal>、<literal>-</literal>、<literal>_</literal> 或 <literal>/</literal>。
+     </para>
+    </note>
+    <para>
+     （可选）您也可以在 <command>auth</command> 命令中指定 <option>mutual_username</option> 和 <option>mutual_password</option> 参数，以启用 CHAP 相互身份验证。
+    </para>
+   </sect3>
+   <sect3 xml:id="iscsi-discovery-mutual-auth">
+    <title>配置发现和相互身份验证</title>
+    <para>
+     <emphasis>发现身份验证</emphasis>独立于之前的身份验证方法。该身份验证需要身份凭证才能进行浏览，它是可选设置，可通过运行以下命令配置：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; discovery_auth username=du123456 password=dp1234567890
+</screen>
+    <note>
+     <para>
+      用户名长度必须为 8 至 64 个字符，并且只能包含字母、<literal>.</literal>、<literal>@</literal>、<literal>-</literal>、<literal>_</literal> 或 <literal>:</literal>。
+     </para>
+     <para>
+      密码的长度必须为 12 至 16 个字符，并且只能包含字母、<literal>@</literal>、<literal>-</literal>、<literal>_</literal> 或 <literal>/</literal>。
+     </para>
+    </note>
+    <para>
+     （可选）您也可以在 <command>discovery_auth</command> 命令中指定 <option>mutual_username</option> 和 <option>mutual_password</option> 参数。
+    </para>
+    <para>
+     可以使用以下命令来禁用发现身份验证：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-targets&gt; discovery_auth nochap
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-rbd-advanced">
+   <title>配置高级设置</title>
+   <para>
+    可以为 <systemitem class="daemon">ceph-iscsi</systemitem> 配置随后将传递给 LIO I/O 目标的高级参数。参数分为 <literal>target</literal> 和 <literal>disk</literal> 参数。
+   </para>
+   <warning>
+    <para>
+     除非另有说明，否则不建议将这些参数更改为使用非默认设置。
+    </para>
+   </warning>
+   <sect3 xml:id="iscsi-target-settings">
+    <title>查看目标设置</title>
+    <para>
+     您可以使用 <command>info</command> 命令查看这些设置的值：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /iscsi-targets/iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol
+<prompt>gwcli &gt; </prompt> /iscsi-target...i.<replaceable>SYSTEM-ARCH</replaceable>:testvol&gt; info
+</screen>
+    <para>
+     还可以使用 <command>reconfigure</command> 命令更改设置：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /iscsi-target...i.<replaceable>SYSTEM-ARCH</replaceable>:testvol&gt; reconfigure login_timeout 20
+</screen>
+    <para>
+     可用的 <literal>target</literal> 设置包括：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>default_cmdsn_depth</term>
+      <listitem>
+       <para>
+        默认的 CmdSN（命令顺序号）深度。限制 iSCSI 发起程序在任意时刻可拥有的未处理请求数量。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>default_erl</term>
+      <listitem>
+       <para>
+        默认的错误恢复级别。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>login_timeout</term>
+      <listitem>
+       <para>
+        登录超时值（以秒为单位）。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>netif_timeout</term>
+      <listitem>
+       <para>
+        NIC 故障超时（以秒为单位）。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>prod_mode_write_protect</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则阻止写入到 LUN。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="iscsi-disk-settings">
+    <title>查看磁盘设置</title>
+    <para>
+     您可以使用 <command>info</command> 命令查看这些设置的值：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /&gt; cd /disks/rbd/testvol
+<prompt>gwcli &gt; </prompt> /disks/rbd/testvol&gt; info
+</screen>
+    <para>
+     还可以使用 <command>reconfigure</command> 命令更改设置：
+    </para>
+<screen>
+<prompt>gwcli &gt; </prompt> /disks/rbd/testvol&gt; reconfigure rbd/testvol emulate_pr 0
+</screen>
+    <para>
+     可用的 <literal>disk</literal> 设置包括：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>block_size</term>
+      <listitem>
+       <para>
+        底层设备的块大小。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_3pc</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“第三方复制”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_caw</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“比较并写入”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_dpo</term>
+      <listitem>
+       <para>
+        如果设置为 1，则打开“禁用页面写出”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_fua_read</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“强制单元读取访问”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_fua_write</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“强制单元写入访问”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_model_alias</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则使用后端设备名称作为模型别名。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_pr</term>
+      <listitem>
+       <para>
+        如果设置为 0，将禁用 SCSI 预留（包括永久组预留）支持。禁用该支持后，SES iSCSI 网关可能会忽略预留状态，导致请求延迟情况得到改进。
+       </para>
+       <tip>
+        <para>
+         如果 iSCSI 发起程序不需要 SCSI 预留支持，建议将 <literal>backstore_emulate_pr</literal> 设置为 <literal>0</literal>。
+        </para>
+       </tip>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_rest_reord</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>0</literal>，则队列算法修饰符的重新排序受限。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tas</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“任务已中止状态”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tpu</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“精简配置 - 取消映射”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_tpws</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“精简配置 - 写入相同内容”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_ua_intlck_ctrl</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则启用“单元警告联锁”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>emulate_write_cache</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则打开“启用写入缓存”。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>enforce_pr_isids</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则强制永久性预留 ISID。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>is_nonrot</term>
+      <listitem>
+       <para>
+        如果设置为 <literal>1</literal>，则后备存储为非旋转设备。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_unmap_block_desc_count</term>
+      <listitem>
+       <para>
+        UNMAP 的最大块描述符数。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_unmap_lba_count：</term>
+      <listitem>
+       <para>
+        UNMAP 的最大 LBA 数。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>max_write_same_len</term>
+      <listitem>
+       <para>
+        WRITE_SAME 的最大长度。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>optimal_sectors</term>
+      <listitem>
+       <para>
+        扇区中的最佳请求大小。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>pi_prot_type</term>
+      <listitem>
+       <para>
+        DIF 保护类型。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>queue_depth</term>
+      <listitem>
+       <para>
+        队列深度。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_granularity</term>
+      <listitem>
+       <para>
+        UNMAP 粒度。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_granularity_alignment</term>
+      <listitem>
+       <para>
+        UNMAP 粒度对齐。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>force_pr_aptpl</term>
+      <listitem>
+       <para>
+        如果启用该设置，无论客户端是否通过 <emphasis>aptpl=1</emphasis> 发出了相应请求，LIO 都始终会将<option>永久预留</option>状态写出到永久存储区。这对 LIO 的内核 RBD 后端不会产生任何影响，该后端始终会保留 PR 状态。理论上，如果有人尝试通过配置禁用该设置，<option>target_core_rbd</option> 选项应该会强制将其设置为“1”并抛出错误。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>unmap_zeroes_data</term>
+      <listitem>
+       <para>
+        影响 LIO 是否会向 SCSI 发起程序公布 LBPRZ，表示将在执行包含取消映射位的 UNMAP 或 WRITE SAME 命令后从某个区域回读零。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="iscsi-tcmu">
+  <title>使用 <systemitem>tcmu-runner</systemitem> 导出 RADOS 块设备映像</title>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> 支持 <option>rbd</option>（基于内核）和 <option>user:rbd</option> (tcmu-runner) 后备存储，这使整个管理过程变得透明，并且独立于后备存储。
+  </para>
+
+  <warning>
+   <title>技术预览</title>
+   <para>
+    基于 <systemitem>tcmu-runner</systemitem> 的 iSCSI 网关部署目前以技术预览的方式提供。
+   </para>
+  </warning>
+
+  <para>
+   与基于内核的 iSCSI 网关部署不同，基于 <systemitem>tcmu-runner</systemitem> 的 iSCSI 网关不支持多路径 I/O 或 SCSI 永久性预留。
+  </para>
+
+  <para>
+   要使用 <systemitem>tcmu-runner</systemitem> 导出 RADOS 块设备映像，您只需在挂接磁盘时指定 <option>user:rbd</option> 后备存储即可：
+  </para>
+
+<screen>
+<prompt>gwcli &gt; </prompt> /disks&gt; attach rbd/testvol backstore=user:rbd
+</screen>
+
+  <note>
+   <para>
+    使用 <systemitem>tcmu-runner</systemitem> 时，导出的 RBD 映像必须启用 <option>exclusive-lock</option> 特性。
+   </para>
+  </note>
+ </sect1>
+</chapter>

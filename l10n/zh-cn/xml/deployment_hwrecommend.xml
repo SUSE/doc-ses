@@ -1,0 +1,662 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_hwrecommend.xml" version="5.0" xml:id="storage-bp-hwreq">
+ <title>硬件要求和建议</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Ceph 的硬件要求在很大程度上取决于 IO 工作负载。在着手进行详细规划时，应考虑以下硬件要求和建议。
+ </para>
+ <para>
+  一般情况下，本节所述的建议是按进程提出的。如果同一台计算机上有多个进程，则需要提高 CPU、RAM、磁盘和网络要求。
+ </para>
+ <sect1 xml:id="network-overview">
+  <title>网络概览</title>
+
+  <para>
+   Ceph 有以下几个逻辑网络：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     名为<literal>公共网络</literal>的前端网络。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     名为<literal>集群网络</literal>的可信内部网络（后端网络）。此项是可选的。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     网关的一个或多个客户端网络。此为可选网络，不在本章的讨论范围之内。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   公共网络是 Ceph 守护进程相互之间以及与其客户端之间进行通讯的网络。这意味着所有 Ceph 集群流量都通过该网络传输（配置集群网络时除外）。
+  </para>
+
+  <para>
+   集群网络是 OSD 节点之间的后端网络，用于执行复制、重新平衡和恢复操作。如果配置了此可选网络，则理想情况下，它将提供两倍于公共网络的带宽（默认为三向复制），因为主 OSD 会通过此网络向其他 OSD 发送两个副本。公共网络位于客户端和网关之间，用于在其中一端与 Monitor、Manager、MDS 节点、OSD 节点进行通讯。Monitor、Manager 和 MDS 节点也会使用该网络与 OSD 节点进行通讯。
+  </para>
+
+  <figure xml:id="network-overview-figure">
+   <title>网络概览</title>
+   <mediaobject>
+    <imageobject role="html">
+     <imagedata fileref="network-overview-diagram.png" width="70%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </figure>
+
+  <sect2 xml:id="ceph-install-ceph-deploy-network">
+   <title>网络建议</title>
+   <para>
+    我们建议使用具有足够带宽的单一容错网络，以满足您的需求。对于 Ceph 公共网络环境，我们建议使用通过 802.3ad (LACP) 绑定的两个绑定 25 GbE（或更快的）网络接口。这被视为 Ceph 的最小设置。如果您还使用集群网络，则建议您使用四个绑定的 25 GbE 网络接口。绑定两个或更多网络接口可通过链接聚合提供更高的吞吐量，并可提供冗余链接和交换机，进而提高了容错性和可维护性。
+   </para>
+   <para>
+    您还可以创建 VLAN 来隔离通过绑定传输的不同类型的流量。例如，您可以创建一个绑定来提供两个 VLAN 接口，一个用于公共网络，另一个用于集群网络。但在设置 Ceph 网络时<emphasis>不</emphasis>需要这样做。有关绑定接口的详细信息，请参见 <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-network.html#sec-network-iface-bonding"/>。
+   </para>
+   <para>
+    通过将组件隔离到故障域中，可以提高容错性。为了提高网络的容错性，可从两个独立的网络接口卡 (NIC) 绑定一个接口，以在单个 NIC 出现故障时提供保护。同样，在两个交换机之间创建一个绑定可在单个交换机出现故障时提供保护。建议您与网络设备供应商协商，以构造所需的容错级别。
+   </para>
+   <important>
+    <title>不支持管理网络</title>
+    <para>
+     其他管理网络设置（例如可实现 SSH、Salt 或 DNS 网络分隔的设置）未经过测试也不受支持。
+    </para>
+   </important>
+   <tip>
+    <title>通过 DHCP 配置的节点</title>
+    <para>
+     如果存储节点是通过 DHCP 配置的，则默认超时可能会不够长，无法保证在各个 Ceph 守护进程启动前正确配置网络。如果发生这种情况，Ceph MON 和 OSD 将无法正确启动（运行 <command>systemctl status ceph\*</command> 将产生“无法绑定”错误）。为避免发生此问题，建议将您存储集群中每个节点上的 DHCP 客户端超时至少增加到 30 秒。为此，可在每个节点上更改以下设置：
+    </para>
+    <para>
+     在 <filename>/etc/sysconfig/network/dhcp</filename> 中，设置
+    </para>
+<screen>DHCLIENT_WAIT_AT_BOOT="30"</screen>
+    <para>
+     在 <filename>/etc/sysconfig/network/config</filename> 中，设置
+    </para>
+<screen>WAIT_FOR_INTERFACES="60"</screen>
+   </tip>
+   <sect3 xml:id="storage-bp-net-private">
+    <title>将专用网络添加到正在运行的集群</title>
+    <para>
+     如果您在部署 Ceph 期间未指定集群网络，则系统假设使用的是单个公共网络环境。尽管 Ceph 可在公共网络中正常运行，但如果您设置了另一个专用集群网络，Ceph 的性能和安全性将会得到提升。要支持两个网络，每个 Ceph 节点上至少需有两个网卡。
+    </para>
+    <para>
+     需要对每个 Ceph 节点应用以下更改。对小型集群执行此操作的速度相对较快，但如果集群包含数百甚至数千个节点，则此过程可能十分耗时。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       使用以下命令设置集群网络：
+      </para>
+<screen><prompt role="root">root # </prompt>ceph config set global cluster_network <replaceable>MY_NETWORK</replaceable></screen>
+      <para>
+       重启动 OSD 以绑定到指定的集群网络：
+      </para>
+<screen><prompt role="root">root # </prompt>systemctl restart ceph-*@osd.*.service</screen>
+     </step>
+     <step>
+      <para>
+       检查专用集群网络是否在 OS 级别按预期工作。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3 xml:id="storage-bp-net-subnets">
+    <title>不同子网中的监控节点</title>
+    <para>
+     如果 Monitor 节点位于多个子网中（例如，位于不同的机房并由不同的交换机提供服务），则您需要以 CIDR 表示法指定其公共网络地址。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set mon public_network "<replaceable>MON_NETWORK_1</replaceable>, <replaceable>MON_NETWORK_2</replaceable>, <replaceable>MON_NETWORK_N</replaceable></screen>
+    <para>
+     例如：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set mon public_network "192.168.1.0/24, 10.10.0.0/16"</screen>
+    <warning>
+     <para>
+      如果按本节所述为公共（或集群）网络指定了多个网络段，则这些子网中的每一个子网都必须能够路由到其他所有子网，否则，不同网络段上的 MON 与其他 Ceph 守护进程将无法通讯，并且集群将随之拆分。此外，如果您使用防火墙，请确保在 iptables 中包含每个 IP 地址或子网，并根据需要在所有节点上为其打开端口。
+     </para>
+    </warning>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="multi-architecture">
+  <title>多体系结构配置</title>
+
+  <para>
+   SUSE Enterprise Storage 支持 x86 和 Arm 体系结构。考虑每个体系结构时，请务必注意从每个 OSD 的内核数、频率和 RAM 的角度而言，不同的 CPU 体系结构在大小调整方面并无实际差异。
+  </para>
+
+  <para>
+   与较小的 x86 处理器（非服务器）一样，性能较低的基于 Arm 的内核可能无法提供最佳体验，特别是用于纠删码存储池时。
+  </para>
+
+  <note>
+   <para>
+    在整份文档中，使用 <replaceable>SYSTEM-ARCH</replaceable> 代替 x86 或 Arm。
+   </para>
+  </note>
+ </sect1>
+ <sect1 xml:id="ses-hardware-config">
+  <title>硬件配置</title>
+
+  <para>
+   为了获得最佳产品体验，建议您从推荐的集群配置开始。对于测试集群或性能要求较低的集群，我们记录了支持的最低集群配置。
+  </para>
+
+  <sect2 xml:id="ses-bp-minimum-cluster">
+   <title>最低集群配置</title>
+   <para>
+    最低产品集群配置包括：
+   </para>
+   <itemizedlist mark="bullet" spacing="normal">
+    <listitem>
+     <para>
+      至少四个物理节点（OSD 节点），支持服务并置
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      作为绑定网络的双 10 Gb 以太网
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      一个独立管理节点（可以在外部节点上虚拟化）
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    详细配置如下：
+   </para>
+   <itemizedlist mark="bullet" spacing="normal">
+    <listitem>
+     <para>
+      具有 4 GB RAM、四个内核和 1 TB 存储容量的独立管理节点。通常是 Salt Master 节点。Ceph 服务和网关（例如 Ceph Monitor、元数据服务器、Ceph OSD、对象网关或 NFS Ganesha）在管理节点上不受支持，因为它需要独立地编制集群更新和升级过程。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      至少四个物理 OSD 节点，每个节点有八个 OSD 磁盘，有关要求请参见<xref linkend="sysreq-osd"/>。
+     </para>
+     <para>
+      应调整集群总容量的大小，以便即使有一个节点不可用，已用总容量（包括冗余）也不超过 80%。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      三个 Ceph Monitor 实例。出于延迟原因，需要通过 SSD/NVMe 存储运行 Monitor，而不是通过 HDD 运行。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Monitor、元数据服务器和网关可以并置在 OSD 节点上，请参见<xref linkend="ses-bp-diskshare"/>以了解 Monitor 并置。如果并置服务，则需要将内存和 CPU 需求相加。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      iSCSI 网关、对象网关和元数据服务器至少需要增量 4 GB RAM 和四个核心。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      如果您使用的是 CephFS、S3/Swift、iSCSI，则至少需要两个相应角色（元数据服务器、对象网关、iSCSI）的实例才能实现冗余和可用性。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      这些节点将专用于 SUSE Enterprise Storage，并且不得用于任何其他物理、容器化或虚拟化工作负载。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      如果 VM 中部署了任何网关（iSCSI、对象网关、NFS Ganesha、元数据服务器等），则这些 VM 不得托管在为其他集群角色提供服务的物理计算机上。（这并非必要，因为它们可作为并置服务受到支持。）
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      在核心物理集群之外的超级管理程序上将服务部署为 VM 时，必须考虑故障域以确保冗余。
+     </para>
+     <para>
+      例如，不要在同一个超级管理程序上部署多个同类角色，例如多个 MON 或 MDS 实例。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      在 VM 内部署时，请务必确保节点具有强大的网络连接性和良好的工作时间同步。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      超级管理程序节点必须足够大，以避免受到其他占用 CPU、RAM、网络和存储资源的工作负载的干扰。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <figure>
+    <title>最低集群配置</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="minimal-ses.png" width="100%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="minimal-ses.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+
+  <sect2 xml:id="ses-bp-production-cluster">
+   <title>建议的生产集群配置</title>
+   <para>
+    一旦您扩展了集群，建议将 Ceph Monitor、元数据服务器和网关重新定位到不同的节点，以获得更好的容错性。
+   </para>
+   <itemizedlist mark="bullet" spacing="normal">
+    <listitem>
+     <para>
+      七个对象存储节点
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        单个节点不超过总存储容量的 15% 左右。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        应调整集群总容量的大小，以便即使有一个节点不可用，已用总容量（包括冗余）也不超过 80%。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        25 Gb 以太网或以上，进行绑定，一个用于内部集群网络，另一个用于外部公共网络。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        每个存储集群有 56 个以上的 OSD。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        有关进一步建议，请参见<xref linkend="sysreq-osd"/>。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </listitem>
+    <listitem>
+     <para>
+      专用的物理基础架构节点。
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        三个 Ceph Monitor 节点：4 GB RAM，四核处理器，RAID 1 SSD 磁盘。
+       </para>
+       <para>
+        有关进一步建议，请参见<xref linkend="sysreq-mon"/>。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        对象网关节点：32 GB RAM，八核处理器，RAID 1 SSD 磁盘。
+       </para>
+       <para>
+        有关进一步建议，请参见<xref linkend="sysreq-rgw"/>。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        iSCSI 网关节点：16 GB RAM，八核处理器，RAID 1 SSD 磁盘。
+       </para>
+       <para>
+        有关进一步建议，请参见<xref linkend="sysreq-iscsi"/>。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        元数据服务器节点（一个工作/一个热待机）：32 GB RAM，八核处理器，RAID 1 SSD 磁盘。
+       </para>
+       <para>
+        有关进一步建议，请参见<xref linkend="sysreq-mds"/>。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        一个 SES 管理节点：4 GB RAM，四核处理器，RAID 1 SSD 磁盘。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="deployment-hw-multipath">
+   <title>多路径配置</title>
+   <para>
+    如果要使用多路径硬件，请确保 LVM 在配置文件中的 <literal>devices</literal> 部分下看到 <literal>multipath_component_detection = 1</literal>。可以通过 <command>lvm config</command> 命令进行此项检查。
+   </para>
+   <para>
+    另外，确保 LVM 通过 LVM 过滤器配置过滤设备的 mpath 组件。此为主机特定。
+   </para>
+   <note>
+    <para>
+     不建议这样做，只有在无法设置 <literal>multipath_component_detection = 1</literal> 时才应考虑这样做。
+    </para>
+   </note>
+   <para>
+    有关多路径配置的详细信息，请参见 <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-multipath.html#sec-multipath-lvm"/>。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deployment-osd-recommendation">
+  <title>对象存储节点</title>
+
+  <sect2 xml:id="sysreq-osd">
+   <title>最低要求</title>
+   <itemizedlist mark="bullet" spacing="normal">
+    <listitem>
+     <para>
+      以下 CPU 建议针对独立于 Ceph 使用的设备：
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        每个旋转磁盘 1x 2GHz CPU 线程。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        每个 SSD 2x 2GHz CPU 线程。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        每个 NVMe 磁盘 4x 2GHz CPU 线程。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </listitem>
+    <listitem>
+     <para>
+      独立的 10 GbE 网络（公共/客户端和内部），需要 4x 10 GbE，建议 2x 25 GbE。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      总计所需 RAM = OSD 数量 x (1 GB + <option>osd_memory_target</option>) + 16 GB
+     </para>
+     <para>
+      有关 <option>osd_memory_target</option> 的更多详细信息，请参见<xref linkend="config-auto-cache-sizing"/>。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      OSD 磁盘采用 JBOD 配置或单独的 RAID-0 配置。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      OSD 日记可以驻留在 OSD 磁盘上。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      OSD 磁盘应该专门由 SUSE Enterprise Storage 使用。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      操作系统专用的磁盘和 SSD，最好采用 RAID 1 配置。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      如果此 OSD 主机将托管用于缓存分层的缓存存储池的一部分，则至少应再额外分配 4 GB RAM。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Ceph Monitor、网关和元数据服务器可以驻留在对象存储节点上。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      出于磁盘性能考虑，OSD 节点是裸机节点。OSD 节点上不应运行其他工作负载，除非它是 Ceph Monitor 和 Ceph Manager 的最低设置。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      根据 6:1 的 SSD 日记与 OSD 的比率为日记提供 SSD。
+     </para>
+    </listitem>
+   </itemizedlist>
+     <note>
+       <para>
+         确保 OSD 节点没有映射任何网络块设备，例如 iSCSI 或 RADOS 块设备映像。
+       </para>
+     </note>
+  </sect2>
+
+  <sect2 xml:id="ses-bp-mindisk">
+   <title>最小磁盘大小</title>
+   <para>
+    需要在 OSD 上运行两种类型的磁盘空间：用于 WAL/DB 设备的空间以及用于存储数据的主空间。WAL/DB 的最小（默认）值为 6 GB。数据的最小空间为 5 GB，因为系统会自动为小于 5 GB 的分区指定权重 0。
+   </para>
+   <para>
+    因此，尽管 OSD 的最小磁盘空间为 11 GB，但不建议使用小于 20 GB 的磁盘，即使在测试中也是如此。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="rec-waldb-size">
+   <title>BlueStore 的 WAL 和 DB 设备的建议大小</title>
+   <tip>
+    <title>更多信息</title>
+    <para>
+     有关 BlueStore 的详细信息，请参见<xref linkend="about-bluestore"/>。
+    </para>
+   </tip>
+   <itemizedlist>
+    <listitem>
+     <para>
+      我们建议为 WAL 设备预留 4 GB。对于大多数工作负载而言，建议的 DB 大小为 64 GB。
+     </para>
+     <important>
+      <para>
+       对于高负载部署，建议使用更大的 DB 卷，特别是在 RGW 或 CephFS 使用率较高的情况下。如果需要，请预留一些容量（槽）来安装更多硬件，以提供更大的 DB 空间。
+      </para>
+     </important>
+    </listitem>
+    <listitem>
+     <para>
+      如果您打算将 WAL 和 DB 设备置于同一磁盘，建议您为这两个设备使用一个分区，而不是为每个设备使用单独的分区。这样，Ceph 便可以使用 DB 设备来执行 WAL 操作。这对于磁盘空间的管理也会更有效，因为 Ceph 只会在需要时才会为 WAL 使用 DB 分区。另一个好处是，WAL 分区填满的可能性很小，当该分区未完全利用时，其空间并不会浪费，而是用于 DB 操作。
+     </para>
+     <para>
+      要与 WAL 共享 DB 设备，请<emphasis>不要</emphasis>指定 WAL 设备，而是仅指定 DB 设备。
+     </para>
+     <para>
+      有关指定 OSD 布局的详细信息，请参见<xref linkend="drive-groups"/>。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="ses-bp-share-ssd-journal">
+   <title>用于 WAL/DB 分区的 SSD</title>
+   <para>
+    固态硬盘 (SSD) 不包含移动部件。这可以减少随机访问时间和读取延迟，同时加快数据吞吐量。由于 SSD 的每 MB 价格大大高于旋转型硬盘，SSD 只适用于较小规模的存储。
+   </para>
+   <para>
+    如果将 WAL/DB 分区存储在 SSD 上，并将对象数据存储在独立的硬盘上，OSD 的性能会得到大幅提高。
+   </para>
+   <tip>
+    <title>为多个 WAL/DB 分区共享 SSD</title>
+    <para>
+     由于 WAL/DB 分区占用的空间相对较少，因此可以多个 WAL/DB 分区共享一个 SSD 磁盘。请注意，共享的 WAL/DB 分区每多一个，SSD 磁盘的性能就会相应下降一分。不建议在同一个 SSD 磁盘中共享 6 个以上的 WAL/DB 分区，或者在 NVMe 磁盘中共享 12 个以上的 WAL/DB 分区。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="maximum-count-of-disks-osd">
+   <title>磁盘的最大建议数量</title>
+   <para>
+    您可以在一台服务器上使用所允许的任意数量的磁盘。规划每台服务器的磁盘数量时，需要考虑以下几点：
+   </para>
+   <itemizedlist mark="bullet" spacing="normal">
+    <listitem>
+     <para>
+      <emphasis>网络带宽：</emphasis>在一台服务器中使用的磁盘越多，执行磁盘写入操作时必须通过网卡传输的数据就越多。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>内存：</emphasis>系统会将超过 2 GB 的 RAM 用于 BlueStore 缓存。当 <option>osd_memory_target</option> 设置为默认值 4 GB 时，该起始缓存大小对于旋转介质而言是比较合理的。如果使用 SSD 或 NVME，请考虑增加缓存大小以及分配给每个 OSD 的 RAM，以便最大限度提高性能。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>容错：</emphasis>整台服务器发生故障时，该服务器包含的磁盘越多，则集群暂时丢失的 OSD 就越多。此外，为了确保复制规则的运行，需要将有故障服务器中的所有数据复制到集群中的其他节点。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="sysreq-mon">
+  <title>Monitor 节点</title>
+
+  <itemizedlist mark="bullet" spacing="normal">
+   <listitem>
+    <para>
+     至少需要三个 MON 节点。Monitor 数量应始终为奇数 (1+2n)。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     4 GB RAM。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     有四个逻辑内核的处理器。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     强烈建议对 Monitor 使用 SSD 或其他速度足够快的存储类型，特别是针对每个 Monitor 节点上的 <filename>/var/lib/ceph</filename> 路径，因为仲裁可能不稳定且磁盘延迟较高。建议提供两个采用 RAID 1 配置的磁盘来实现冗余。建议对 Monitor 进程使用独立的磁盘，或者至少是独立的磁盘分区，以防止日志文件缓增等问题导致 Monitor 的可用磁盘空间不足。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     每个节点只能有一个 Monitor 进程。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     仅当有足够的硬件资源可用时，才支持混用 OSD、MON 或对象网关节点。这意味着，对于所有服务需要提高相应要求。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     与多个交换机绑定的两个网络接口。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sysreq-rgw">
+  <title>对象网关节点</title>
+
+  <para>
+   对象网关节点至少应有 6 个 CPU 内核和 32 GB RAM。如果将其他进程共置在同一台计算机上，则需要提高资源的要求。
+  </para>
+ </sect1>
+ <sect1 xml:id="sysreq-mds">
+  <title>元数据服务器节点</title>
+
+  <para>
+   元数据服务器节点的适当大小取决于特定用例。一般而言，元数据服务器需要处理的打开文件越多，所需要的 CPU 和 RAM 就越多。以下是最低要求：
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     为每个元数据服务器守护进程分配 4 GB 的 RAM。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     绑定网络接口。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     2.5 GHz CPU，至少有两个内核。
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>
+ <sect1 xml:id="sysreq-admin-node">
+  <title>管理节点</title>
+
+  <para>
+   至少需要 4 GB RAM 和四核 CPU。其中包括在管理节点上运行 Salt Master。对于包含数百个节点的大型集群，建议提供 6 GB RAM。
+  </para>
+ </sect1>
+ <sect1 xml:id="sysreq-iscsi">
+  <title>iSCSI 网关节点</title>
+
+  <para>
+   iSCSI 网关节点至少应有 6 个 CPU 内核和 16 GB RAM。
+  </para>
+ </sect1>
+ <sect1 xml:id="req-ses-other">
+  <title>SES 和其他 SUSE 产品</title>
+
+  <para>
+   本节包含有关将 SES 与其他 SUSE 产品集成的重要信息。
+  </para>
+
+  <sect2 xml:id="req-ses-suma">
+   <title>SUSE Manager</title>
+   <para>
+    SUSE Manager 与 SUSE Enterprise Storage 未集成，因此 SUSE Manager 当前无法管理 SES 集群。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="sysreq-naming">
+  <title>名称限制</title>
+
+  <para>
+   一般情况下，Ceph 不支持在配置文件、存储池名称、用户名等内容中使用非 ASCII 字符。配置 Ceph 集群时，建议在所有 Ceph 对象/配置名称中仅使用简单的字母数字字符（A-Z、a-z、0-9）和最少量的标点符号（“.”、“-”、“_”）。
+  </para>
+ </sect1>
+ <sect1 xml:id="ses-bp-diskshare">
+  <title>共享一台服务器的 OSD 和 Monitor</title>
+
+  <para>
+   尽管从技术上讲可在测试环境中的同一台服务器上运行 OSD 和 MON，但强烈建议在生产环境中为每个 Monitor 节点使用独立的服务器。主要原因在于性能 — 集群包含的 OSD 越多，MON 节点需要执行的 I/O 操作就越多。另外，在 MON 节点与 OSD 之间共享一台服务器时，OSD I/O 操作将会成为 Monitor 节点的限制因素。
+  </para>
+
+  <para>
+   另一个考虑要点是，是否要在 OSD、MON 节点与服务器上的操作系统之间共享磁盘。答案非常简单：如果可能，请将一个独立的磁盘专门用于 OSD，并将一台独立的服务器用于 Monitor 节点。
+  </para>
+
+  <para>
+   尽管 Ceph 支持基于目录的 OSD，但 OSD 应始终包含一个专用磁盘，而不能与操作系统共享一个磁盘。
+  </para>
+
+  <tip>
+   <para>
+    如果<emphasis>确实</emphasis>有必要在同一台服务器上运行 OSD 和 MON 节点，请将一个独立磁盘装入 <filename>/var/lib/ceph/mon</filename> 目录以在该磁盘上运行 MON，这样可以稍微改善性能。
+   </para>
+  </tip>
+ </sect1>
+</chapter>

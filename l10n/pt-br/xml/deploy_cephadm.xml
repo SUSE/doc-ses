@@ -1,0 +1,1631 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deploy_cephadm.xml" version="5.0" xml:id="deploy-cephadm">
+ <title>Implantação com cephadm</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>sim</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  O SUSE Enterprise Storage 7 usa a ferramenta <systemitem class="resource">ceph-salt</systemitem> baseada em Salt para preparar o sistema operacional em cada nó do cluster participante para implantação com o cephadm. O cephadm implanta e gerencia um cluster do Ceph conectando-se aos hosts do daemon do Ceph Manager por SSH. O cephadm gerencia o ciclo de vida completo de um cluster do Ceph. Ele começa inicializando um cluster bem pequeno em um único nó (um serviço MON e MGR) e, em seguida, usa a interface de orquestração para expandir o cluster para incluir todos os hosts e provisionar todos os serviços do Ceph. Você pode fazer isso pela interface de linha de comando (CLI, Command Line Interface) do Ceph ou parcialmente pelo Ceph Dashboard (GUI).
+ </para>
+ <important>
+  <para>
+   Observe que a documentação da comunidade do Ceph usa o comando <command>cephadm bootstrap</command> durante a implantação inicial. O <systemitem class="resource">ceph-salt</systemitem> chama o comando <command>cephadm bootstrap</command> e não deve ser executado diretamente. Qualquer implantação manual de cluster do Ceph que use o <command>cephadm bootstrap</command> não será suportada.
+  </para>
+ </important>
+ <para>
+  Para implantar um cluster do Ceph usando o cephadm, você precisa concluir as seguintes tarefas:
+ </para>
+ <orderedlist>
+  <listitem>
+   <para>
+    Instale e faça a configuração básica do sistema operacional subjacente, SUSE Linux Enterprise Server 15 SP2, em todos os nós do cluster.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Implante a infraestrutura do Salt em todos os nós do cluster para executar as preparações iniciais de implantação por meio do <systemitem class="resource">ceph-salt</systemitem>.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Configure as propriedades básicas do cluster por meio do <systemitem class="resource">ceph-salt</systemitem> e implante-o.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Adicione novos nós e funções ao cluster e implante serviços neles usando o cephadm.
+   </para>
+  </listitem>
+ </orderedlist>
+ <sect1 xml:id="deploy-os">
+  <title>Instalando e configurando o SUSE Linux Enterprise Server</title>
+
+  <procedure>
+   <step>
+    <para>
+     Instale e registre o SUSE Linux Enterprise Server 15 SP2 em cada nó do cluster. Durante a instalação do SUSE Enterprise Storage, é necessário ter acesso aos repositórios de atualização, portanto, o registro é obrigatório. Inclua pelo menos os seguintes módulos:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Basesystem Module
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Server Applications Module
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     Encontre mais detalhes sobre como instalar o SUSE Linux Enterprise Server em <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-install.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Instale a extensão do <emphasis>SUSE Enterprise Storage 7</emphasis> em cada nó do cluster.
+    </para>
+    <tip>
+     <title>Instalar o SUSE Enterprise Storage junto com o SUSE Linux Enterprise Server</title>
+     <para>
+      Você poderá instalar a extensão do SUSE Enterprise Storage 7 separadamente após instalar o SUSE Linux Enterprise Server 15 SP2 ou adicioná-la durante o procedimento de instalação do SUSE Linux Enterprise Server 15 SP2.
+     </para>
+    </tip>
+    <para>
+     Encontre mais detalhes sobre como instalar extensões em <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-register-sle.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Defina as configurações de rede incluindo a resolução de nome DNS em cada nó. Para obter mais informações sobre como configurar uma rede, consulte <link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#sec-network-yast"/>. Para obter mais informações sobre como configurar um servidor DNS, consulte <link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#cha-dns"/>.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-salt">
+  <title>Implantando o Salt</title>
+
+  <para>
+   O SUSE Enterprise Storage usa o Salt e o <systemitem class="resource">ceph-salt</systemitem> para a preparação inicial do cluster. O Salt ajuda você a configurar e executar comandos em vários nós do cluster simultaneamente, de um host dedicado chamado <emphasis>Master Salt</emphasis>. Antes de implantar o Salt, considere os seguintes pontos importantes:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Os <emphasis>Minions Salt</emphasis> são os nós controlados por um nó dedicado denominado Master Salt.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Se o host Master Salt fizer parte do cluster do Ceph, ele precisará executar seu próprio Minion Salt, mas isso não é um requisito.
+    </para>
+    <tip>
+     <title>Compartilhando várias funções por servidor</title>
+     <para>
+      O desempenho do cluster do Ceph é melhor quando cada função é implantada em um nó separado. Porém, as implantações reais às vezes exigem que um nó seja compartilhado com várias funções. Para evitar problema de desempenho e de procedimento de upgrade, não implante a função Ceph OSD, Servidor de Metadados ou Ceph Monitor no Nó de Admin.
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     Os Minions Salt precisam resolver corretamente o nome de host do Master Salt na rede. Por padrão, eles procuram o nome de host <systemitem>salt</systemitem>, mas você pode especificar qualquer outro nome de host acessível por rede no arquivo <filename>/etc/salt/minion</filename>.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <procedure>
+   <step>
+    <para>
+     Instale o <literal>salt-master</literal> no nó do Master Salt:
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master</screen>
+   </step>
+   <step>
+    <para>
+     Verifique se o serviço <systemitem>salt-master</systemitem> está habilitado e foi iniciado. Se necessário, habilite-o e inicie-o:
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     Se você pretende usar o firewall, verifique se o nó do Master Salt tem as portas 4505 e 4506 abertas para todos os nós do Minion Salt. Se as portas estiverem fechadas, você poderá abri-las usando o comando <command>yast2 firewall</command> e permitindo o serviço <guimenu>salt-master</guimenu> para a zona apropriada. Por exemplo, <literal>public</literal>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Instale o pacote <literal>salt-minion</literal> em todos os nós do minion.
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+   </step>
+   <step>
+    <para>
+     Edite o <filename>/etc/salt/minion</filename> e remova o comentário da seguinte linha:
+    </para>
+<screen>#log_level_logfile: warning</screen>
+    <para>
+     Mude o nível de registro de <literal>warning</literal> para <literal>info</literal>.
+    </para>
+    <note>
+     <title><option>log_level_logfile</option> e <option>log_level</option></title>
+     <para>
+      <option>log_level</option> controla quais mensagens de registro serão exibidas na tela, e <option>log_level_logfile</option> controla quais mensagens de registro serão gravadas no <filename>/var/log/salt/minion</filename>.
+     </para>
+    </note>
+    <note>
+     <para>
+      Verifique se você mudou o nível de registro em <emphasis>todos</emphasis> os nós do cluster (minion).
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Verifique se o <emphasis>nome de domínio completo e qualificado</emphasis> de cada nó pode ser resolvido para um endereço IP na rede pública do cluster por todos os outros nós.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configure todos os minions para se conectarem ao master. Se o Master Salt não puder ser acessado pelo nome de host <literal>salt</literal>, edite o arquivo <filename>/etc/salt/minion</filename> ou crie um novo arquivo <filename>/etc/salt/minion.d/master.conf</filename> com o seguinte conteúdo:
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     Se você efetuou quaisquer mudanças nos arquivos de configuração mencionados acima, reinicie o serviço Salt em todos os Minions Salt relacionados:
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Verifique se o serviço <systemitem>salt-minion</systemitem> está habilitado e foi iniciado em todos os nós. Se necessário, habilite-o e inicie-o:
+    </para>
+<screen><prompt role="root">root # </prompt>systemctl enable salt-minion.service
+<prompt role="root">root # </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Verifique a impressão digital de cada Minion Salt e aceite todas as chaves do Salt no Master Salt, se as impressões digitais forem correspondentes.
+    </para>
+    <note>
+     <para>
+      Se a impressão digital do Minion Salt retornar vazia, verifique se o Minion Salt tem uma configuração do Master Salt e pode se comunicar com o Master Salt.
+     </para>
+    </note>
+    <para>
+     Ver a impressão digital de cada minion:
+    </para>
+<screen><prompt>root@minion &gt; </prompt>salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Após coletar as impressões digitais de todos os Minions Salt, liste as impressões digitais de todas as chaves de minion não aceitas no Master Salt:
+    </para>
+<screen><prompt>root@master # </prompt>salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Se houver correspondência de impressões digitais dos minions, aceite-as:
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     Verifique se as chaves foram aceitas:
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step>
+    <para>
+     Faça o teste para verificar se todos os Minions Salt respondem:
+    </para>
+<screen><prompt>root@master # </prompt>salt-run manage.status</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day1">
+  <title>Implantando o cluster do Ceph</title>
+
+  <para>
+   Esta seção orienta você pelo processo de implantação de um cluster básico do Ceph. Leia as subseções a seguir com atenção e execute os comandos incluídos na ordem indicada.
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-cephsalt">
+   <title>Instalando o <systemitem class="resource">ceph-salt</systemitem></title>
+   <para>
+    O <systemitem class="resource">ceph-salt</systemitem> inclui ferramentas para implantar clusters do Ceph gerenciados pelo cephadm. O <systemitem class="resource">ceph-salt</systemitem> usa a infraestrutura do Salt para executar o gerenciamento de OS; por exemplo, atualizações de software ou sincronização de horário, e definir funções para os Minions Salt.
+   </para>
+   <para>
+    No Master Salt, instale o pacote <package>ceph-salt</package> :
+   </para>
+<screen><prompt>root@master # </prompt>zypper install ceph-salt</screen>
+   <para>
+    O comando acima instalou o <package>ceph-salt-formula</package> como uma dependência que modificou a configuração do Master Salt inserindo arquivos adicionais no diretório <filename>/etc/salt/master.d</filename>. Para aplicar as mudanças, reinicie o <systemitem class="daemon">salt-master.service</systemitem> e sincronize os módulos do Salt:
+   </para>
+<screen>
+<prompt>root@master # </prompt>systemctl restart salt-master.service
+<prompt>root@master # </prompt>salt \* saltutil.sync_all
+</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-configure">
+   <title>Configurando as propriedades do cluster</title>
+   <para>
+    Use o comando <command>ceph-salt config</command> para configurar as propriedades básicas do cluster.
+   </para>
+   <important>
+    <para>
+     O arquivo <filename>/etc/ceph/ceph.conf</filename> é gerenciado pelo cephadm e os usuários <emphasis>não devem</emphasis> editá-lo. Os parâmetros de configuração do Ceph devem ser definidos usando o novo comando <command>ceph config</command>. Consulte o <xref linkend="cha-ceph-configuration-db"/> para obter mais informações.
+    </para>
+   </important>
+   <sect3 xml:id="deploy-cephadm-configure-shell">
+    <title>Usando o shell do <systemitem class="resource">ceph-salt</systemitem></title>
+    <para>
+     Se você executar o <command>ceph-salt config</command> sem nenhum caminho ou subcomando, digitará um shell interativo do <systemitem class="resource">ceph-salt</systemitem>. O shell é prático se você precisa configurar várias propriedades em um lote e não deseja digitar a sintaxe completa do comando.
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config
+<prompt>/&gt;</prompt> ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [no minions]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [no minions]
+  |   o- bootstrap ........................................... [no minion]
+  |   o- cephadm ............................................ [no minions]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path .................................. [ no image path]
+  | o- dashboard ................................................... [...]
+  | | o- force_password_update ................................. [enabled]
+  | | o- password ................................................ [admin]
+  | | o- ssl_certificate ....................................... [not set]
+  | | o- ssl_certificate_key ................................... [not set]
+  | | o- username ................................................ [admin]
+  | o- mon_ip .................................................. [not set]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh ............................................... [no key pair set]
+  | o- private_key .................................. [no private key set]
+  | o- public_key .................................... [no public key set]
+  o- time_server ........................... [enabled, no server host set]
+    o- external_servers .......................................... [empty]
+    o- servers ................................................... [empty]
+    o- subnet .................................................. [not set]
+</screen>
+    <para>
+     Como você pode ver na saída do comando <command>ls</command> do <systemitem class="resource">ceph-salt</systemitem>, a configuração do cluster está organizada em uma estrutura de árvore. Para configurar uma propriedade específica do cluster no shell do <systemitem class="resource">ceph-salt</systemitem>, você tem duas opções:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Execute o comando a partir da posição atual e digite o caminho absoluto para a propriedade como o primeiro argumento:
+      </para>
+<screen>
+<prompt>/&gt;</prompt> /cephadm_bootstrap/dashboard ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username .................................................... [admin]
+<prompt>/&gt; /cephadm_bootstrap/dashboard/username set ceph-admin</prompt>
+Value set.
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Mude para o caminho com a propriedade que você precisa configurar e execute o comando:
+      </para>
+<screen>
+<prompt>/&gt;</prompt> cd /cephadm_bootstrap/dashboard/
+<prompt>/ceph_cluster/minions&gt;</prompt> ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username ................................................[ceph-admin]
+</screen>
+     </listitem>
+    </itemizedlist>
+    <tip>
+     <title>Preenchimento automático de trechos da configuração</title>
+     <para>
+      Enquanto estiver em um shell do <systemitem class="resource">ceph-salt</systemitem>, você poderá usar o recurso de preenchimento automático semelhante ao do shell normal do Linux (Bash). Ele preenche os caminhos de configuração, subcomandos ou nomes de Minion Salt. Ao preencher automaticamente um caminho de configuração, você tem duas opções:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        Para permitir que o shell termine um caminho relativo à sua posição atual, pressione a tecla TAB <keycap function="tab"/> duas vezes.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Para permitir que o shell termine um caminho absoluto, digite <keycap>/</keycap> e pressione a tecla TAB <keycap function="tab"/> duas vezes.
+       </para>
+      </listitem>
+     </itemizedlist>
+    </tip>
+    <tip>
+     <title>Navegando com as teclas do cursor</title>
+     <para>
+      Se você digitar <command>cd</command> no shell do <systemitem class="resource">ceph-salt</systemitem> sem nenhum caminho, o comando imprimirá uma estrutura de árvore da configuração do cluster com a linha do caminho atual ativo. Você pode usar as teclas do cursor para cima e para baixo para navegar pelas linhas individuais. Depois de confirmar com <keycap function="enter"/>, o caminho de configuração mudará para o último caminho ativo.
+     </para>
+    </tip>
+    <important>
+     <title>convenção</title>
+     <para>
+      Para manter a documentação consistente, usaremos uma única sintaxe de comando sem inserir o shell do <systemitem class="resource">ceph-salt</systemitem>. Por exemplo, você pode listar a árvore de configuração do cluster usando o seguinte comando:
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config ls</screen>
+    </important>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-minions">
+    <title>Adicionando minions Salt</title>
+    <para>
+     Inclua todos ou um subconjunto de Minions Salt que implantamos e aceitamos na <xref linkend="deploy-salt"/> na configuração do cluster do Ceph. Você pode especificar os Minions Salt usando os nomes completos ou as expressões glob "*" e "?" para incluir vários Minions Salt de uma vez. Use o subcomando <command>add</command> no caminho <literal>/ceph_cluster/minions</literal>. O seguinte comando inclui todos os Minions Salt aceitos:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions add '*'</screen>
+    <para>
+     Verifique se os Minions Salt especificados foram adicionados:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions ls
+o- minions ................................................. [Minions: 5]
+  o- ses-master.example.com .................................. [no roles]
+  o- ses-min1.example.com .................................... [no roles]
+  o- ses-min2.example.com .................................... [no roles]
+  o- ses-min3.example.com .................................... [no roles]
+  o- ses-min4.example.com .................................... [no roles]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-cephadm">
+    <title>Especificando minions Salt gerenciados pelo cephadm</title>
+    <para>
+     Especifique os nós que pertencerão ao cluster do Ceph e serão gerenciados pelo cephadm. Inclua todos os nós que executarão os serviços do Ceph e também o Nó de Admin:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/cephadm add '*'</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-admin">
+    <title>Especificando o nó de admin</title>
+    <para>
+     O Nó de Admin é o nó em que o arquivo de configuração <filename>ceph.conf</filename> e o chaveiro admin do Ceph estão instalados. Geralmente, você executa os comandos relacionados ao Ceph no Nó de Admin.
+    </para>
+    <tip>
+     <title>Master Salt e nó de admin no mesmo nó</title>
+     <para>
+      Em um ambiente homogêneo onde todos ou a maioria dos hosts pertencem ao SUSE Enterprise Storage, recomendamos manter o Nó de Admin no mesmo host que o Master Salt.
+     </para>
+     <para>
+      Em um ambiente heterogêneo onde uma infraestrutura do Salt hospeda mais de um cluster, por exemplo, o SUSE Enterprise Storage junto com o SUSE Manager, <emphasis>não</emphasis> coloque o Nó de Admin no mesmo host que o Master Salt.
+     </para>
+    </tip>
+    <para>
+     Para especificar o Nó de Admin, execute o seguinte comando:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin add ses-master.example.com
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin ls
+o- admin ................................................... [Minions: 1]
+  o- ses-master.example.com ...................... [Other roles: cephadm]
+</screen>
+    <tip>
+     <title>Instalar o <filename>ceph.conf</filename> e o chaveiro admin em vários nós</title>
+     <para>
+      Você pode instalar o arquivo de configuração do Ceph e o chaveiro admin em vários nós, se sua implantação exigir isso. Por motivos de segurança, evite instalá-los em todos os nós do cluster.
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-mon">
+    <title>Especificando o primeiro nó MON/MGR</title>
+    <para>
+     Você precisa especificar qual dos Minions Salt do cluster inicializará o cluster. Esse minion será o primeiro a executar os serviços Ceph Monitor e Ceph Manager.
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap set ses-min1.example.com
+Value set.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap ls
+o- bootstrap ..................................... [ses-min1.example.com]
+</screen>
+    <para>
+     Além disso, você precisa especificar o endereço IP do MON de boot na rede pública para garantir que o parâmetro <option>public_network</option> seja definido corretamente, por exemplo:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/mon_ip set 192.168.10.20
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-tuned-profiles">
+    <title>Especificando perfis ajustados</title>
+    <para>
+     Você precisa especificar quais dos minions do cluster têm os perfis ajustados ativamente. Para fazer isso, adicione estas funções explicitamente com os seguintes comandos:
+    </para>
+    <note>
+     <para>
+      Um minion não pode ter as duas funções <literal>latency</literal> e <literal>throughput</literal>.
+     </para>
+    </note>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/latency add ses-min1.example.com
+Adding ses-min1.example.com...
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/throughput add ses-min2.example.com
+Adding ses-min2.example.com...
+1 minion added.
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ssh">
+    <title>Gerando um par de chaves SSH</title>
+    <para>
+     O cephadm usa o protocolo SSH para se comunicar com os nós do cluster. Uma conta do usuário chamada <literal>cephadm</literal> é criada automaticamente e usada para comunicação por SSH.
+    </para>
+    <para>
+     Você precisa gerar a parte particular e a pública do par de chaves SSH:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ssh generate
+Key pair generated.
+<prompt>root@master # </prompt>ceph-salt config /ssh ls
+o- ssh .................................................. [Key Pair set]
+  o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ntp">
+    <title>Configurando o servidor de horário</title>
+    <para>
+     Todos os nós do cluster precisam ter o horário sincronizado com uma fonte de horário confiável. Há vários cenários para realizar a sincronização de horário:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Se todos os nós do cluster já estiverem configurados para sincronizar o horário usando um serviço NTP de sua escolha, desabilite completamente o processamento do servidor de horário:
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server disable
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Se o seu site já tiver uma fonte de horário única, especifique o nome de host dessa fonte:
+      </para>
+<screen>
+ <prompt>root@master # </prompt>ceph-salt config /time_server/servers add <replaceable>time-server.example.com</replaceable>
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Se preferir, o <systemitem class="resource">ceph-salt</systemitem> pode configurar um dos Minions Salt para agir como o servidor de horário para o restante do cluster. Esse recurso às vezes é chamado de "servidor de horário interno". Nesse cenário, o <systemitem class="resource">ceph-salt</systemitem> configura o servidor de horário interno (que deve ser um dos Minions Salt) para sincronizar seu horário com um servidor de horário externo, como <literal>pool.ntp.org</literal>, e configura todos os outros minions para obter o horário do servidor de horário interno. Isso pode ser feito da seguinte maneira:
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/servers add ses-master.example.com
+<prompt>root@master # </prompt>ceph-salt config /time_server/external_servers add pool.ntp.org
+</screen>
+      <para>
+       A opção <option>/time_server/subnet</option> especifica a sub-rede da qual os clientes NTP têm permissão para acessar o servidor NTP. Ela é definida automaticamente quando você especifica <option>/time_server/servers</option>. Se você precisar mudá-la ou especificá-la manualmente, execute:
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/subnet set 10.20.6.0/24
+</screen>
+     </listitem>
+    </itemizedlist>
+    <para>
+     Verifique as configurações do servidor de horário:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server ls
+o- time_server ................................................ [enabled]
+  o- external_servers ............................................... [1]
+  | o- pool.ntp.org ............................................... [...]
+  o- servers ........................................................ [1]
+  | o- ses-master.example.com ..................................... [...]
+  o- subnet .............................................. [10.20.6.0/24]
+</screen>
+    <para>
+     Encontre mais informações sobre como configurar a sincronização de horário em <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-ntp.html#sec-ntp-yast"/>.
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-dashboardlogin">
+    <title>Configurando as credenciais de login do Ceph Dashboard</title>
+    <para>
+     O Ceph Dashboard estará disponível após a implantação do cluster básico. Para acessá-lo, você precisa definir um nome de usuário e uma senha válidos, por exemplo:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/username set admin
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/password set <replaceable>PWD</replaceable>
+</screen>
+    <tip>
+     <title>Forçando atualização da senha</title>
+     <para>
+      Por padrão, o primeiro usuário do painel de controle será forçado a mudar sua senha ao efetuar o primeiro login. Para desabilitar esse recurso, execute o seguinte comando:
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/force_password_update disable</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-imagepath">
+    <title>Configurando o caminho para imagens de container</title>
+    <para>
+     O cephadm precisa saber um caminho de URI válido para as imagens de container que serão usadas durante a etapa de implantação. Verifique se o caminho padrão está definido:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path ls</screen>
+    <para>
+     Se não houver um caminho padrão definido ou se a implantação exigir um caminho específico, adicione-o da seguinte maneira:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path set registry.suse.com/ses/7/ceph/ceph</screen>
+    <note>
+     <para>
+      Para a pilha de monitoramento, são necessárias mais imagens de container. Para uma implantação isolada (air-gapped) e também de um registro local, você pode obter essas imagens neste momento para preparar o registro local de acordo.
+     </para>
+     <para>
+      Observe que essas imagens de container não serão usadas pelo <systemitem class="resource">ceph-salt</systemitem> para a implantação. É uma preparação para uma etapa posterior em que o cephadm será usado para a implantação ou migração dos componentes de monitoramento.
+     </para>
+     <para>
+      Para obter mais informações sobre as imagens usadas pela pilha de monitoramento e como personalizá-las, visite a página <xref linkend="monitoring-custom-images"/>.
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-registry">
+    <title>Configurando o registro do container</title>
+    <para>
+     Opcionalmente, você pode definir um registro de container local. Ele servirá como um espelho do registro <literal>registration.suse.com</literal>. Lembre-se de que você precisa sincronizar novamente o registro local sempre que houver novos containers atualizados disponíveis em <systemitem class="systemname">registry.suse.com</systemitem>.
+
+    </para>
+    <para>
+     A criação de um registro local é útil nos seguintes cenários:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Você tem muitos nós de cluster e deseja economizar tempo de download e largura de banda criando um espelho local de imagens de container.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Seu cluster não tem acesso ao registro online, uma implantação isolada (air-gapped), e você precisa de um espelho local do qual extrair as imagens de container.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Se problemas de configuração ou rede impedirem que o cluster acesse os registros remotos por meio de um link seguro, você precisará de um registro local não criptografado.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <important>
+     <para>
+      Para implantar Correções Temporárias de Programas (PTFs, Program Temporary Fixes) em um sistema suportado, você precisa implantar um registro de container local.
+     </para>
+    </important>
+    <para>
+     Para configurar um URL de registro local junto com as credenciais de acesso, faça o seguinte:
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Configure o URL do registro local:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/registry set <replaceable>REGISTRY_URL</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       Configure o nome de usuário e a senha para acessar o registro local:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/username set <replaceable>REGISTRY_USERNAME</replaceable></screen>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/password set <replaceable>REGISTRY_PASSWORD</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       Execute o <command>ceph-salt apply</command> para atualizar o pilar Salt em todos os minions.
+      </para>
+     </step>
+    </procedure>
+    <tip>
+     <title>Cache de registro</title>
+     <para>
+      Para evitar a ressincronização do registro local quando novos containers atualizados forem exibidos, você pode configurar um <emphasis>cache de registro</emphasis>.
+
+     </para>
+    </tip>
+    <para>
+     Os métodos de Desenvolvimento e Entrega de Aplicativos Nativos de Nuvem exigem um registro e uma instância de Integração/Entrega Contínua (CI/CD, Continuous Integration/Delivery) para o desenvolvimento e a produção de imagens de container. Você pode usar um registro particular nessa instância.
+
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-inflight-encryption">
+    <title>Habilitando a criptografia de dados em trânsito (msgr2)</title>
+    <para>
+     O Messenger v2 (MSGR2) é o protocolo on-wire do Ceph. Ele oferece um modo de segurança que criptografa todos os dados que passam pela rede, encapsulamento de payloads de autenticação e habilitação da integração futura de novos modos de autenticação (como Kerberos).
+    </para>
+    <important>
+     <para>
+      Atualmente, o msgr2 não é suportado pelos clientes Ceph do kernel do Linux, como CephFS e Dispositivo de Blocos RADOS.
+     </para>
+    </important>
+    <para>
+     Os daemons do Ceph podem se vincular a várias portas, permitindo que os clientes Ceph legados e os novos clientes compatíveis com a versão 2 se conectem ao mesmo cluster. Por padrão, os MONs agora se vinculam à nova porta 3300 atribuída pela IANA (CE4h ou 0xCE4) para o novo protocolo v2 e também à porta antiga padrão 6789 para o protocolo v1 legado.
+    </para>
+    <para>
+     O protocolo v2 (MSGR2) suporta dois modos de conexão:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>modo crc</term>
+      <listitem>
+       <para>
+        Uma autenticação inicial forte quando a conexão é estabelecida e uma verificação de integridade CRC32C.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>modo seguro</term>
+      <listitem>
+       <para>
+        Uma autenticação inicial forte quando a conexão é estabelecida e a criptografia completa de todo o tráfego pós-autenticação, incluindo uma verificação de integridade criptográfica.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Para a maioria das conexões, há opções que controlam os modos que são usados:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_cluster_mode</term>
+      <listitem>
+       <para>
+        O modo de conexão (ou modos permitidos) usado para comunicação intracluster entre os daemons do Ceph. Se houver vários modos na lista, a preferência será dos que forem listados primeiro.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_service_mode</term>
+      <listitem>
+       <para>
+        Uma lista de modos permitidos para os clientes usarem na conexão com o cluster.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_client_mode</term>
+      <listitem>
+       <para>
+        Uma lista de modos de conexão, em ordem de preferência, para os clientes usarem (ou permitirem) na comunicação com um cluster do Ceph.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Há um conjunto paralelo de opções que se aplicam especificamente aos monitores, permitindo que os administradores definam requisitos diferentes (geralmente mais seguros) para comunicação com os monitores.
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_mon_cluster_mode</term>
+      <listitem>
+       <para>
+        O modo de conexão (ou modos permitidos) que será usado entre os monitores.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_service_mode</term>
+      <listitem>
+       <para>
+        Uma lista de modos permitidos para clientes ou outros daemons do Ceph usarem na conexão com monitores.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_client_mode</term>
+      <listitem>
+       <para>
+        Uma lista de modos de conexão, em ordem de preferência, para clientes ou daemons que não são de monitor usarem na conexão com monitores.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Para habilitar o modo de criptografia MSGR2 durante a implantação, você precisa adicionar algumas opções à configuração do <systemitem class="resource">ceph-salt</systemitem> antes de executar o <command>ceph-salt apply</command>.
+    </para>
+    <para>
+     Para usar o modo <literal>secure</literal>, execute os comandos a seguir.
+    </para>
+    <para>
+     Adicione a seção global ao <filename>ceph_conf</filename> na ferramenta de configuração do <systemitem class="resource">ceph-salt</systemitem>:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global</screen>
+    <para>
+     Defina as seguintes opções:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode "secure crc"
+</screen>
+    <note>
+     <para>
+      Certifique-se de que <literal>secure</literal> venha antes de <literal>crc</literal>.
+     </para>
+    </note>
+    <para>
+     Para <emphasis>forçar o modo</emphasis> <literal>secure</literal>, execute os seguintes comandos:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode secure
+</screen>
+    <tip xml:id="update-inflight-encryption-settings">
+     <title>Atualizando as configurações</title>
+     <para>
+      Para mudar qualquer uma das configurações acima, defina as mudanças de configuração no armazenamento de configuração do monitor. Isso é feito usando o comando <command>ceph config set</command>.
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global <replaceable>CONNECTION_OPTION</replaceable> <replaceable>CONNECTION_MODE</replaceable> [--force]</screen>
+     <para>
+      Por exemplo:
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global ms_cluster_mode "secure crc"</screen>
+     <para>
+      Para verificar o valor atual, incluindo o valor padrão, execute o seguinte comando:
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get <replaceable>CEPH_COMPONENT</replaceable> <replaceable>CONNECTION_OPTION</replaceable></screen>
+     <para>
+      Por exemplo, para obter o <literal>ms_cluster_mode</literal> dos OSD's, execute:
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get osd ms_cluster_mode</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-enable-network">
+    <title>Configurando a rede do cluster</title>
+    <para>
+     Opcionalmente, se você executar uma rede de cluster separada, talvez seja necessário definir o endereço IP da rede do cluster seguido pela parte da máscara de sub-rede após a barra, por exemplo, <literal>192.168.10.22/24</literal>.
+    </para>
+    <para>
+     Execute os seguintes comandos para habilitar <literal>cluster_network</literal>:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set cluster_network <replaceable>NETWORK_ADDR</replaceable>
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-verify">
+    <title>Verificando a configuração do cluster</title>
+    <para>
+     A configuração mínima do cluster foi concluída. Verifique se há erros óbvios:
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [Minions: 5]
+  | | o- ses-master.example.com .................................. [admin]
+  | | o- ses-min1.example.com ......................... [bootstrap, admin]
+  | | o- ses-min2.example.com ................................. [no roles]
+  | | o- ses-min3.example.com ................................. [no roles]
+  | | o- ses-min4.example.com ................................. [no roles]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [Minions: 2]
+  |   | o- ses-master.example.com ....................... [no other roles]
+  |   | o- ses-min1.example.com ................. [other roles: bootstrap]
+  |   o- bootstrap ................................ [ses-min1.example.com]
+  |   o- cephadm ............................................ [Minions: 5]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path ............... [registry.suse.com/ses/7/ceph/ceph]
+  | o- dashboard ................................................... [...]
+  |   o- force_password_update ................................. [enabled]
+  |   o- password ................................... [randomly generated]
+  |   o- username ................................................ [admin]
+  | o- mon_ip ............................................ [192.168.10.20]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh .................................................. [Key Pair set]
+  | o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  | o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- time_server ............................................... [enabled]
+    o- external_servers .............................................. [1]
+    | o- 0.pt.pool.ntp.org ......................................... [...]
+    o- servers ....................................................... [1]
+    | o- ses-master.example.com .................................... [...]
+    o- subnet ............................................. [10.20.6.0/24]
+</screen>
+    <tip>
+     <title>Status da configuração do cluster</title>
+     <para>
+      Você pode verificar se a configuração do cluster é válida executando o seguinte comando:
+     </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt status
+cluster: 5 minions, 0 hosts managed by cephadm
+config: OK
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-export">
+    <title>Exportando as configurações do cluster</title>
+    <para>
+     Depois de configurar o cluster básico e sua configuração estiver válida, convém exportá-la para um arquivo:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt export &gt; cluster.json</screen>
+    <warning>
+     <para>
+      A saída do comando <command>ceph-salt export</command> inclui a chave privada SSH. Se você estiver preocupado com as implicações de segurança, não execute esse comando sem tomar as devidas precauções.
+     </para>
+    </warning>
+    <para>
+     Caso você danifique a configuração do cluster e tenha de reverter para um estado de backup, execute:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt import cluster.json</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-deploy">
+   <title>Atualizando os nós e o cluster mínimo de boot</title>
+   <para>
+    Antes de implantar o cluster, atualize todos os pacotes de software em todos os nós:
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update</screen>
+   <para>
+    Se um nó relatar que a <literal>Reinicialização é necessária</literal> durante a atualização, os pacotes importantes do OS, como o kernel, foram atualizados para uma versão mais recente, e você precisa reinicializar o nó para aplicar as mudanças.
+   </para>
+   <para>
+    Para reinicializar todos os nós que exigem reinicialização, anexe a opção <option>--reboot</option>
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update --reboot</screen>
+   <para>
+    Se preferir, reinicialize-os em uma etapa separada:
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt reboot</screen>
+   <important>
+    <para>
+     O Master Salt nunca é reinicializado pelos comandos <command>ceph-salt update --reboot</command> ou <command>ceph-salt reboot</command>. Se o Master Salt precisar ser reinicializado, você deverá reinicializá-lo manualmente.
+    </para>
+   </important>
+   <para>
+    Após a atualização dos nós, inicialize o cluster mínimo:
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply</screen>
+   <note>
+    <para>
+     Quando a inicialização for concluída, o cluster terá um Ceph Monitor e um Ceph Manager.
+    </para>
+   </note>
+   <para>
+    O comando acima abrirá uma interface do usuário interativa que mostra o andamento atual de cada minion.
+   </para>
+   <figure>
+    <title>Implantação de um cluster mínimo</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <tip>
+    <title>Modo não interativo</title>
+    <para>
+     Se você precisa aplicar a configuração de um script, também há um modo de implantação não interativo. Ele também é útil para implantar o cluster de uma máquina remota, porque a atualização constante das informações de andamento na tela pela rede pode provocar distração:
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply --non-interactive</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="deploy-min-cluster-final-steps">
+   <title>Revisando as etapas finais</title>
+   <para>
+    Após a conclusão do comando <command>ceph-salt apply</command>, você deverá ter um Ceph Monitor e um Ceph Manager. Você deve conseguir executar o comando <command>ceph status</command> com êxito em qualquer um dos minions que receberam a função <literal>admin</literal> como <literal>root</literal> ou o usuário <literal>cephadm</literal> por meio do <literal>sudo</literal>.
+   </para>
+   <para>
+    As próximas etapas envolvem o uso do cephadm para implantar mais Ceph Monitor, Ceph Manager, OSDs, Pilha de Monitoramento e Gateways.
+   </para>
+   <para>
+    Antes de continuar, revise as novas configurações de rede do cluster. Neste ponto, a configuração <literal>public_network</literal> foi preenchida com base no que foi inserido para <literal>/cephadm_bootstrap/mon_ip</literal> na configuração do <literal>ceph-salt</literal>. No entanto, essa configuração foi aplicada apenas ao Ceph Monitor. Você pode revisá-la com o seguinte comando:
+   </para>
+<screen><prompt>root@master # </prompt>ceph config get mon public_network</screen>
+   <para>
+    Esse é o mínimo necessário para o Ceph funcionar, mas recomendamos tornar essa configuração <literal>public_network</literal> <literal>global</literal>, o que significa que ela será aplicada a todos os tipos de daemons do Ceph, e não apenas aos MONs:
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set global public_network "$(ceph config get mon public_network)"</screen>
+   <note>
+    <para>
+     Essa etapa não é obrigatória. No entanto, se você não usar essa configuração, os Ceph OSDs e outros daemons (exceto o Ceph Monitor) escutarão em <emphasis>todos os endereços</emphasis>.
+    </para>
+    <para>
+     Para que seus OSDs se comuniquem entre si usando uma rede completamente separada, execute o seguinte comando:
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global cluster_network "<replaceable>cluster_network_in_cidr_notation</replaceable>"</screen>
+    <para>
+     A execução desse comando garante que os OSDs criados em sua implantação usem a rede de cluster pretendida desde o início.
+    </para>
+   </note>
+   <para>
+    Se o cluster estiver definido para ter nós densos (mais de 62 OSDs por host), atribua portas suficientes aos Ceph OSDs. Atualmente, a faixa padrão (6800-7300) não permite mais do que 62 OSDs por host. Para um cluster com nós densos, ajuste a configuração <literal>ms_bind_port_max</literal> para um valor adequado. Cada OSD consumirá oito portas adicionais. Por exemplo, um host definido para executar 96 OSDs requer 768 portas. <literal>ms_bind_port_max</literal> deve ser definido, no mínimo, como 7568 executando o seguinte comando:
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set osd.* ms_bind_port_max 7568</screen>
+   <para>
+    Você precisará ajustar as configurações de firewall de acordo para que isso funcione. Consulte o <xref linkend="storage-bp-net-firewall"/> para obter mais informações.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day2">
+  <title>Implantando serviços e gateways</title>
+
+  <para>
+   Após implantar o cluster básico do Ceph, implante os serviços principais em mais nós do cluster. Para tornar os dados do cluster acessíveis aos clientes, implante também mais serviços.
+  </para>
+
+  <para>
+   Atualmente, oferecemos suporte à implantação de serviços do Ceph na linha de comando usando o orquestrador do Ceph (subcomandos <command>ceph orch</command>).
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch">
+   <title>O comando <command>ceph orch</command></title>
+   <para>
+    O comando do orquestrador do Ceph <command>ceph orch</command>, uma interface com o módulo cephadm, processará a listagem de componentes do cluster e a implantação dos serviços do Ceph em novos nós do cluster.
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-orch-status">
+    <title>Exibindo o status do orquestrador</title>
+    <para>
+     O comando a seguir mostra o modo e o status atuais do orquestrador do Ceph.
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch status</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-orch-list">
+    <title>Listando dispositivos, serviços e daemons</title>
+    <para>
+     Para listar todos os dispositivos de disco, execute o seguinte:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch device ls
+Hostname   Path      Type  Serial  Size   Health   Ident  Fault  Available
+ses-master /dev/vdb  hdd   0d8a... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdc  hdd   8304... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdd  hdd   7b81... 10.7G  Unknown  N/A    N/A    No
+[...]
+</screen>
+    <tip>
+     <title>Serviços e daemons</title>
+     <para>
+      <emphasis>Serviço</emphasis> é um termo geral para um serviço do Ceph de um tipo específico, por exemplo, Ceph Manager.
+     </para>
+     <para>
+      <emphasis>Daemon</emphasis> é uma instância específica de um serviço, por exemplo, um processo <literal>mgr.ses-min1.gdlcik</literal> executado em um nó denominado <literal>ses-min1</literal>.
+     </para>
+    </tip>
+    <para>
+     Para listar todos os serviços conhecidos pelo cephadm, execute:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls
+NAME  RUNNING  REFRESHED  AGE  PLACEMENT  IMAGE NAME                  IMAGE ID
+mgr       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+mon       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+</screen>
+    <tip>
+     <para>
+      Você pode limitar a lista a serviços em um nó específico com o parâmetro opcional <option>‑‑host</option> e a serviços de um determinado tipo com o parâmetro opcional <option>--service-type</option> (os tipos aceitáveis são <literal>mon</literal>, <literal>osd</literal>, <literal>mgr</literal>, <literal>mds</literal> e <literal>rgw</literal>).
+     </para>
+    </tip>
+    <para>
+     Para listar todos os daemons em execução implantados pelo cephadm, execute:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps
+NAME            HOST     STATUS   REFRESHED AGE VERSION    IMAGE ID     CONTAINER ID
+mgr.ses-min1.gd ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd b8104e09814c
+mon.ses-min1    ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd a719e0087369
+</screen>
+    <tip>
+     <para>
+      Para consultar o status de um daemon específico, use <option>--daemon_type</option> e <option>--daemon_id</option>. Para os OSDs, o ID é o ID numérico do OSD. Para o MDS, o ID é o nome do sistema de arquivos:
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type osd --daemon_id 0
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type mds --daemon_id my_cephfs
+</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="cephadm-service-and-placement-specs">
+   <title>Especificação de serviço e posicionamento</title>
+   <para>
+    A maneira recomendada de especificar a implantação dos serviços do Ceph é criar um arquivo no formato YAML com a especificação dos serviços que você pretende implantar.
+   </para>
+   <sect3 xml:id="cephadm-service-spec">
+    <title>Criando especificações de serviço</title>
+    <para>
+     Você pode criar um arquivo de especificação separado para cada tipo de serviço, por exemplo:
+    </para>
+<screen>
+<prompt>root@master # </prompt>cat nfs.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <para>
+     Se preferir, você poderá especificar vários (ou todos) tipos de serviço em um arquivo (por exemplo, <filename>cluster.yml</filename>), que descreve quais nós executarão serviços específicos. Lembre-se de separar os tipos de serviço individuais com três traços (<literal>---</literal>):
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+---
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+---
+[...]
+</screen>
+    <para>
+     As propriedades mencionadas acima têm o seguinte significado:
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><literal>service_type</literal></term>
+      <listitem>
+       <para>
+        O tipo de serviço. Ele pode ser um serviço do Ceph (<literal>mon</literal>, <literal>mgr</literal>, <literal>mds</literal>, <literal>crash</literal>, <literal>osd</literal> ou <literal>rbd-mirror</literal>), um gateway (<literal>nfs</literal> ou <literal>rgw</literal>) ou parte da pilha de monitoramento (<literal>alertmanager</literal>, <literal>grafana</literal>, <literal>node-exporter</literal> ou <literal>prometheus</literal>).
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>service_id</literal></term>
+      <listitem>
+       <para>
+        O nome do serviço. As especificações do tipo <literal>mon</literal>, <literal>mgr</literal>, <literal>alertmanager</literal>, <literal>grafana</literal>, <literal>node-exporter</literal> e <literal>prometheus</literal> não exigem a propriedade <literal>service_id</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>placement</literal></term>
+      <listitem>
+       <para>
+        Especifica os nós que executarão o serviço. Consulte <xref linkend="cephadm-placement-specs"/> para obter mais detalhes.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>spec</literal></term>
+      <listitem>
+       <para>
+        Especificação adicional relevante para o tipo de serviço.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <tip>
+     <title>Aplicando serviços específicos</title>
+     <para>
+      Geralmente, os serviços de cluster do Ceph têm várias propriedades específicas. Para obter exemplos e detalhes da especificação de cada serviço, consulte a <xref linkend="deploy-cephadm-day2-services"/>.
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="cephadm-placement-specs">
+    <title>Criando a especificação de posicionamento</title>
+    <para>
+     Para implantar os serviços do Ceph, o cephadm precisa saber em quais nós implantá-los. Use a propriedade <literal>placement</literal> e liste os nomes abreviados de host dos nós aos quais o serviço se aplica:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+[...]
+placement:
+  hosts:
+  - host1
+  - host2
+  - host3
+[...]
+</screen>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs">
+    <title>Aplicando a especificação de cluster</title>
+    <para>
+     Após criar um arquivo <filename>cluster.yml</filename> completo com as especificações de todos os serviços e seu posicionamento, você poderá aplicar o cluster executando o seguinte comando:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i cluster.yml</screen>
+    <para>
+     Para ver o status do cluster, execute o comando <command>ceph orch status</command>. Para ver mais detalhes, consulte a <xref linkend="deploy-cephadm-day2-orch-status"/>.
+    </para>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs-">
+    <title>Exportando a especificação de um cluster em execução</title>
+    <para>
+     Embora você tenha implantado serviços no cluster do Ceph usando os arquivos de especificação, conforme descrito na <xref linkend="cephadm-service-and-placement-specs"/>, a configuração do cluster pode divergir da especificação original durante sua operação. Além disso, você pode ter removido os arquivos de especificação por engano.
+    </para>
+    <para>
+     Para recuperar uma especificação completa de um cluster em operação, execute:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls --export
+placement:
+  hosts:
+  - hostname: ses-min1
+    name: ''
+    network: ''
+service_id: my_cephfs
+service_name: mds.my_cephfs
+service_type: mds
+---
+placement:
+  count: 2
+service_name: mgr
+service_type: mgr
+---
+[...]
+</screen>
+    <tip>
+     <para>
+      Você pode anexar a opção <option>--format</option> para mudar o formato de saída padrão <literal>yaml</literal>. Você pode selecionar entre <literal>json</literal>, <literal>json-pretty</literal> ou <literal>yaml</literal>. Por exemplo:
+     </para>
+<screen>ceph orch ls --export --format json</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-services">
+   <title>Implantar serviços do Ceph</title>
+   <para>
+    Depois que o cluster básico estiver em execução, você poderá implantar os serviços do Ceph nos outros nós.
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-service-mon">
+    <title>Implantando Ceph Monitors e Ceph Managers</title>
+    <para>
+     O cluster do Ceph tem três ou cinco MONs implantados em nós diferentes. Se houver cinco ou mais nós no cluster, recomendamos a implantação de cinco MONs. Uma boa prática é implantar os MGRs nos mesmos nós que os MONs.
+    </para>
+    <important>
+     <title>incluir MON de boot</title>
+     <para>
+      Ao implantar MONs e MGRs, lembre-se de incluir o primeiro MON que você adicionou durante a configuração do cluster básico na <xref linkend="deploy-cephadm-configure-mon"/>.
+     </para>
+    </important>
+    <para>
+     Para implantar MONs, use a seguinte especificação:
+    </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <note>
+     <para>
+      Se você precisar adicionar outro nó, anexe o nome de host à mesma lista YAML. Por exemplo:
+     </para>
+<screen>
+service_type: mon
+placement:
+ hosts:
+ - ses-min1
+ - ses-min2
+ - ses-min3
+ - ses-min4
+</screen>
+    </note>
+    <para>
+     Da mesma forma, para implantar MGRs, use a seguinte especificação:
+    </para>
+    <important>
+     <para>
+      Verifique se a implantação tem pelo menos três Ceph Managers em cada implantação.
+     </para>
+    </important>
+<screen>
+service_type: mgr
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <tip>
+     <para>
+      Se os MONs ou MGRs <emphasis>não</emphasis> estiverem na mesma sub-rede, você precisará anexar os endereços das sub-redes. Por exemplo:
+     </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1:10.1.2.0/24
+  - ses-min2:10.1.5.0/24
+  - ses-min3:10.1.10.0/24
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-osd">
+    <title>Implantando Ceph OSDs</title>
+    <important>
+     <title>quando o dispositivo de armazenamento está disponível</title>
+     <para>
+      Um dispositivo de armazenamento será considerado <emphasis>disponível</emphasis> se todas as condições abaixo forem verdadeiras:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        O dispositivo não tem partições.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        O dispositivo não tem nenhum estado de LVM.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        O dispositivo não está montado.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        O dispositivo não contém um sistema de arquivos.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        O dispositivo não contém um OSD com BlueStore.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        O dispositivo é maior do que 5 GB.
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Se as condições acima não forem verdadeiras, o Ceph se recusará a provisionar esses OSDs.
+     </para>
+    </important>
+    <para>
+     A implantação de OSDs pode ser feita de duas maneiras:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Instrua o Ceph a consumir todos os dispositivos de armazenamento disponíveis e não utilizados:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd --all-available-devices</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Use o DriveGroups (consulte o <xref linkend="drive-groups"/>) para criar uma especificação de OSD que descreva os dispositivos que serão implantados com base em suas propriedades, como tipo de dispositivo (SSD ou HDD), nomes de modelo de dispositivo e tamanho, ou os nós onde os dispositivos residem. Em seguida, aplique a especificação executando o seguinte comando:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd -i drive_groups.yml</screen>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-mds">
+    <title>Implantando servidores de metadados</title>
+    <para>
+     O CephFS requer um ou mais serviços do Servidor de Metadados (MDS, Metadata Server). Para criar um CephFS, primeiro crie os servidores MDS usando a seguinte especificação:
+    </para>
+    <note>
+     <para>
+      Verifique se você já criou pelo menos dois pools (um para os dados do CephFS e outro para os metadados do CephFS) antes de usar a especificação a seguir.
+     </para>
+    </note>
+<screen>
+service_type: mds
+service_id: <replaceable>CEPHFS_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <para>
+     Depois que os MDSs estiverem em operação, crie o CephFS:
+    </para>
+<screen>ceph fs new <replaceable>CEPHFS_NAME</replaceable> <replaceable>metadata_pool</replaceable> <replaceable>data_pool</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-ogw">
+    <title>Implantando Gateways de Objetos</title>
+    <para>
+     O cephadm implanta um Gateway de Objetos como uma coleção de daemons que gerenciam um <emphasis>domínio</emphasis> e uma <emphasis>zona</emphasis> específicos.
+    </para>
+    <para>
+     Você pode relacionar um serviço de Gateway de Objetos a um domínio e uma zona existentes (consulte o <xref linkend="ceph-rgw-fed"/> para obter mais detalhes) ou especificar um <replaceable>REALM_NAME</replaceable> e <replaceable>ZONE_NAME</replaceable> não existentes, e eles serão criados automaticamente depois que você aplicar a seguinte configuração:
+    </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+</screen>
+    <sect4 xml:id="cephadm-deploy-using-secure-ssl-access">
+     <title>Usando o acesso SSL seguro</title>
+     <para>
+      Para usar uma conexão SSL segura com o Gateway de Objetos, você precisa de um par de arquivos de chave e certificado SSL válidos (consulte o <xref linkend="ceph-rgw-https"/> para obter mais detalhes). Você precisa habilitar o SSL e especificar um número de porta para conexões SSL e os arquivos de chave e certificado SSL.
+     </para>
+     <para>
+      Para habilitar o SSL e especificar o número da porta, inclua o seguinte em sua especificação:
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+</screen>
+     <para>
+      Para especificar a chave e o certificado SSL, você pode colar o conteúdo deles diretamente no arquivo de especificação YAML. O sinal de barra vertical (<literal>|</literal>) no final da linha informa ao analisador para esperar um valor de string de várias linhas. Por exemplo:
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+  rgw_frontend_ssl_certificate: |
+   -----BEGIN CERTIFICATE-----
+   MIIFmjCCA4KgAwIBAgIJAIZ2n35bmwXTMA0GCSqGSIb3DQEBCwUAMGIxCzAJBgNV
+   BAYTAkFVMQwwCgYDVQQIDANOU1cxHTAbBgNVBAoMFEV4YW1wbGUgUkdXIFNTTCBp
+   [...]
+   -----END CERTIFICATE-----
+   rgw_frontend_ssl_key: |
+   -----BEGIN PRIVATE KEY-----
+   MIIJRAIBADANBgkqhkiG9w0BAQEFAASCCS4wggkqAgEAAoICAQDLtFwg6LLl2j4Z
+   BDV+iL4AO7VZ9KbmWIt37Ml2W6y2YeKX3Qwf+3eBz7TVHR1dm6iPpCpqpQjXUsT9
+   [...]
+   -----END PRIVATE KEY-----
+</screen>
+     <tip>
+      <para>
+       Em vez de colar o conteúdo dos arquivos de chave e certificado SSL, você pode omitir as palavras-chave <literal>rgw_frontend_ssl_certificate:</literal> e <literal>rgw_frontend_ssl_key:</literal> e fazer upload deles no banco de dados de configuração:
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.crt \
+ -i <replaceable>SSL_CERT_FILE</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.key \
+ -i <replaceable>SSL_KEY_FILE</replaceable>
+</screen>
+     </tip>
+    </sect4>
+    <sect4 xml:id="cephadm-deploy-with-subcluster">
+     <title>Implantação com um subcluster</title>
+     <para>
+      Os <emphasis>subclusters</emphasis> ajudam a organizar os nós nos clusters para isolar as cargas de trabalho e facilitar a expansão elástica. Se a implantação for com um subcluster, use a seguinte configuração:
+     </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>.<replaceable>SUBCLUSTER</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+  subcluster: <replaceable>SUBCLUSTER</replaceable>
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-igw">
+    <title>Implantando Gateways iSCSI</title>
+    <para>
+     O cephadm implanta um Gateway iSCSI, que é um protocolo SAN (Storage Area Network) que permite aos clientes (denominados iniciadores) enviar comandos SCSI para dispositivos de armazenamento SCSI (destinos) em servidores remotos.
+    </para>
+    <para>
+     Use a seguinte configuração para a implantação. Verifique se <literal>trusted_ip_list</literal> contém os endereços IP de todos os nós do Gateway iSCSI e do Ceph Manager (consulte o exemplo de saída abaixo).
+    </para>
+    <note>
+     <para>
+      Verifique se o pool foi criado antes de aplicar a especificação a seguir.
+     </para>
+    </note>
+<screen>
+service_type: iscsi
+service_id: <replaceable>EXAMPLE_ISCSI</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  api_user: <replaceable>EXAMPLE_USER</replaceable>
+  api_password: <replaceable>EXAMPLE_PASSWORD</replaceable>
+  trusted_ip_list: "<replaceable>IP_ADDRESS_1</replaceable>,<replaceable>IP_ADDRESS_2</replaceable>"
+</screen>
+    <note>
+     <para>
+      Verifique se os IPs listados em <literal>trusted_ip_list</literal> <emphasis>não</emphasis> têm espaço após a separação por vírgula.
+     </para>
+    </note>
+    <sect4>
+     <title>Configuração SSL segura</title>
+     <para>
+      Para usar uma conexão SSL segura entre o Ceph Dashboard e a API de destino iSCSI, você precisa de um par de arquivos de chave e certificado SSL válidos. Eles podem ser emitidos por CA ou autoassinados (consulte o <xref linkend="self-sign-certificates"/>). Para habilitar o SSL, inclua a configuração <literal>api_secure: true</literal> no arquivo de especificação:
+     </para>
+<screen>
+spec:
+  api_secure: true
+</screen>
+     <para>
+      Para especificar a chave e o certificado SSL, você pode colar o conteúdo diretamente no arquivo de especificação YAML. O sinal de barra vertical (<literal>|</literal>) no final da linha informa ao analisador para esperar um valor de string de várias linhas. Por exemplo:
+     </para>
+<screen>
+spec:
+  pool: EXAMPLE_POOL
+  api_user: EXAMPLE_USER
+  api_password: EXAMPLE_PASSWORD
+  trusted_ip_list: "IP_ADDRESS_1,IP_ADDRESS_2"
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-nfs">
+    <title>Implantando o NFS Ganesha</title>
+    <para>
+     O cephadm implanta o NFS Ganesha usando um pool RADOS predefinido e um namespace opcional. Para implantar o NFS Ganesha, use a seguinte especificação:
+    </para>
+    <note>
+     <para>
+      Você precisa ter um pool RADOS predefinido; do contrário, haverá falha na operação <command>ceph orch apply</command>. Para obter mais informações sobre como criar um pool, consulte o <xref linkend="ceph-pools-operate-add-pool"/>.
+     </para>
+    </note>
+<screen>
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_NFS</replaceable> com uma string arbitrária que identifica a exportação do NFS.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_POOL</replaceable> com o nome do pool em que o objeto de configuração RADOS do NFS Ganesha será armazenado.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_NAMESPACE</replaceable> (opcional) com o namespace desejado do NFS do Gateway de Objetos (por exemplo, <literal>ganesha</literal>).
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-rbdmirror">
+    <title>Implantando o <systemitem class="daemon">rbd-mirror</systemitem></title>
+    <para>
+     O serviço <systemitem class="daemon">rbd-mirror</systemitem> se encarrega de sincronizar as imagens do Dispositivo de Blocos RADOS entre dois clusters do Ceph (para obter mais detalhes, consulte o <xref linkend="ceph-rbd-mirror"/>). Para implantar o <systemitem class="daemon">rbd-mirror</systemitem>, use a seguinte especificação:
+    </para>
+<screen>
+service_type: rbd-mirror
+service_id: <replaceable>EXAMPLE_RBD_MIRROR</replaceable>
+placement:
+  hosts:
+  - ses-min3
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-monitoring">
+    <title>Implantando a pilha de monitoramento</title>
+    <para>
+     A pilha de monitoramento consiste no Prometheus, nos exportadores do Prometheus, no Alertmanager do Prometheus e no Grafana. O Ceph Dashboard usa esses componentes para armazenar e visualizar as métricas detalhadas sobre o uso e o desempenho do cluster.
+    </para>
+    <tip>
+     <para>
+      Se a implantação exigir imagens de container personalizadas ou exibidas localmente dos serviços de pilha de monitoramento, consulte o <xref linkend="monitoring-custom-images"/>.
+     </para>
+    </tip>
+    <para>
+     Para implantar a pilha de monitoramento, siga estas etapas:
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Habilite o módulo <literal>prometheus</literal> no daemon do Ceph Manager. Esse procedimento expõe as métricas internas do Ceph para que o Prometheus possa lê-las:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable prometheus</screen>
+      <note>
+       <para>
+        Verifique se esse comando foi executado antes da implantação do Prometheus. Se o comando não foi executado antes da implantação, você deve reimplantar o Prometheus para atualizar a configuração do Prometheus:
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch redeploy prometheus</screen>
+      </note>
+     </step>
+     <step>
+      <para>
+       Crie um arquivo de especificação (por exemplo, <filename>monitoramento.yaml</filename>) com um conteúdo semelhante ao seguinte:
+      </para>
+<screen>
+service_type: prometheus
+placement:
+  hosts:
+  - ses-min2
+---
+service_type: node-exporter
+---
+service_type: alertmanager
+placement:
+  hosts:
+  - ses-min4
+---
+service_type: grafana
+placement:
+  hosts:
+  - ses-min3
+</screen>
+     </step>
+     <step>
+      <para>
+       Aplique os serviços de monitoramento executando este comando:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i monitoring.yaml</screen>
+      <para>
+       Pode levar um ou dois minutos para que os serviços de monitoramento sejam implantados.
+      </para>
+     </step>
+    </procedure>
+    <important>
+     <para>
+      O Prometheus, o Grafana e o Ceph Dashboard são todos configurados automaticamente para se comunicarem entre si, resultando em uma integração totalmente funcional do Grafana no Ceph Dashboard, quando implantados conforme descrito acima.
+     </para>
+     <para>
+      A única exceção a essa regra é o monitoramento com imagens RBD. Consulte o <xref linkend="monitoring-rbd-image"/> para obter mais informações.
+     </para>
+    </important>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

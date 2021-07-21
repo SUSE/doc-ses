@@ -1,0 +1,1062 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_upgrade.xml" version="5.0" xml:id="cha-ceph-upgrade">
+ <title>前回リリースからのアップグレード</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  この章では、SUSE Enterprise Storage 6をバージョン7にアップグレードする手順について説明します。
+ </para>
+ <para>
+  アップグレードには次のタスクが含まれます。
+ </para>
+ <itemizedlist>
+  <listitem>
+   <para>
+    Ceph NautilusからCeph Octopusへのアップグレード。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    RPMパッケージを介してCephのインストールと実行を行う環境から、コンテナ内で実行する環境への切り替え。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    DeepSeaを完全に消去し、<systemitem class="resource">ceph-salt</systemitem>とcephadmで置き換え。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <warning>
+  <para>
+   この章のアップグレード情報は、DeepSeaからcephadmへのアップグレードに「のみ」適用されます。<emphasis/>SUSE CaaS Platform上にSUSE Enterprise Storageを展開する場合は、この章の手順を使用しないでください。
+  </para>
+ </warning>
+ <important>
+  <para>
+   6より古いバージョンのSUSE Enterprise Storageからのアップグレードはサポートされていません。まず、最新バージョンのSUSE Enterprise Storage 6にアップグレードしてから、この章の手順を実行する必要があります。
+  </para>
+ </important>
+ <sect1 xml:id="before-upgrade">
+  <title>アップグレード実行前の確認事項</title>
+
+  <para>
+   アップグレードの開始前に、必ず以下のタスクを完了させてください。<emphasis/>このタスクはSUSE Enterprise Storage 6のライフタイムのどの時点でも実行できます。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     FileStoreからBlueStoreへのOSDマイグレーションは、必ずアップグレード前に行ってください。<emphasis/>SUSE Enterprise Storage 7がFileStoreをサポートしていないためです。BlueStoreの詳細と、FileStoreからBlueStoreへのマイグレーション方法の詳細については、<link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-deployment/#filestore2bluestore"/>を参照してください。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <literal>ceph-disk</literal> OSDを使用するクラスタを実行中の場合は、アップグレード前に必ず<emphasis/><literal>ceph-volume</literal>へ切り替えてください。詳細については、<link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-deployment/#upgrade-osd-deployment"/>を参照してください。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <sect2 xml:id="upgrade-consider-points">
+   <title>考慮すべきポイント</title>
+   <para>
+    アップグレードの前に以下のセクションを熟読して、実行する必要があるすべてのタスクを十分に理解してください。
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis/>「リリースノートをお読みください」 - 旧リリースのSUSE Enterprise Storageからの変更点に関する追加情報が記載されています。リリースノートを参照して以下を確認します。
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        使用しているハードウェアに特別な配慮が必要かどうか
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        使用しているソフトウェアパッケージに大幅な変更があるかどうか
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        インストールのために特別な注意が必要かどうか
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      リリースノートには、マニュアルに記載できなかった情報が記載されています。また、既知の問題に関する注意も記載されています。
+     </para>
+     <para>
+      SES 7のリリースノートは<link xlink:href="https://www.suse.com/releasenotes/"/>を参照してください。
+     </para>
+     <para>
+      あるいは、パッケージ
+      <package>release-notes-ses</package> をSES 7リポジトリからインストールすると、ローカルディレクトリ<filename>/usr/share/doc/release-notes</filename>にリリースノートが置かれます。オンラインのリリースノート<link xlink:href="https://www.suse.com/releasenotes/"/>も利用できます。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <xref linkend="deploy-cephadm"/>を参照して、<systemitem class="resource">ceph-salt</systemitem>とCephオーケストレータについて理解してください。特に、サービス仕様に記載されている情報は重要です。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      クラスタのアップグレードには長い時間がかかることがあります。所要時間は、1台のマシンのアップグレード時間xクラスタノード数です。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      最初にSalt Masterをアップグレードし、その後DeepSeaを<systemitem class="resource">ceph-salt</systemitem>とcephadmに置き換える必要があります。少なくとも、すべてのCeph Managerがアップグレードされるまで、cephadmオーケストレータモジュールの使用を開始することはできません。<emphasis/>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      NautilusのRPMを使用する環境からOctopusのコンテナ環境へアップグレードは、一度に行う必要があります。これは、一度に1つのデーモンではなく、ノード全体を一度にアップグレードすることを意味します。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      コアサービス(MON、MGR、OSD)のアップグレードは、順序立てて進めます。アップグレードの間も、各サービスは利用可能です。ゲートウェイサービス(メタデータサーバ、Object Gateway、NFS Ganesha、iSCSI Gateway)については、コアサービスのアップグレード後に再展開する必要があります。次に示すサービスごとに、ある程度のダウンタイムが発生します。
+     </para>
+     <itemizedlist>
+      <listitem>
+       <important>
+        <para>
+         メタデータサーバとObject Gatewaysについては、ノードをSUSE Linux Enterprise Server 15 SP1からSUSE Linux Enterprise Server 15 SP2にアップグレードする際にダウンします。ダウン状態はアップグレード手続きの最後にサービスが再展開されるまで続きます。特に注意が必要なのは、メタデータサーバとObject GatewaysをMON、MGR、OSDなどと同じ場所に配置している場合です。この場合、クラスタのアップグレードが完了するまでこれらのサービスを利用できない可能性があります。これが問題となる場合は、これらのサービスをアップグレード前に別のノードに分けて展開することを検討してください。そうすれば、ダウンタイムは最小限で済みます。この場合、ダウンする期間はクラスタ全体のアップグレード中ではなく、ゲートウェイノードのアップグレード中になります。
+        </para>
+       </important>
+      </listitem>
+      <listitem>
+       <para>
+        NFS GaneshaとiSCSI Gatewaysについては、SUSE Linux Enterprise Server 15 SP1からSUSE Linux Enterprise Server 15 SP2へアップグレードする手続きの中で、ノードがリブートしている間にダウンします。また、各サービスがコンテナ化モードで再展開する際にも一時的にダウンします。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="upgrade-backup-config-data">
+   <title>クラスタ設定とデータのバックアップ</title>
+   <para>
+    SUSE Enterprise Storage 7にアップグレードする前に、すべてのクラスタの設定とデータをバックアップすることを強く推奨します。すべてのデータをバックアップする方法については、<link xlink:href="https://documentation.suse.com/ses/6/single-html/ses-admin/#cha-deployment-backup"/>を参照してください。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade">
+   <title>前回のアップグレード手順の確認</title>
+   <para>
+    以前にバージョン5からアップグレードした場合は、バージョン6へのアップグレードが正常に完了していることを確認します。
+   </para>
+   <para>
+    <filename>/srv/salt/ceph/configuration/files/ceph.conf.import</filename>というファイルが存在することを確認します。
+   </para>
+   <para>
+    このファイルはSUSE Enterprise Storage 5から6へのアップグレード中に、engulfプロセスにより作成されます。<option>configuration_init: default-import</option>オプションは<filename>/srv/pillar/ceph/proposals/config/stack/default/ceph/cluster.yml</filename>に設定されます。
+   </para>
+   <para>
+    <option>configuration_init</option>がまだ<option>default-import</option>に設定されている場合、クラスタはその設定ファイルとして<filename>ceph.conf.import</filename>を使用しています。これは、<filename>/srv/salt/ceph/configuration/files/ceph.conf.d/</filename>にあるファイルからコンパイルされるDeepSeaのデフォルトの<filename>ceph.conf</filename>ではありません。
+   </para>
+   <para>
+    したがって、<filename>ceph.conf.import</filename>でカスタム設定を調べ、可能であれば、<filename>/srv/salt/ceph/configuration/files/ceph.conf.d/</filename>にあるファイルのいずれかに設定を移動する必要があります。
+   </para>
+   <para>
+    その後、<filename>/srv/pillar/ceph/proposals/config/stack/default/ceph/cluster.yml</filename>から<option>configuration_init: default-import</option>行を削除してください。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade-patch">
+   <title>クラスタノードのアップデートとクラスタのヘルスの確認</title>
+   <para>
+    SUSE Linux Enterprise Server 15 SP1とSUSE Enterprise Storage 6のすべての最新のアップデートがすべてのクラスタノードに適用されていることを確認してください。
+   </para>
+<screen><prompt role="root">root # </prompt>zypper refresh &amp;&amp; zypper patch</screen>
+   <para>
+    アップデートの適用後、クラスタのヘルスを確認してください。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph -s</screen>
+  </sect2>
+
+  <sect2 xml:id="verify-previous-upgrade-patch-repos">
+   <title>ソフトウェアリポジトリとコンテナイメージへのアクセス確認</title>
+   <para>
+    各クラスタノードがSUSE Linux Enterprise Server 15 SP2とSUSE Enterprise Storage 7のソフトウェアリポジトリとコンテナイメージのリポジトリにアクセスできることを確認してください。
+   </para>
+   <sect3 xml:id="verify-previous-upgrade-patch-repos-repos">
+    <title>ソフトウェアリポジトリ</title>
+    <para>
+     すべてのノードがSCCに登録されている場合、<command>zypper migration</command>コマンドによるアップグレードが可能です。詳細については、<link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-upgrade-online.html#sec-upgrade-online-zypper"/>を参照してください。
+    </para>
+    <para>
+     ノードがSCCに登録されていない<emphasis role="bold"/>場合は、すべての既存のソフトウェアリポジトリを無効化し、次に示す各エクステンションに<literal>Pool</literal>リポジトリと<literal>Updates</literal>リポジトリの両方を追加してください。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       SLE-Product-SLES/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SLE-Module-Basesystem/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SLE-Module-Server-Applications/15-SP2
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       SUSE-Enterprise-Storage-7
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="verify-previous-upgrade-patch-repos-images">
+    <title>コンテナイメージ</title>
+    <para>
+     すべてのクラスタノードはコンテナイメージのレジストリにアクセスできる必要があります。多くの場合、<literal>registry.suse.com</literal>のパブリックSUSEレジストリを使用します。必要なイメージは次のとおりです。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       registry.suse.com/ses/7/ceph/ceph
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/ses/7/ceph/grafana
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-server
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-node-exporter
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       registry.suse.com/caasp/v4.5/prometheus-alertmanager
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     もしくは、たとえばエアギャップ環境で展開したい場合などは、ローカルレジストリを設定し、正常なコンテナイメージのセットが利用できることを確認してください。ローカルなコンテナイメージのレジストリを設定する方法の詳細については、<xref linkend="deploy-cephadm-configure-registry"/>を参照してください。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="upgrade-salt-master">
+  <title>Salt Masterのアップグレード</title>
+
+  <para>
+   Salt Masterのアップグレードプロセスを以下に示します。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     基礎となるOSをSUSE Linux Enterprise Server 15 SP2にアップグレードします。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       すべてのノードがSCCに登録されているクラスタの場合は、<command>zypper migration</command>コマンドを実行します。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       手動で割り当てられたソフトウェアリポジトリを含むクラスタの場合は、<command>zypper dup</command>コマンドを実行した後、<command>reboot</command>コマンドを実行します。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </step>
+   <step>
+    <para>
+     誤って使用しないように、DeepSeaステージを無効化します。<filename>/srv/pillar/ceph/stack/global.yml</filename>に次の内容を追加します。
+    </para>
+<screen>
+stage_prep: disabled
+stage_discovery: disabled
+stage_configure: disabled
+stage_deploy: disabled
+stage_services: disabled
+stage_remove: disabled
+</screen>
+    <para>
+     ファイルを保存し、変更を適用します。
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' saltutil.pillar_refresh</screen>
+   </step>
+   <step>
+    <para>
+     <literal>registry.suse.com</literal>のコンテナイメージではなく<emphasis role="bold"/>、ローカル環境に設定したレジストリを使用している場合は、<filename>/srv/pillar/ceph/stack/global.yml</filename>を編集して、DeepSeaがどのCephコンテナイメージとレジストリを使用するか指定します。たとえば、<literal>192.168.121.1:5000/my/ceph/image</literal>を使用する場合は、次に示す内容を追加します。
+    </para>
+<screen>
+ses7_container_image: 192.168.121.1:5000/my/ceph/image
+ses7_container_registries:
+  - location: 192.168.121.1:5000
+</screen>
+    <para>
+     ファイルを保存し、変更を適用します。
+    </para>
+<screen><prompt>root@master # </prompt>salt '*' saltutil.refresh_pillar</screen>
+   </step>
+   <step>
+    <para>
+     既存の設定を取り込みます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config assimilate-conf -i /etc/ceph/ceph.conf</screen>
+   </step>
+   <step>
+    <para>
+     アップグレードステータスを確認します。クラスタの設定によって、出力は異なる場合があります。
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run upgrade.status
+The newest installed software versions are:
+ ceph: ceph version 15.2.2-60-gf5864377ab (f5864377abb5549f843784c93577980aa264b9bc) octopus (stable)
+ os: SUSE Linux Enterprise Server 15 SP2
+Nodes running these software versions:
+ admin.ceph (assigned roles: master, prometheus, grafana)
+Nodes running older software versions must be upgraded in the following order:
+ 1: mon1.ceph (assigned roles: admin, mon, mgr)
+ 2: mon2.ceph (assigned roles: admin, mon, mgr)
+ 3: mon3.ceph (assigned roles: admin, mon, mgr)
+ 4: data4.ceph (assigned roles: storage, mds)
+ 5: data1.ceph (assigned roles: storage)
+ 6: data2.ceph (assigned roles: storage)
+ 7: data3.ceph (assigned roles: storage)
+ 8: data5.ceph (assigned roles: storage, rgw)
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-mon-mgr-nodes">
+  <title>MON、MGR、OSDノードのアップグレード</title>
+
+  <para>
+   Ceph Monitor、Ceph Manager、OSDのノードを一度にアップグレードしてください。サービスごとに、次の手順に従います。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     アップグレードするノードがOSDノードの場合、アップグレード中にOSDが<literal>out</literal>とマークされることを避けるため、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd add-noout <replaceable>SHORT_NODE_NAME</replaceable></screen>
+    <para>
+     <replaceable>SHORT_NODE_NAME</replaceable>はノードの略称で置き換えます。この名称が<command>ceph osd tree</command>コマンドの出力に表示されます。たとえば、以下の入力はホスト名の略称が<literal>ses-min1</literal>と<literal>ses-min2</literal>の場合です。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph osd tree
+ID   CLASS  WEIGHT   TYPE NAME       STATUS  REWEIGHT  PRI-AFF
+ -1         0.60405  root default
+-11         0.11691      host ses-min1
+  4    hdd  0.01949          osd.4       up   1.00000  1.00000
+  9    hdd  0.01949          osd.9       up   1.00000  1.00000
+ 13    hdd  0.01949          osd.13      up   1.00000  1.00000
+[...]
+ -5         0.11691      host ses-min2
+  2    hdd  0.01949          osd.2       up   1.00000  1.00000
+  5    hdd  0.01949          osd.5       up   1.00000  1.00000
+[...]
+</screen>
+   </step>
+   <step>
+    <para>
+     基礎となるOSをSUSE Linux Enterprise Server 15 SP2にアップグレードします。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       クラスタのノードがすべてSCCに登録されている場合は、<command>zypper migration</command>を実行します。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       手動で割り当てられたソフトウェアリポジトリを含むクラスタノードの場合は、<command>zypper dup</command>を実行した後、<command>reboot</command>コマンドを実行します。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </step>
+   <step>
+    <para>
+     ノードの再起動後、Salt Master上で以下のコマンドを実行して、ノード上のすべての既存のMONデーモン、MGRデーモン、OSDデーモンをコンテナ化します。
+    </para>
+<screen><prompt>root@master # </prompt>salt <replaceable>MINION_ID</replaceable> state.apply ceph.upgrade.ses7.adopt</screen>
+    <para>
+     <replaceable>MINION_ID</replaceable>はアップグレードするミニオンのIDで置き換えます。Salt Master上で<command>salt-key -L</command>コマンドを実行することで、ミニオンIDのリストを取得できます。
+    </para>
+    <tip>
+     <para>
+      「導入」<emphasis/>の進捗状況を確認するには、Cephダッシュボードを確認するか、Salt Master上で以下のコマンドのいずれかを実行します。
+     </para>
+<screen>
+<prompt>root@master # </prompt>ceph status
+<prompt>root@master # </prompt>ceph versions
+<prompt>root@master # </prompt>salt-run upgrade.status
+</screen>
+    </tip>
+   </step>
+   <step>
+    <para>
+     OSDノードをアップグレード中の場合、導入が正常に完了した後で<literal>noout</literal>フラグの設定を解除してください。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd rm-noout <replaceable>SHORT_NODE_NAME</replaceable></screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-gateway-nodes">
+  <title>ゲートウェイノードのアップグレード</title>
+  <para>
+   次に、個別のゲートウェイノード(メタデータサーバ、Object Gateway、NFS Ganesha、iSCSI Gateway)をアップグレードしてください。各ノードに基礎となるOSをSUSE Linux Enterprise Server 15 SP2にアップグレードしてください。
+  </para>
+  <itemizedlist>
+   <listitem>
+    <para>
+     クラスタのノードがすべてSUSE Customer Centerに登録されている場合は、<command>zypper migration</command>コマンドを実行してください。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     手動で割り当てられたソフトウェアリポジトリを含むクラスタノードの場合は、<command>zypper dup</command>コマンドを実行した後、<command>reboot</command>コマンドを実行してください。
+    </para>
+   </listitem>
+  </itemizedlist>
+  <para>
+   この手順はクラスタの一部であるが、まだ役割を割り当てていないノードにも適用します(割り当てたかどうか不明な場合は、Salt Master上で<command>salt-key -L</command>コマンドを実行してホストのリストを取得し、<command>salt-run upgrade.status</command>コマンドの出力と比較してください)。
+  </para>
+  <para>
+   クラスタに含まれる全ノードのOSをアップグレードした後、次のステップで <package>ceph-salt</package> パッケージをインストールし、クラスタ設定を適用します。ゲートウェイサービスそのものは、アップグレード処理の最後にコンテナ化モードで再展開されます。
+  </para>
+  <note>
+   <para>
+    メタデータサーバとObject Gatewayサービスは、SUSE Linux Enterprise Server 15 SP2へのアップグレードが始まると利用できなくなります。この状態はアップグレード処理の最後にサービスが再展開されるまで続きます。
+   </para>
+  </note>
+ </sect1>
+ <sect1 xml:id="upgrade-cephsalt">
+  <title><systemitem class="resource">ceph-salt</systemitem>のインストールと、クラスタ設定の適用</title>
+
+  <para>
+   <systemitem class="resource">ceph-salt</systemitem>のインストールとクラスタ設定の適用を開始する前に、次のコマンドを実行してクラスタとアップグレードステータスを確認してください。
+  </para>
+
+<screen>
+<prompt>root@master # </prompt>ceph status
+<prompt>root@master # </prompt>ceph versions
+<prompt>root@master # </prompt>salt-run upgrade.status
+</screen>
+
+  <procedure>
+   <step>
+    <para>
+     DeepSeaが作成した<literal>rbd_exporter</literal>と<literal>rgw_exporter</literal>というcron jobを削除します。Salt Master上で<systemitem class="username">root</systemitem>として<command>crontab -e</command>コマンドを実行し、crontabを編集します。以下の項目が存在する場合は削除します。
+    </para>
+<screen>
+# SALT_CRON_IDENTIFIER:deepsea rbd_exporter cron job
+*/5 * * * * /var/lib/prometheus/node-exporter/rbd.sh &gt; \
+ /var/lib/prometheus/node-exporter/rbd.prom 2&gt; /dev/null
+# SALT_CRON_IDENTIFIER:Prometheus rgw_exporter cron job
+*/5 * * * * /var/lib/prometheus/node-exporter/ceph_rgw.py &gt; \
+ /var/lib/prometheus/node-exporter/ceph_rgw.prom 2&gt; /dev/null
+</screen>
+   </step>
+   <step>
+    <para>
+     次のコマンドを実行して、DeepSeaからクラスタ設定をエクスポートします。
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt-run upgrade.ceph_salt_config &gt; ceph-salt-config.json
+<prompt>root@master # </prompt>salt-run upgrade.generate_service_specs &gt; specs.yaml
+</screen>
+   </step>
+   <step>
+    <para>
+     DeepSeaをアンインストールし、<systemitem class="resource">ceph-salt</systemitem>をSalt Masterにインストールします。
+    </para>
+<screen>
+<prompt>root@master # </prompt>zypper remove 'deepsea*'
+<prompt>root@master # </prompt>zypper install ceph-salt
+</screen>
+   </step>
+   <step>
+    <para>
+     Salt Masterを再起動し、Saltモジュールを同期します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>systemctl restart salt-master.service
+<prompt>root@master # </prompt>salt \* saltutil.sync_all
+</screen>
+   </step>
+   <step>
+    <para>
+     DeepSeaのクラスタ設定を<systemitem class="resource">ceph-salt</systemitem>にインポートします。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt import ceph-salt-config.json</screen>
+   </step>
+   <step>
+    <para>
+     クラスタノード通信用のSSHキーを作成します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ssh generate</screen>
+    <tip>
+     <para>
+      DeepSeaからクラスタ設定がインポートされたことを確認し、欠落している可能性のあるオプションを指定します。
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config ls</screen>
+     <para>
+      クラスタ設定の詳細については<xref linkend="deploy-cephadm-configure"/>を参照してください。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     設定を適用し、cephadmを有効化します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply</screen>
+   </step>
+   <step>
+    <para>
+     ローカルのコンテナレジストリURLやアクセス資格情報を提供する必要がある場合は、<xref linkend="deploy-cephadm-configure-registry"/>の手順に従ってください。
+    </para>
+   </step>
+   <step>
+    <para>
+     <literal>registry.suse.com</literal>のコンテナイメージではなく<emphasis role="bold"/>、ローカルに設定したレジストリを使う場合は、次のコマンドを実行してどのコンテナイメージを使用するかをCephに伝えます。
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global container_image <replaceable>IMAGE_NAME</replaceable></screen>
+    <para>
+     次に例を示します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global container_image 192.168.121.1:5000/my/ceph/image</screen>
+   </step>
+   <step>
+    <para>
+     SUSE Enterprise Storage 6の<systemitem class="daemon">ceph-crash</systemitem>デーモンを停止し、無効化します。これらのデーモンの新しくコンテナ化された形式は、後ほど自動的に起動します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>salt '*' service.stop ceph-crash
+<prompt>root@master # </prompt>salt '*' service.disable ceph-crash
+</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-cephsalt-monitoring">
+  <title>監視スタックのアップグレードと導入</title>
+
+  <para>
+   以下の手順によって、監視スタックのすべてのコンポーネントを導入します(詳細については<xref linkend="monitoring-alerting"/>を参照してください)。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     オーケストレータを一時停止します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch pause</screen>
+   </step>
+   <step>
+    <para>
+     Prometheus、Grafana、Alertmanagerがどのノードで実行されている場合でも(デフォルトではSalt Masterノード)、以下のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name prometheus.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name alertmanager.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm adopt --style=legacy --name grafana.$(hostname)
+</screen>
+    <tip>
+     <para>
+      <literal>registry.suse.com</literal>のデフォルトコンテナイメージレジストリを実行していない<emphasis role="bold"/>場合は、使用するイメージを指定する必要があります。以下に例を示します。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/caasp/v4.5/prometheus-server:2.18.0 \
+  adopt --style=legacy --name prometheus.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/caasp/v4.5/prometheus-alertmanager:0.16.2 \
+  adopt --style=legacy --name alertmanager.$(hostname)
+<prompt>cephuser@adm &gt; </prompt>cephadm --image 192.168.121.1:5000/ses/7/ceph/grafana:7.0.3 \
+ adopt --style=legacy --name grafana.$(hostname)
+</screen>
+     <para>
+      カスタムまたはローカルのコンテナイメージの使用方法の詳細については、<xref linkend="monitoring-custom-images"/>を参照してください。
+     </para>
+    </tip>
+   </step>
+   <step>
+    <para>
+     Node-Exporterを削除します。Node-Exporterのマイグレーションは不要です。<filename>specs.yaml</filename>ファイルが適用された際にコンテナとして再インストールされます。
+    </para>
+<screen><prompt>tux &gt; </prompt><command>sudo</command> zypper rm golang-github-prometheus-node_exporter</screen>
+   </step>
+   <step>
+    <para>
+     DeepSeaからエクスポートしておいたサービス仕様を適用します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i specs.yaml</screen>
+   </step>
+   <step>
+    <para>
+     オーケストレータを再開します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch resume</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="upgrade-gateways">
+  <title>ゲートウェイサービスの再展開</title>
+
+  <sect2 xml:id="upgrade-ogw">
+   <title>Object Gatewayのアップグレード</title>
+   <para>
+    SUSE Enterprise Storage 7においてObject Gatewayは常にレルムに設定されます。これにより、将来的なマルチサイトが可能になります(詳細については<xref linkend="ceph-rgw-fed"/>を参照してください)。SUSE Enterprise Storage 6でシングルサイトのObject Gateway設定を使用している場合は、以下の手順に従ってレルムを追加してください。マルチサイト機能を実際に使う予定がない場合は、レルム、ゾーングループ、ゾーンの名前に<literal>default</literal>を使用してもかまいません。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      新しいレルムを作成します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin realm create --rgw-realm=<replaceable>REALM_NAME</replaceable> --default</screen>
+    </step>
+    <step>
+     <para>
+      必要に応じて、デフォルトのゾーンとゾーングループの名前を変更します。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup rename \
+ --rgw-zonegroup default \
+ --zonegroup-new-name=<replaceable>ZONEGROUP_NAME</replaceable>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone rename \
+ --rgw-zone default \
+ --zone-new-name <replaceable>ZONE_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable>
+</screen>
+    </step>
+    <step>
+     <para>
+      マスターゾーングループを設定します。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup modify \
+ --rgw-realm=<replaceable>REALM_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable> \
+ --endpoints http://<replaceable>RGW.EXAMPLE.COM</replaceable>:80 \
+ --master --default
+</screen>
+    </step>
+    <step>
+     <para>
+      マスターゾーンを設定します。このとき、<option>system</option>フラグが有効なObject GatewayユーザのACCESS_KEYとSECRET_KEYが必要になります。通常は<literal>admin</literal>ユーザが該当します。ACCESS_KEYとSECRET_KEYを取得するには、<command>radosgw-admin user info --uid admin</command>を実行します。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify \
+ --rgw-realm=<replaceable>REALM_NAME</replaceable> \
+ --rgw-zonegroup=<replaceable>ZONEGROUP_NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE_NAME</replaceable> \
+ --endpoints http://<replaceable>RGW.EXAMPLE.COM</replaceable>:80 \
+ --access-key=<replaceable>ACCESS_KEY</replaceable> \
+ --secret=<replaceable>SECRET_KEY</replaceable> \
+ --master --default
+</screen>
+    </step>
+    <step>
+     <para>
+      アップデートされた設定をコミットします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+    </step>
+   </procedure>
+   <para>
+    Object Gatewayサービスをコンテナ化するには、<xref linkend="deploy-cephadm-day2-service-ogw"/>に記載されている仕様ファイルを作成し、適用します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>RGW</replaceable>.yml
+</screen>
+  </sect2>
+
+  <sect2 xml:id="upgrade-ganesha">
+   <title>NFS Ganeshaのアップグレード</title>
+   <para>
+    Ceph Nautilusを実行する既存のNFS Ganeshaサービスから、Ceph Octopusを実行するNFS Ganeshaコンテナにマイグレートする方法を次で説明します。
+   </para>
+   <warning>
+    <para>
+     以下の情報は、コアとなるCephサービスのアップグレードに成功していることを前提としたものです。
+    </para>
+   </warning>
+   <para>
+    NFS Ganeshaはデーモンごとの追加設定を保存し、RADOSプールに設定をエクスポートします。設定済みのRADOSプールは、<filename>ganesha.conf</filename>ファイルの<literal>RADOS_URLS</literal>ブロックの<literal>watch_url</literal>行で確認できます。デフォルトでは、このプールは<literal>ganesha_config</literal>と名付けられます。
+   </para>
+   <para>
+    マイグレーションを試みる前に、RADOSプールに配置されたエクスポート設定オブジェクトとデーモン設定オブジェクトのコピーを作成しておくことを強く推奨します。設定済みのRADOSプールを検索するには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>grep -A5 RADOS_URLS /etc/ganesha/ganesha.conf</screen>
+   <para>
+    RADOSプールの内容を一覧にするには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados --pool ganesha_config --namespace ganesha ls | sort
+  conf-node3
+  export-1
+  export-2
+  export-3
+  export-4</screen>
+   <para>
+    RADOSオブジェクトをコピーするには、次のコマンドを実行します。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>RADOS_ARGS="--pool ganesha_config --namespace ganesha"
+<prompt>cephuser@adm &gt; </prompt>OBJS=$(rados $RADOS_ARGS ls)
+<prompt>cephuser@adm &gt; </prompt>for obj in $OBJS; do rados $RADOS_ARGS get $obj $obj; done
+<prompt>cephuser@adm &gt; </prompt>ls -lah
+total 40K
+drwxr-xr-x 2 root root 4.0K Sep 8 03:30 .
+drwx------ 9 root root 4.0K Sep 8 03:23 ..
+-rw-r--r-- 1 root root 90 Sep 8 03:30 conf-node2
+-rw-r--r-- 1 root root 90 Sep 8 03:30 conf-node3
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-1
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-2
+-rw-r--r-- 1 root root 350 Sep 8 03:30 export-3
+-rw-r--r-- 1 root root 358 Sep 8 03:30 export-4</screen>
+   <para>
+    ノードごとに既存のNFS Ganeshaサービスを停止して、cephadmが管理するコンテナに置き換える必要があります。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      既存のNFS Ganeshaサービスを停止および無効化します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>systemctl stop nfs-ganesha
+<prompt>cephuser@adm &gt; </prompt>systemctl disable nfs-ganesha
+</screen>
+    </step>
+    <step>
+     <para>
+      既存のNFS Ganeshaサービスが停止すると、cephadmを用いてコンテナ内に新しいサービスを展開できます。そのためには、<literal>service_id</literal>を記述したサービス仕様を作成する必要があります。このIDはこの新しいNFSクラスタの特定、配置仕様にホストとして記載された、マイグレーション先ノードのホスト名の特定、設定済みNFSエクスポートオブジェクトを含むRADOSプールとネームスペースの特定に使用されます。次に例を示します。
+     </para>
+     <screen>service_type: nfs
+service_id: <replaceable>SERVICE_ID</replaceable>
+placement:
+  hosts:
+  - node2
+  pool: ganesha_config
+  namespace: ganesha
+</screen>
+     <para>
+      配置仕様の作成の詳細については、<xref linkend="cephadm-service-and-placement-specs"/>を参照してください。
+     </para>
+    </step>
+    <step>
+     <para>
+      配置仕様を適用します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>FILENAME</replaceable>.yaml</screen>
+    </step>
+    <step>
+     <para>
+      ホストでNFS Ganeshaデーモンが実行されていることを確認します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type nfs
+NAME           HOST   STATUS         REFRESHED  AGE  VERSION  IMAGE NAME                                IMAGE ID      CONTAINER ID
+nfs.foo.node2  node2  running (26m)  8m ago     27m  3.3      registry.suse.com/ses/7/ceph/ceph:latest  8b4be7c42abd  c8b75d7c8f0d</screen>
+    </step>
+    <step>
+     <para>
+      NFS Ganeshaノードごとに、これらの手順を繰り返します。ノードごとに別々のサービス仕様を作成する必要はありません。各ノードのホスト名を既存のNFSサービス仕様に追加し、再適用すれば十分です。
+     </para>
+    </step>
+   </procedure>
+   <para>
+    既存のエクスポートは次の2つの方法でマイグレートできます。
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Cephダッシュボードを使用して、手動で再作成と再適用を行う方法。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      デーモンごとのRADOSオブジェクトの内容を、新しく作成されたNFS Ganesha共通設定に手動でコピーする方法。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <procedure>
+    <title>エクスポートをNFS Ganesha共通設定ファイルに手動コピーする</title>
+    <step>
+     <para>
+      デーモンごとのRADOSオブジェクトのリストを確認します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>RADOS_ARGS="--pool ganesha_config --namespace ganesha"
+<prompt>cephuser@adm &gt; </prompt>DAEMON_OBJS=$(rados $RADOS_ARGS ls | grep 'conf-')</screen>
+    </step>
+    <step>
+     <para>
+      デーモンごとのRADOSオブジェクトのコピーを作成します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>for obj in $DAEMON_OBJS; do rados $RADOS_ARGS get $obj $obj; done
+<prompt>cephuser@adm &gt; </prompt>ls -lah
+total 20K
+drwxr-xr-x 2 root root 4.0K Sep 8 16:51 .
+drwxr-xr-x 3 root root 4.0K Sep 8 16:47 ..
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-nfs.<replaceable>SERVICE_ID</replaceable>
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-node2
+-rw-r--r-- 1 root root 90 Sep 8 16:51 conf-node3</screen>
+    </step>
+    <step>
+     <para>
+      ソートとマージを行って、エクスポートを単一のリストにします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>cat conf-* | sort -u &gt; conf-nfs.<replaceable>SERVICE_ID</replaceable>
+<prompt>cephuser@adm &gt; </prompt>cat conf-nfs.foo
+%url "rados://ganesha_config/ganesha/export-1"
+%url "rados://ganesha_config/ganesha/export-2"
+%url "rados://ganesha_config/ganesha/export-3"
+%url "rados://ganesha_config/ganesha/export-4"</screen>
+    </step>
+    <step>
+     <para>
+      新しいNFS Ganesha共通設定ファイルを書き込みます。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados $RADOS_ARGS put conf-nfs.<replaceable>SERVICE_ID</replaceable> conf-nfs.<replaceable>SERVICE_ID</replaceable></screen>
+    </step>
+    <step>
+     <para>
+      NFS Ganeshaデーモンに通知します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados $RADOS_ARGS notify conf-nfs.<replaceable>SERVICE_ID</replaceable> conf-nfs.<replaceable>SERVICE_ID</replaceable></screen>
+     <note>
+      <para>
+       このアクションによって、デーモンは設定を再ロードします。
+      </para>
+     </note>
+    </step>
+   </procedure>
+   <para>
+    サービスのマイグレートに成功すると、NautilusベースのNFS Ganeshaサービスを削除できるようになります。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      NFS Ganeshaを削除します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>zypper rm nfs-ganesha
+Reading installed packages...
+Resolving package dependencies...
+The following 5 packages are going to be REMOVED:
+  nfs-ganesha nfs-ganesha-ceph nfs-ganesha-rados-grace nfs-ganesha-rados-urls nfs-ganesha-rgw
+5 packages to remove.
+After the operation, 308.9 KiB will be freed.
+Continue? [y/n/v/...? shows all options] (y): y
+(1/5) Removing nfs-ganesha-ceph-2.8.3+git0.d504d374e-3.3.1.x86_64 .................................................................................................................................................................................................................................................................................................[done]
+(2/5) Removing nfs-ganesha-rgw-2.8.3+git0.d504d374e-3.3.1.x86_64 ..................................................................................................................................................................................................................................................................................................[done]
+(3/5) Removing nfs-ganesha-rados-urls-2.8.3+git0.d504d374e-3.3.1.x86_64 ...........................................................................................................................................................................................................................................................................................[done]
+(4/5) Removing nfs-ganesha-rados-grace-2.8.3+git0.d504d374e-3.3.1.x86_64 ..........................................................................................................................................................................................................................................................................................[done]
+(5/5) Removing nfs-ganesha-2.8.3+git0.d504d374e-3.3.1.x86_64 ......................................................................................................................................................................................................................................................................................................[done]
+Additional rpm output:
+warning: /etc/ganesha/ganesha.conf saved as /etc/ganesha/ganesha.conf.rpmsave</screen>
+    </step>
+    <step>
+     <para>
+      Cephダッシュボードから古いクラスタ設定を削除します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph dashboard reset-ganesha-clusters-rados-pool-namespace
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-mds">
+   <title>メタデータサーバのアップグレード</title>
+   <para>
+    MON、MGR、OSDとは異なり、メタデータサーバをインプレース導入することはできません。その代わり、Cephオーケストレータを使用して、コンテナ内に再展開する必要があります。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      <command>ceph fs ls</command>コマンドを実行して、ファイルシステムの名前を取得します。以下に例を示します。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph fs ls
+name: cephfs, metadata pool: cephfs_metadata, data pools: [cephfs_data ]
+</screen>
+    </step>
+    <step>
+     <para>
+      <xref linkend="deploy-cephadm-day2-service-mds"/>に記載されている、新しいサービス仕様ファイル<filename>mds.yml</filename>を作成します。そのために、ファイルシステムの名前を<option>service_id</option>として使用して、MDSデーモンを実行するホストを指定します。以下に例を示します。
+     </para>
+<screen>
+service_type: mds
+service_id: cephfs
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    </step>
+    <step>
+     <para>
+      <command>ceph orch apply -i mds.yml</command>コマンドを実行して、サービス仕様を適用し、MDSデーモンを起動します。
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="upgrade-igw">
+   <title>iSCSI Gatewayのアップグレード</title>
+   <para>
+    iSCSI Gatewayをアップグレードするには、Cephオーケストレータを使用してコンテナ内に再展開する必要があります。複数のiSCSI Gatewayを使用している場合はサービスのダウンタイムを短縮するために、iSCSI Gatewayを1つずつ再展開する必要があります。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      各iSCSI Gatewayノードで実行されている既存のiSCSIデーモンを停止し無効化するには、次のコマンドを実行します。
+     </para>
+<screen>
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl stop rbd-target-gw
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl disable rbd-target-gw
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl stop rbd-target-api
+<prompt>tux &gt; </prompt><command>sudo</command> systemctl disable rbd-target-api
+</screen>
+    </step>
+    <step>
+     <para>
+      <xref linkend="deploy-cephadm-day2-service-igw"/>に記載されている、iSCSI Gateway用のサービス仕様を作成します。そのためには、既存の<filename>/etc/ceph/iscsi-gateway.cfg</filename>ファイルから<option>pool</option>、<option>trusted_ip_list</option>、<option>api_*</option>という設定を取得する必要があります。SSLサポートを有効にしている場合(<literal>api_secure = true</literal>)、SSL証明書(<filename>/etc/ceph/iscsi-gateway.crt</filename>)とキー(<filename>/etc/ceph/iscsi-gateway.key</filename>)も必要です。
+     </para>
+     <para>
+      例として、<filename>/etc/ceph/iscsi-gateway.cfg</filename>が以下の内容を含む場合を考えます。
+     </para>
+<screen>
+[config]
+cluster_client_name = client.igw.ses-min5
+pool = iscsi-images
+trusted_ip_list = 10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202
+api_port = 5000
+api_user = admin
+api_password = admin
+api_secure = true
+</screen>
+     <para>
+      この場合、次のようなサービス仕様ファイル<filename>iscsi.yml</filename>を作成する必要があります。
+     </para>
+<screen>
+service_type: iscsi
+service_id: igw
+placement:
+  hosts:
+  - ses-min5
+spec:
+  pool: iscsi-images
+  trusted_ip_list: "10.20.179.203,10.20.179.201,10.20.179.205,10.20.179.202"
+  api_port: 5000
+  api_user: admin
+  api_password: admin
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+     <note>
+      <para>
+       <option>pool</option>、<option>trusted_ip_list</option>、<option>api_port</option>、<option>api_user</option>、<option>api_password</option>、<option>api_secure</option>の設定は、<filename>/etc/ceph/iscsi-gateway.cfg</filename>ファイルの内容とまったく同じです。<option>ssl_cert</option>と<option>ssl_key</option>の値は、既存のSSL証明書とキーファイルからコピーできます。これらの設定が適切にインデントされていることを確認してください。また、<literal>ssl_cert:</literal>行と<literal>ssl_key:</literal>行の末尾に「パイプ文字」<emphasis/>(<literal>|</literal>)があることを確認してください(上記の<filename>iscsi.yml</filename>ファイルの内容を参照してください)。
+      </para>
+     </note>
+    </step>
+    <step>
+     <para>
+      <command>ceph orch apply -i iscsi.ym</command>コマンドを実行して、サービス仕様を適用し、iSCSI Gatewayデーモンを起動します。
+     </para>
+    </step>
+    <step>
+     <para>
+      古い <package>ceph-iscsi</package> パッケージを既存のiSCSI Gatewayノードからそれぞれ削除します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>zypper rm -u ceph-iscsi</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="upgrade-post-cleanup">
+  <title>アップグレード後のクリーンアップ</title>
+
+  <para>
+   アップグレードの完了後に、以下のクリーンアップ手順を実行してください。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     現在のCephバージョンをチェックして、クラスタのアップグレードに成功しているかを確認します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph versions</screen>
+   </step>
+   <step>
+    <para>
+     古いOSDがクラスタに参加していないことを確認します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd require-osd-release octopus</screen>
+   </step>
+   <step>
+    <para>
+     自動拡張モジュールを有効化します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable pg_autoscaler</screen>
+    <important>
+     <para>
+      SUSE Enterprise Storage 6のプールは<option>pg_autoscale_mode</option>がデフォルトで<option>warn</option>に設定されています。そのため、配置グループ数が最適でない場合に警告メッセージが出ますが、警告のみで自動拡張は行われません。SUSE Enterprise Storage 7のデフォルト設定では、新しいプールの<option>pg_autoscale_mode</option>オプションは<option>on</option>に設定されるため、配置グループは自動拡張が実際に行われます。手順に従ってアップグレードを行っても、既存プールの<option>pg_autoscale_mode</option>は、自動では変更されません。設定を<option>on</option>に変更して自動拡張を活用したい場合は、<xref linkend="op-pgs-autoscaler"/>の手順を参照してください。
+     </para>
+    </important>
+    <para>
+     詳細については、<xref linkend="op-pgs-autoscaler"/>を参照してください。
+    </para>
+   </step>
+   <step>
+    <para>
+     Luminousより前のバージョンのクライアントを拒否します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd set-require-min-compat-client luminous</screen>
+   </step>
+   <step>
+    <para>
+     バランサモジュールを有効化します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph balancer mode upmap
+<prompt>cephuser@adm &gt; </prompt>ceph balancer on
+</screen>
+    <para>
+     詳細については、<xref linkend="mgr-modules-balancer"/>を参照してください。
+    </para>
+   </step>
+   <step>
+    <para>
+     必要に応じてテレメトリモジュールを有効にします。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph mgr module enable telemetry
+<prompt>cephuser@adm &gt; </prompt>ceph telemetry on
+ </screen>
+    <para>
+     詳細については、<xref linkend="mgr-modules-telemetry"/>を参照してください。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+</chapter>

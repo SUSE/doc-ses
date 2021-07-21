@@ -1,0 +1,1298 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="runtime_config.xml" version="5.0" xml:id="cha-ceph-configuration">
+ <title>Ceph 集群配置</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  本章介绍如何通过配置选项配置 Ceph 集群。
+ </para>
+ <sect1 xml:id="cha-ceph-configuration-ceph-conf">
+  <title>配置 <filename>ceph.conf</filename> 文件</title>
+
+  <para>
+   cephadm 使用基本 <filename>ceph.conf</filename> 文件，该文件中仅包含用于连接到 MON、身份验证和提取配置信息的最小选项集。在大多数情况下，这仅限于 <option>mon_host</option> 选项（虽然可以通过使用 DNS SRV 记录来避免该限制）。
+  </para>
+
+  <important>
+   <para>
+    <filename>ceph.conf</filename> 文件不再充当存储集群配置的中心位置，而是支持配置数据库（参见<xref linkend="cha-ceph-configuration-db"/>）。
+   </para>
+   <para>
+    如果您仍然需要通过 <filename>ceph.conf</filename> 文件更改集群配置（例如，由于您使用的客户端不支持从配置数据库读取选项），则需要运行以下命令，并负责在整个集群维护和分发 <filename>ceph.conf</filename> 文件：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set mgr mgr/cephadm/manage_etc_ceph_ceph_conf false</screen>
+  </important>
+
+  <sect2 xml:id="cha-ceph-configuration-ceph-conf-containers">
+   <title>访问容器映像内部的 <filename>ceph.conf</filename></title>
+   <para>
+    虽然 Ceph 守护进程在容器内运行，您仍然可以访问其 <filename>ceph.conf</filename> 配置文件。它作为主机系统上的以下文件<emphasis>绑定装入</emphasis>：
+   </para>
+<screen>/var/lib/ceph/<replaceable>CLUSTER_FSID</replaceable>/<replaceable>DAEMON_NAME</replaceable>/config</screen>
+   <para>
+    将 <replaceable>CLUSTER_FSID</replaceable> 替换为 <command>ceph fsid</command> 命令返回的运行中集群的唯一 FSID，并将 <replaceable>DAEMON_NAME</replaceable> 替换为 <command>ceph orch ps</command> 命令列出的特定守护进程的名称。例如：
+   </para>
+<screen>/var/lib/ceph/b4b30c6e-9681-11ea-ac39-525400d7702d/osd.2/config</screen>
+   <para>
+    要修改某个守护进程的配置，请编辑其 <filename>config</filename> 文件并重启动该守护进程：
+   </para>
+<screen><prompt role="root">root # </prompt>systemctl restart ceph-<replaceable>CLUSTER_FSID</replaceable>-<replaceable>DAEMON_NAME</replaceable></screen>
+   <para>
+    例如：
+   </para>
+<screen><prompt role="root">root # </prompt>systemctl restart ceph-b4b30c6e-9681-11ea-ac39-525400d7702d-osd.2</screen>
+   <important>
+    <para>
+     cephadm 重新部署守护进程后，所有自定义设置都将丢失。
+    </para>
+   </important>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-configuration-db">
+  <title>配置数据库</title>
+
+  <para>
+   Ceph Monitor 负责管理影响整个集群行为的配置选项的中央数据库。
+  </para>
+
+  <sect2 xml:id="cha-ceph-configuration-db-sections">
+   <title>配置部分和掩码</title>
+   <para>
+    MON 存储的配置选项可以位于<emphasis>全局</emphasis>部分、<emphasis>守护进程类型</emphasis>部分或<emphasis>特定守护进程</emphasis>部分中。此外，选项还可以具有与其关联的<emphasis>掩码</emphasis>，以进一步限制选项所适用的守护进程或客户端范围。掩码具有以下两种格式：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <replaceable>TYPE</replaceable>:<replaceable>LOCATION</replaceable>，其中 <replaceable>TYPE</replaceable> 为 <literal>rack</literal> 或 <literal>host</literal> 等 CRUSH 属性，而 <replaceable>LOCATION</replaceable> 为该属性的值。
+     </para>
+     <para>
+      例如，<literal>host:example_host</literal> 会将该选项仅限用于在某个特定主机上运行的守护进程或客户端。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <replaceable>CLASS</replaceable>:<replaceable>DEVICE_CLASS</replaceable>，其中 <replaceable>DEVICE_CLASS</replaceable> 为 <literal>hdd</literal> 或 <literal>ssd</literal> 等 CRUSH 设备类型的名称。例如，<literal>class:ssd</literal> 会将该选项仅限用于由 SSD 支持的 OSD。此掩码对非 OSD 守护进程或客户端无效。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="cha-ceph-configuration-db-commands">
+   <title>设置和读取配置选项</title>
+   <para>
+    使用以下命令可设置或读取集群配置选项。<replaceable>WHO</replaceable> 参数可以是部分名称、掩码或两者的组合，用斜杠 (/) 字符分隔。例如，<literal>osd/rack:foo</literal> 表示机架中名为 <literal>foo</literal> 的所有 OSD 守护进程。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><command>ceph config dump</command></term>
+     <listitem>
+      <para>
+       转储整个集群的整个配置数据库。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config get <replaceable>WHO</replaceable></command></term>
+     <listitem>
+      <para>
+       转储存储在配置数据库中的特定守护进程或客户端（例如，<literal>mds.a</literal>）的配置。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config set <replaceable>WHO</replaceable> <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></command></term>
+     <listitem>
+      <para>
+       将配置选项设置为配置数据库中的指定值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config show <replaceable>WHO</replaceable></command></term>
+     <listitem>
+      <para>
+       显示某个运行中守护进程的已报告运行中配置。如果还使用了本地配置文件，或者在命令行上或运行时覆盖了选项，则这些设置可能与 Monitor 所存储的设置有所不同。选项值的来源会作为输出的一部分进行报告。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><command>ceph config assimilate-conf -i <replaceable>INPUT_FILE</replaceable> -o <replaceable>OUTPUT_FILE</replaceable></command></term>
+     <listitem>
+      <para>
+       导入指定为 <replaceable>INPUT_FILE</replaceable> 的配置文件，并将任何有效选项存储到配置数据库中。任何无法识别、无效或 Monitor 无法控制的设置都将在存储为 <replaceable>OUTPUT_FILE</replaceable> 的缩写文件中返回。此命令对于从旧配置文件转换为基于 Monitor 的集中式配置非常有用。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="cha-ceph-configuration-db-runtime">
+   <title>在运行时配置守护进程</title>
+   <para>
+    在大多数情况下，Ceph 允许您在运行时更改守护进程的配置。例如，当您需要增加或减少日志记录输出量时，或者在执行运行时集群优化时，这非常有用。
+   </para>
+   <para>
+    您可以使用以下命令更新配置选项的值：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set <replaceable>DAEMON</replaceable> <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></screen>
+   <para>
+    例如，要调整某个特定 OSD 上的调试日志级别，请运行：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set osd.123 debug_ms 20</screen>
+   <note>
+    <para>
+     如果在本地配置文件中还自定义了相同的选项，则将忽略 Monitor 设置，因为它的优先级低于配置文件。
+    </para>
+   </note>
+   <sect3 xml:id="cha-ceph-configuration-db-runtime-override">
+    <title>覆盖值</title>
+    <para>
+     您可以使用 <command>tell</command> 或 <command>daemon</command> 子命令暂时修改选项值。此类修改只影响运行中进程，并会在守护进程或进程重启动后被丢弃。
+    </para>
+    <para>
+     有两种方法可以覆盖值：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       使用 <command>tell</command> 子命令从任何集群节点向某个特定守护进程发送讯息：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph tell <replaceable>DAEMON</replaceable> config set <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></screen>
+      <para>
+       例如：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph tell osd.123 config set debug_osd 20</screen>
+      <tip>
+       <para>
+        <command>tell</command> 子命令接受使用通配符作为守护进程标识符。例如，要调整所有 OSD 守护进程上的调试级别，请运行：
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph tell osd.* config set debug_osd 20</screen>
+      </tip>
+     </listitem>
+     <listitem>
+      <para>
+       使用 <command>daemon</command> 子命令通过 <filename>/var/run/ceph</filename> 中的套接字从运行进程的节点连接到某个特定守护进程：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon <replaceable>DAEMON</replaceable> config set <replaceable>OPTION</replaceable> <replaceable>VALUE</replaceable></screen>
+      <para>
+       例如：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.4 config set debug_osd 20</screen>
+     </listitem>
+    </itemizedlist>
+    <tip>
+     <para>
+      使用 <command>ceph config show</command> 命令查看运行时设置（参见<xref linkend="cha-ceph-configuration-db-runtime-view"/>）时，显示的暂时覆盖值将带有来源 <literal>override</literal>。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="cha-ceph-configuration-db-runtime-view">
+    <title>查看运行时设置</title>
+    <para>
+     查看某个守护进程的所有选项设置：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config show-with-defaults osd.0</screen>
+    <para>
+     查看某个守护进程的的所有非默认选项设置：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config show osd.0</screen>
+    <para>
+     检查某个特定选项：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config show osd.0 debug_osd</screen>
+    <para>
+     您还可以从运行其进程的节点连接到某个运行中守护进程，并查看其配置：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.0 config show</screen>
+    <para>
+     仅查看非默认设置：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.0 config diff</screen>
+    <para>
+     检查某个特定选项：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph daemon osd.0 config get debug_osd</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cha-ceph-config-key-store">
+  <title><systemitem class="resource">config-key</systemitem> 存储</title>
+
+  <para>
+   <systemitem class="resource">config-key</systemitem> 是 Ceph Monitor 提供的一项通用服务。它通过永久存储键值对简化了配置键的管理。<systemitem class="resource">config-key</systemitem> 主要由 Ceph 工具和守护进程使用。
+  </para>
+
+  <tip>
+   <para>
+    添加新键或修改现有键后，重启动受影响的服务，以便使更改生效。有关操作 Ceph 服务的更多详细信息，请参见<xref linkend="cha-ceph-operating"/>。
+   </para>
+  </tip>
+
+  <para>
+   使用 <command>config-key</command> 命令可操作 <systemitem class="resource">config-key</systemitem> 存储。<command>config-key</command> 命令使用以下子命令：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><command>ceph config-key rm <replaceable>KEY</replaceable></command></term>
+    <listitem>
+     <para>
+      删除指定键。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key exists <replaceable>KEY</replaceable></command></term>
+    <listitem>
+     <para>
+      检查指定键是否存在。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key get <replaceable>KEY</replaceable></command></term>
+    <listitem>
+     <para>
+      检索指定键的值。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key ls</command></term>
+    <listitem>
+     <para>
+      列出所有键。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key dump</command></term>
+    <listitem>
+     <para>
+      转储所有键及其值。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><command>ceph config-key set <replaceable>KEY</replaceable> <replaceable>VALUE</replaceable></command></term>
+    <listitem>
+     <para>
+      存储具有给定值的指定键。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <sect2 xml:id="cha-ceph-config-key-store-iscsi">
+   <title>iSCSI 网关</title>
+   <para>
+    iSCSI 网关使用 <systemitem class="resource">config-key</systemitem> 存储来保存或读取其配置选项。所有与 iSCSI 网关相关的键都以 <literal>iscsi</literal> 字符串作为前缀，例如：
+   </para>
+<screen>
+iscsi/trusted_ip_list
+iscsi/api_port
+iscsi/api_user
+iscsi/api_password
+iscsi/api_secure
+</screen>
+   <para>
+    例如，如果需要两组配置选项，请使用另一个描述性关键字（例如 <literal>datacenterA</literal> 和 <literal>datacenterB</literal>）扩展前缀：
+   </para>
+<screen>
+iscsi/datacenterA/trusted_ip_list
+iscsi/datacenterA/api_port
+[...]
+iscsi/datacenterB/trusted_ip_list
+iscsi/datacenterB/api_port
+[...]
+</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="config-osd-and-bluestore">
+  <title>Ceph OSD 和 BlueStore</title>
+
+  <sect2 xml:id="config-auto-cache-sizing">
+   <title>配置自动缓存大小调整</title>
+   <para>
+    如果 <option>tc_malloc</option> 配置为内存分配器并且启用了 <option>bluestore_cache_autotune</option> 设置，可将 BlueStore 配置为自动调整其缓存大小。当前，此选项默认处于启用状态。BlueStore 会尝试将 OSD 堆内存使用率维持在 <option>osd_memory_target</option> 配置选项指定的目标大小之下。这是一种最优算法，而且缓存不会缩小到小于 <option>osd_memory_cache_min</option> 指定的大小。系统将根据优先级的层次选择缓存率。如果无法获取优先级信息，将使用 <option>bluestore_cache_meta_ratio</option> 和 <option>bluestore_cache_kv_ratio</option> 选项作为备选。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>bluestore_cache_autotune</term>
+     <listitem>
+      <para>
+       在遵循最小值的要求下，自动调整为不同 BlueStore 缓存指定的比率。默认值是 <option>true</option>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>osd_memory_target</term>
+     <listitem>
+      <para>
+       如果启用了 <option>tc_malloc</option> 和 <option>bluestore_cache_autotune</option>，该选项将尝试在内存中映射此数量的字节。
+      </para>
+      <note>
+       <para>
+        此数量可能与进程的 RSS 内存使用率并不完全匹配。虽然进程映射的堆内存总量一般应该保持为接近此目标的数量，但并不能保证内核会真正回收已取消映射的内存。
+       </para>
+      </note>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>osd_memory_cache_min</term>
+     <listitem>
+      <para>
+       如果启用了 <option>tc_malloc</option> 和 <option>bluestore_cache_autotune</option>，该选项可设置用于缓存的最小内存量。
+      </para>
+      <note>
+       <para>
+        将此值设置得过小可能会导致严重的缓存抖动。
+       </para>
+      </note>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="config-ogw">
+  <title>Ceph 对象网关</title>
+
+  <para>
+   您可以通过多个选项来影响对象网关行为。如果未指定选项，将使用默认值。完整的对象网关选项列表如下：
+  </para>
+
+  <sect2 xml:id="config-ogw-general-settings">
+   <title>一般设置</title>
+   <variablelist>
+    <varlistentry>
+     <term>rgw_frontends</term>
+     <listitem>
+      <para>
+       配置 HTTP 前端。请以逗号分隔的列表指定多个前端。每个前端配置可能包含一组以空格分隔的选项，每个选项的格式均为“键=值”或“键”。默认值为 <literal>beast port=7480</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data</term>
+     <listitem>
+      <para>
+       为对象网关设置数据文件的位置。默认值为 <filename>/var/lib/ceph/radosgw/<replaceable>CLUSTER_ID</replaceable></filename>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_enable_apis</term>
+     <listitem>
+      <para>
+       启用指定的 API。默认值为“s3, swift, swift_auth, admin All APIs”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_cache_enabled</term>
+     <listitem>
+      <para>
+       启用或禁用对象网关缓存。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_cache_lru_size</term>
+     <listitem>
+      <para>
+       对象网关缓存中的条目数。默认值为 10000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_socket_path</term>
+     <listitem>
+      <para>
+       域套接字的套接字路径。<option>FastCgiExternalServer</option> 使用此套接字。如果您未指定套接字路径，对象网关将不会作为外部服务器运行。您在此处指定的路径须与 <filename>rgw.conf</filename> 文件中指定的路径相同。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_fcgi_socket_backlog</term>
+     <listitem>
+      <para>
+       fcgi 的套接字积压数据。默认值为 1024。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_host</term>
+     <listitem>
+      <para>
+       对象网关实例的主机，可以是 IP 地址或主机名。默认值为 <literal>0.0.0.0</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_port</term>
+     <listitem>
+      <para>
+       实例用于侦听请求的端口号。如果未指定，对象网关将运行外部 FastCGI。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_dns_name</term>
+     <listitem>
+      <para>
+       所处理的域的 DNS 名称。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_script_uri</term>
+     <listitem>
+      <para>
+       如果请求中未设置 SCRIPT_URI，则作为其备选值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_request_uri</term>
+     <listitem>
+      <para>
+       如果请求中未设置 REQUEST_URI，则作为其备选值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_print_continue</term>
+     <listitem>
+      <para>
+       启用 100-continue（如果可正常工作）。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_remote_addr_param</term>
+     <listitem>
+      <para>
+       远程地址参数。例如，包含远程地址的 HTTP 字段或 X-Forwarded-For 地址（如果反向代理可正常工作）。默认值为 <literal>REMOTE_ADDR</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_op_thread_timeout</term>
+     <listitem>
+      <para>
+       活动线程的超时（以秒为单位）。默认值为 600。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_op_thread_suicide_timeout</term>
+     <listitem>
+      <para>
+       对象网关进程停止前超时的时间（以秒为单位）。如果设置为 0（默认值），则表示禁用。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_thread_pool_size</term>
+     <listitem>
+      <para>
+       Beast 服务器的线程数。如果需要处理更多请求，请设置更高的值。默认为 100 个线程。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_num_rados_handles</term>
+     <listitem>
+      <para>
+       对象网关的 RADOS 集群句柄数。现在，每个对象网关工作线程都可以选择一个 RADOS 句柄并在其有效期内予以保留。未来版本中可能会弃用并移除此选项。默认值为 1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_num_control_oids</term>
+     <listitem>
+      <para>
+       不同对象网关实例之间用于缓存同步的通知对象数量。默认值为 8。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_init_timeout</term>
+     <listitem>
+      <para>
+       对象网关放弃初始化前经过的秒数。默认值为 30。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_mime_types_file</term>
+     <listitem>
+      <para>
+       MIME 类型的路径和位置。用于对象类型的 Swift 自动检测。默认值为 <filename>/etc/mime.types</filename>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_max_objs</term>
+     <listitem>
+      <para>
+       垃圾回收在一个垃圾回收处理周期内可处理的最大对象数量。默认值为 32。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_obj_min_wait</term>
+     <listitem>
+      <para>
+       垃圾回收处理可删除和处理对象前需等待的最短时间。默认值为 2*3600。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_processor_max_time</term>
+     <listitem>
+      <para>
+       两次连续的垃圾回收处理周期开始时所间隔的最长时间。默认值为 3600。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_gc_processor_period</term>
+     <listitem>
+      <para>
+       垃圾回收处理的周期时间。默认值为 3600。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_s3_success_create_obj_status</term>
+     <listitem>
+      <para>
+       <literal>create-obj</literal> 的备选成功状态响应。默认值为 0。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_resolve_cname</term>
+     <listitem>
+      <para>
+       对象网关是否应使用请求主机名字段的 DNS CNAME 记录（如果主机名与对象网关 DNS 名称不同）。默认为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_obj_stripe_size</term>
+     <listitem>
+      <para>
+       对象网关对象的对象条带大小。默认值为 <literal>4 &lt;&lt; 20</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_extended_http_attrs</term>
+     <listitem>
+      <para>
+       添加可对实体（例如，用户、存储桶或对象）设置的一组新属性。使用 POST 方法放置或修改实体时，可通过 HTTP 报头字段设置这些额外的属性。如果设置了这些属性，当针对实体请求 GET/HEAD 时，它们将作为 HTTP 字段返回。默认值为 <literal>content_foo, content_bar, x-foo-bar</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_exit_timeout_secs</term>
+     <listitem>
+      <para>
+       无条件退出前等待进程的秒数。默认值为 120。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_get_obj_window_size</term>
+     <listitem>
+      <para>
+       单个对象请求的窗口大小（以字节为单位）。默认值为 <literal>16 &lt;&lt; 20</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_get_obj_max_req_size</term>
+     <listitem>
+      <para>
+       发送到 Ceph 存储集群的单次 GET 操作的请求大小上限。默认值为 <literal>4 &lt;&lt; 20</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_relaxed_s3_bucket_names</term>
+     <listitem>
+      <para>
+       为 US 区域存储桶启用宽松 S3 存储桶名称规则。默认为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_list_buckets_max_chunk</term>
+     <listitem>
+      <para>
+       列出用户存储桶时，在一次操作中检索的存储桶数量上限。默认值为 1000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_override_bucket_index_max_shards</term>
+     <listitem>
+      <para>
+       表示存储桶索引对象的分片数量。设为 0（默认值）表示没有分片。不建议将此值设置得太大（例如 1000），因为这样会增加列出存储桶的成本。应在客户端或全局段落设置此变量，以便将其自动应用到 <command>radosgw-admin</command> 命令。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_curl_wait_timeout_ms</term>
+     <listitem>
+      <para>
+       某些 <command>curl</command> 调用的超时时间（以毫秒为单位）。默认值为 1000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_copy_obj_progress</term>
+     <listitem>
+      <para>
+       启用在费时较长的复制操作期间输出对象进度的功能。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_copy_obj_progress_every_bytes</term>
+     <listitem>
+      <para>
+       两次复制进度输出相隔的最小字节数。默认值为 1024*1024。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_admin_entry</term>
+     <listitem>
+      <para>
+       管理请求 URL 的入口点。默认值为 <literal>admin</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_content_length_compat</term>
+     <listitem>
+      <para>
+       为设置了 CONTENT_LENGTH 和 HTTP_CONTENT_LENGTH 的 FCGI 请求启用兼容性处理。默认为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_bucket_quota_ttl</term>
+     <listitem>
+      <para>
+       已缓存配额信息的可信时长（以秒为单位）。经过此超时时间后，将从集群重新提取配额信息。默认值为 600。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_quota_bucket_sync_interval</term>
+     <listitem>
+      <para>
+       同步到集群前，存储桶配额信息的累计时长（以秒为单位）。在此期间，其他对象网关实例将不会看到与此实例上的操作相关的存储桶配额统计数据发生的更改。默认值为 180。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_quota_sync_interval</term>
+     <listitem>
+      <para>
+       同步到集群前，用户配额信息的累计时长（以秒为单位）。在此期间，其他对象网关实例将不会看到与此实例上的操作相关的用户配额统计数据发生的更改。默认值为 180。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_bucket_default_quota_max_objects</term>
+     <listitem>
+      <para>
+       每个存储桶的默认对象数量上限。如果未指定其他配额，此上限将对新用户设置，对现有用户无效。应在客户端或全局段落设置此变量，以便将其自动应用到 <command>radosgw-admin</command> 命令。默认值为 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_bucket_default_quota_max_size</term>
+     <listitem>
+      <para>
+       每个存储桶的默认容量上限（以字节为单位）。如果未指定其他配额，此上限将对新用户设置，对现有用户无效。默认值为 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_default_quota_max_objects</term>
+     <listitem>
+      <para>
+       用户的默认对象数量上限。这个数量包括该用户拥有的所有存储桶中的全部对象。如果未指定其他配额，此上限将对新用户设置，对现有用户无效。默认值为 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_user_default_quota_max_size</term>
+     <listitem>
+      <para>
+       如果未指定其他配额，用户配额大小上限值（以字节为单位）将对新用户设置，对现有用户无效。默认值为 -1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_verify_ssl</term>
+     <listitem>
+      <para>
+       发出请求时验证 SSL 证书。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_max_chunk_size</term>
+     <listitem>
+      <para>
+       将在单个操作中读取的数据块的最大大小。将值增至 4MB (4194304) 可以在处理大型对象时提高性能。默认值为 128kB (131072)。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>多站点设置</title>
+    <varlistentry>
+     <term>rgw_zone</term>
+     <listitem>
+      <para>
+       网关实例所在区域的名称。如果未设置区域，可使用 <command>radosgw-admin zone default</command> 命令配置集群范围的默认值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_zonegroup</term>
+     <listitem>
+      <para>
+       网关实例所在区域组的名称。如果未设置区域组，可使用 <command>radosgw-admin zonegroup default</command> 命令配置集群范围的默认值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_realm</term>
+     <listitem>
+      <para>
+       网关实例所在领域的名称。如果未设置领域，可使用 <command>radosgw-admin realm default</command> 命令配置集群范围的默认值。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_run_sync_thread</term>
+     <listitem>
+      <para>
+       如果领域中有其他要依据其同步的区域，则生成线程来处理数据和元数据的同步。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_window</term>
+     <listitem>
+      <para>
+       数据日志条目时段（以秒为单位）。默认值为 30。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_changes_size</term>
+     <listitem>
+      <para>
+       要为数据更改日志保存的内存内条目数。默认值为 1000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_obj_prefix</term>
+     <listitem>
+      <para>
+       数据日志的对象名称前缀。默认值为“data_log”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_data_log_num_shards</term>
+     <listitem>
+      <para>
+       保存数据更改日志的分片（对象）的数量。默认值为 128。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_md_log_max_shards</term>
+     <listitem>
+      <para>
+       元数据日志的最大分片数量。默认值为 64。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Swift 设置</title>
+    <varlistentry>
+     <term>rgw_enforce_swift_acls</term>
+     <listitem>
+      <para>
+       强制实施 Swift 访问控制列表 (ACL) 设置。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_token_expiration</term>
+     <listitem>
+      <para>
+       Swift 令牌过期时间（以秒为单位）。默认值为 24*3600。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_url</term>
+     <listitem>
+      <para>
+       Ceph Object Gateway Swift API 的 URL。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_url_prefix</term>
+     <listitem>
+      <para>
+       Swift StorageURL 中位于“/v1”部分前的 URL 前缀。此设置允许在同一主机上运行多个网关实例。出于兼容性考虑，请将此配置变量设为空，以便使用默认值“/swift”。使用显式前缀“/”会在根目录启动 StorageURL。
+      </para>
+      <warning>
+       <para>
+        如果启用了 S3 API，将此选项设为“/”将不起作用。请注意，如果禁用 S3，将无法在多站点配置中部署对象网关。
+       </para>
+      </warning>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_auth_url</term>
+     <listitem>
+      <para>
+       未使用内部 Swift 身份验证时，用于验证 v1 身份验证令牌的默认 URL。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_auth_entry</term>
+     <listitem>
+      <para>
+       Swift 身份验证 URL 的入口点。默认值为 <literal>auth</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_swift_versioning_enabled</term>
+     <listitem>
+      <para>
+       启用 OpenStack Object Storage API 的对象版本控制。此选项可让客户端对应进行版本控制的容器设置 <literal>X-Versions-Location</literal> 属性。该属性指定存储已存档版本的容器的名称。出于访问控制验证（ACL <emphasis>不在</emphasis>考虑范围之内）的原因，该属性必须由受版本控制的容器所属的同一用户所有。这些容器无法通过 S3 对象版本控制机制进行版本控制。默认为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>日志记录设置</title>
+    <varlistentry>
+     <term>rgw_log_nonexistent_bucket</term>
+     <listitem>
+      <para>
+       允许对象网关记录针对不存在的存储桶的请求。默认为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_log_object_name</term>
+     <listitem>
+      <para>
+       对象名称的日志记录格式。有关格式说明符的详细信息，请参见 <command>man 1 date</command> 手册页。默认值为 <literal>%Y-%m-%d-%H-%i-%n</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_log_object_name_utc</term>
+     <listitem>
+      <para>
+       记录的对象名称是否包含 UTC 时间。如果设置为 <literal>false</literal>（默认值），则会使用本地时间。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_max_shards</term>
+     <listitem>
+      <para>
+       用于使用率日志记录的最大分片数量。默认值为 32。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_max_user_shards</term>
+     <listitem>
+      <para>
+       用于单个用户的使用率日志记录的最大分片数量。默认值为 1。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_enable_ops_log</term>
+     <listitem>
+      <para>
+       启用记录每个成功的对象网关操作的功能。默认为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_enable_usage_log</term>
+     <listitem>
+      <para>
+       启用使用率日志。默认为 <literal>false</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_ops_log_rados</term>
+     <listitem>
+      <para>
+       是否应将操作日志写入 Ceph 存储集群后端。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_ops_log_socket_path</term>
+     <listitem>
+      <para>
+       用于写入操作日志的 Unix 域套接字。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_ops_log_data_backlog</term>
+     <listitem>
+      <para>
+       写入 Unix 域套接字的操作日志的数据积压大小上限。默认值为 5 &lt;&lt; 20。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_log_flush_threshold</term>
+     <listitem>
+      <para>
+       同步刷新前使用率日志中已合并的脏条目数量。默认值为 1024。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_usage_log_tick_interval</term>
+     <listitem>
+      <para>
+       每隔“n”秒刷新待处理使用率日志数据。默认值为 30。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_log_http_headers</term>
+     <listitem>
+      <para>
+       要包含在日志条目中的 HTTP 报头的逗号分隔列表。报头名称不区分大小写，使用完整报头名称格式，各单词间以下划线分隔。例如“http_x_forwarded_for”、“http_x_special_k”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_intent_log_object_name</term>
+     <listitem>
+      <para>
+       要记录的日志对象名称的日志记录格式。有关格式说明符的详细信息，请参见 <command>man 1 date</command> 手册页。默认值为“%Y-%m-%d-%i-%n”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_intent_log_object_name_utc</term>
+     <listitem>
+      <para>
+       要记录的日志对象名称是否包含 UTC 时间。如果设置为 <literal>false</literal>（默认值），则会使用本地时间。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <variablelist>
+    <title>Keystone 设置</title>
+    <varlistentry>
+     <term>rgw_keystone_url</term>
+     <listitem>
+      <para>
+       Keystone 服务器的 URL。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_api_version</term>
+     <listitem>
+      <para>
+       应用于与 Keystone 服务器通讯的 OpenStack Identity API 的版本（2 或 3）。默认值为 2。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_domain</term>
+     <listitem>
+      <para>
+       使用 OpenStack Identity API v3 时具有管理员权限的 OpenStack 域的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_project</term>
+     <listitem>
+      <para>
+       使用 OpenStack Identity API v3 时具有管理员权限的 OpenStack 项目的名称。如果未设置，将使用 <command>rgw keystone admin tenant</command> 的值替代。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_token</term>
+     <listitem>
+      <para>
+       Keystone 管理员令牌（共享密钥）。在对象网关中，使用管理员令牌的身份验证的优先级高于使用管理员身份凭证的身份验证（选项 <option>rgw keystone admin user</option>、<option>rgw keystone admin password</option>、<option>rgw keystone admin tenant</option>、<option>rgw keystone admin project</option> 和 <option>rgw keystone admin domain</option>）。管理员令牌功能被视为已弃用。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_tenant</term>
+     <listitem>
+      <para>
+       使用 OpenStack Identity API v2 时具有管理员权限的 OpenStack 租户（服务租户）的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_user</term>
+     <listitem>
+      <para>
+       使用 OpenStack Identity API v2 时具有管理员权限的 OpenStack 用户（服务用户）的名称。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_admin_password</term>
+     <listitem>
+      <para>
+       使用 OpenStack Identity API v2 时 OpenStack 管理员用户的密码。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_accepted_roles</term>
+     <listitem>
+      <para>
+       处理请求需要具有的角色。默认值为“Member, admin”。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_token_cache_size</term>
+     <listitem>
+      <para>
+       每个 Keystone 令牌缓存中的条目数上限。默认值为 10000。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_revocation_interval</term>
+     <listitem>
+      <para>
+       令牌撤消检查间隔的时间（以秒为单位）。默认值为 15*60。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_keystone_verify_ssl</term>
+     <listitem>
+      <para>
+       向 Keystone 发出令牌请求时，验证 SSL 证书。默认值是 <literal>true</literal>。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <sect3 xml:id="sec-ceph-rgw-configuration-notes">
+    <title>补充说明</title>
+    <variablelist>
+     <varlistentry>
+      <term>rgw_dns_name</term>
+      <listitem>
+       <para>
+        允许客户端使用 <literal>vhost</literal> 样式的存储桶。
+       </para>
+       <para>
+        <literal>vhost</literal> 样式访问表示使用 <replaceable>bucketname</replaceable>.<replaceable>s3-endpoint</replaceable>/<replaceable>object-path</replaceable>。与之相对，<literal>path</literal> 样式访问使用：<replaceable>s3-endpoint</replaceable>/<replaceable>bucket</replaceable>/<replaceable>object</replaceable>
+       </para>
+       <para>
+        如果设置了 <literal>rgw dns name</literal>，请确认 S3 客户端是否配置为将请求定向到 <literal>rgw dns name</literal> 指定的端点。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="config-ogw-http-frontends">
+   <title>配置 HTTP 前端</title>
+   <sect3 xml:id="config-http-beast">
+    <title>Beast</title>
+    <variablelist>
+     <varlistentry>
+      <term>port、ssl_port</term>
+      <listitem>
+       <para>
+        IPv4 和 IPv6 侦听端口号。您可以指定多个端口号：
+       </para>
+<screen>port=80 port=8000 ssl_port=8080</screen>
+       <para>
+        默认值为 80。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>endpoint、ssl_endpoint</term>
+      <listitem>
+       <para>
+        侦听地址采用“地址[:端口]”格式，其中，地址为采用点分隔十进制数字格式的 IPv4 地址字符串，或是采用以方括号括住的十六进制表示格式的 IPv6 地址。指定将仅侦听 IPv6 的 IPv6 端点。<option>endpoint</option> 和 <option>ssl_endpoint</option> 的可选端口号分别默认为 80 和 443。您可以指定多个地址：
+       </para>
+<screen>
+endpoint=[::1] endpoint=192.168.0.100:8000 ssl_endpoint=192.168.0.100:8080
+</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ssl_private_key</term>
+      <listitem>
+       <para>
+        此为可选设置，指定用于启用了 SSL 的端点的私用密钥文件路径。如果未指定，将使用 <option>ssl_certificate</option> 文件充当私用密钥。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>tcp_nodelay</term>
+      <listitem>
+       <para>
+        如果指定该选项，套接字选项将针对连接禁用 Nagle 的算法。这表示将会尽快发送数据包，而不会等到发生全缓冲或超时才发送。
+       </para>
+       <para>
+        “1”会对所有套接字禁用 Nagle 的算法。
+       </para>
+       <para>
+        “0”会使 Nagle 的算法保持启用状态（默认值）。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <example>
+     <title>Beast 配置示例</title>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set rgw.myrealm.myzone.ses-min1.kwwazo \
+ rgw_frontends beast port=8000 ssl_port=443 \
+ ssl_certificate=/etc/ssl/ssl.crt \
+ error_log_file=/var/log/radosgw/beast.error.log
+</screen>
+<screen>
+</screen>
+    </example>
+   </sect3>
+   <sect3 xml:id="config-http-civetweb">
+    <title>CivetWeb</title>
+    <variablelist>
+     <varlistentry>
+      <term>port</term>
+      <listitem>
+       <para>
+        侦听端口号。对启用了 SSL 的端口添加“s”后缀（例如，“443s”）。要绑定特定 IPv4 或 IPv6 地址，请使用“地址:端口”格式。您可以通过使用“+”联接多个端点或通过提供多个选项，来指定多个端点：
+       </para>
+<screen>
+port=127.0.0.1:8000+443s
+port=8000 port=443s
+</screen>
+       <para>
+        默认值为 7480。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>num_threads</term>
+      <listitem>
+       <para>
+        Civetweb 所生成以处理传入 HTTP 连接的线程数。此设置可有效限制前端可处理的并发连接数。
+       </para>
+       <para>
+        默认为 <option>rgw_thread_pool_size</option> 选项所指定的值。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>request_timeout_ms</term>
+      <listitem>
+       <para>
+        Civetweb 在放弃前需等待更多传入数据的时长（以毫秒为单位）。
+       </para>
+       <para>
+        默认值为 30000 毫秒。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>access_log_file</term>
+      <listitem>
+       <para>
+        访问日志文件的路径。您可以指定完整路径，或当前工作目录的相对路径。如果未指定（默认设置），将不会记录访问。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>error_log_ file</term>
+      <listitem>
+       <para>
+        错误日志文件的路径。您可以指定完整路径，或当前工作目录的相对路径。如果未指定（默认设置），将不会记录错误。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <example>
+     <title><filename>/etc/ceph/ceph.conf</filename> 中的示例 Civetweb 配置</title>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set rgw.myrealm.myzone.ses-min2.ingabw \
+ rgw_frontends civetweb port=8000+443s request_timeout_ms=30000 \
+ error_log_file=/var/log/radosgw/civetweb.error.log
+</screen>
+    </example>
+   </sect3>
+   <sect3 xml:id="config-http-common-options">
+    <title>通用选项</title>
+    <variablelist>
+     <varlistentry>
+      <term>ssl_certificate</term>
+      <listitem>
+       <para>
+        用于启用了 SSL 的端点的 SSL 证书文件路径。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>prefix</term>
+      <listitem>
+       <para>
+        要插入到所有请求的 URI 中的前缀字符串。例如，仅支持 Swift 的前端可能会提供一个 <literal>/swift</literal> 的 URI 前缀。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,476 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_iscsi.xml" version="5.0" xml:id="cha-ceph-iscsi">
+ <title>Ceph iSCSI Gateway</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>sí</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Este capítulo se centra en las tareas de administración relacionadas con iSCSI Gateway. Para consultar el procedimiento de distribución, consulte el <xref linkend="deploy-cephadm-day2-service-igw"/>.
+ </para>
+ <sect1 xml:id="ceph-iscsi-connect">
+  <title>Destinos gestionados con <systemitem class="daemon">ceph-iscsi</systemitem></title>
+
+  <para>
+   En este capítulo se describe cómo conectar destinos gestionados <systemitem class="daemon">ceph-iscsi</systemitem> desde clientes con VMware, Microsoft Windows o Linux.
+  </para>
+
+  <sect2 xml:id="ceph-iscsi-connect-linux">
+   <title>Conexión a <systemitem>open-iscsi</systemitem></title>
+   <para>
+    La conexión a destinos iSCSI compatibles con <systemitem class="daemon">ceph-iscsi</systemitem> mediante <systemitem>open-iscsi</systemitem> es un proceso de dos pasos. En primer lugar, el iniciador debe descubrir los destinos iSCSI disponibles en el host de la pasarela y, a continuación, debe entrar y asignar las unidades lógicas disponibles
+   </para>
+   <para>
+    Ambos pasos requieren que el daemon <systemitem>open-iscsi</systemitem> esté en ejecución. La forma en que inicie el daemon <systemitem>open-iscsi</systemitem> depende de su distribución Linux:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      En hosts con SUSE Linux Enterprise Server (SLES) y Red Hat Enterprise Linux (RHEL), ejecute <command>systemctl start iscsid</command> (o <command>service iscsid start</command> si <command>systemctl</command> no está disponible).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      En hosts con Debian y Ubuntu, ejecute <command>systemctl start open-iscsi</command> (o <command>service open-iscsi start</command>).
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    Si el sistema operativo del host del iniciador es SUSE Linux Enterprise Server, consulte <link xlink:href="https://documentation.suse.com/sles/15-SP1/single-html/SLES-storage/#sec-iscsi-initiator"/> para obtener información sobre cómo conectarse a un destino iSCSI.
+   </para>
+   <para>
+    Para cualquier otra distribución Linux compatible con <systemitem>open-iscsi</systemitem>, descubra los destinos en la pasarela <systemitem class="daemon">ceph-iscsi</systemitem>. En este ejemplo se utiliza iscsi1.example.com como dirección del portal. Para el acceso de múltiples rutas, repita los pasos con iscsi2.example.com:
+   </para>
+<screen><prompt role="root">root # </prompt>iscsiadm -m discovery -t sendtargets -p iscsi1.example.com
+192.168.124.104:3260,1 iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol</screen>
+   <para>
+    A continuación, entre en el portal. Si la entrada se completa correctamente, las unidades lógicas con RBD del portal estarán disponibles de inmediato en el bus SCSI del sistema:
+   </para>
+<screen><prompt role="root">root # </prompt>iscsiadm -m node -p iscsi1.example.com --login
+Logging in to [iface: default, target: iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol, portal: 192.168.124.104,3260] (multiple)
+Login to [iface: default, target: iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol, portal: 192.168.124.104,3260] successful.</screen>
+   <para>
+    Repita este proceso con las demás direcciones IP o hosts del portal.
+   </para>
+   <para>
+    Si su sistema tiene la utilidad <systemitem>lsscsi</systemitem> instalada, se utiliza para mostrar los dispositivos SCSI disponibles en el sistema:
+   </para>
+<screen>lsscsi
+[8:0:0:0]    disk    SUSE     RBD              4.0   /dev/sde
+[9:0:0:0]    disk    SUSE     RBD              4.0   /dev/sdf</screen>
+   <para>
+    En una configuración de múltiples rutas (donde dos dispositivos iSCSI conectados representan la misma unidad lógica), también puede examinar el estado del dispositivo de múltiples vías con la utilidad <systemitem>multipath</systemitem>:
+   </para>
+<screen><prompt role="root">root # </prompt>multipath -ll
+360014050cf9dcfcb2603933ac3298dca dm-9 SUSE,RBD
+size=49G features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 8:0:0:0 sde 8:64 active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+`- 9:0:0:0 sdf 8:80 active ready running</screen>
+   <para>
+    Ahora puede utilizar este dispositivo de múltiples rutas igual que cualquier otro dispositivo de bloques. Por ejemplo, puede utilizar el dispositivo como volumen físico para la gestión de volúmenes lógicos (LVM) de Linux o, simplemente, puede crear un sistema de archivos en él. El ejemplo siguiente muestra cómo crear un sistema de archivos XFS en el volumen iSCSI de múltiples rutas recién conectado:
+   </para>
+<screen><prompt role="root">root # </prompt>mkfs -t xfs /dev/mapper/360014050cf9dcfcb2603933ac3298dca
+log stripe unit (4194304 bytes) is too large (maximum is 256KiB)
+log stripe unit adjusted to 32KiB
+meta-data=/dev/mapper/360014050cf9dcfcb2603933ac3298dca isize=256    agcount=17, agsize=799744 blks
+         =                       sectsz=512   attr=2, projid32bit=1
+         =                       crc=0        finobt=0
+data     =                       bsize=4096   blocks=12800000, imaxpct=25
+         =                       sunit=1024   swidth=1024 blks
+naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+log      =internal log           bsize=4096   blocks=6256, version=2
+         =                       sectsz=512   sunit=8 blks, lazy-count=1
+realtime =none                   extsz=4096   blocks=0, rtextents=0</screen>
+   <para>
+    Tenga en cuenta que puesto que XFS un sistema de archivos no agrupados en clúster, es posible que solo sea capaz de montar un único nodo de iniciador iSCSI en un momento dado.
+   </para>
+   <para>
+    Si en cualquier momento desea dejar de utilizar las unidades lógicas iSCSI asociadas con un destino concreto, ejecute el siguiente comando:
+   </para>
+<screen><prompt role="root">root # </prompt>iscsiadm -m node -p iscsi1.example.com --logout
+Logging out of session [sid: 18, iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol, portal: 192.168.124.104,3260]
+Logout of [sid: 18, target: iqn.2003-01.org.linux-iscsi.iscsi.<replaceable>SYSTEM-ARCH</replaceable>:testvol, portal: 192.168.124.104,3260] successful.</screen>
+   <para>
+    Como ocurre con el descubrimiento y la entrada, debe repetir los pasos de salida para todas las direcciones IP y nombres de host del portal.
+   </para>
+   <sect3 xml:id="ceph-iscsi-connect-linux-multipath">
+    <title>Configuración de múltiples rutas</title>
+    <para>
+     La configuración de múltiples rutas se conserva en los clientes o los iniciadores y es independiente de cualquier configuración de <systemitem class="daemon">ceph-iscsi</systemitem>. Seleccione una estrategia antes de utilizar el almacenamiento de bloques. Después de editar <filename>/etc/multipath.conf</filename>, reinicie <systemitem>multipathd</systemitem> con
+    </para>
+<screen><prompt role="root">root # </prompt>systemctl restart multipathd</screen>
+    <para>
+     Para una configuración activa-pasiva con nombres descriptivos, añada
+    </para>
+<screen>defaults {
+  user_friendly_names yes
+}</screen>
+    <para>
+     a <filename>/etc/multipath.conf</filename>. Después de conectarse correctamente a los destinos, ejecute
+    </para>
+<screen><prompt role="root">root # </prompt>multipath -ll
+mpathd (36001405dbb561b2b5e439f0aed2f8e1e) dm-0 SUSE,RBD
+size=2.0G features='0' hwhandler='0' wp=rw
+|-+- policy='service-time 0' prio=1 status=active
+| `- 2:0:0:3 sdl 8:176 active ready running
+|-+- policy='service-time 0' prio=1 status=enabled
+| `- 3:0:0:3 sdj 8:144 active ready running
+`-+- policy='service-time 0' prio=1 status=enabled
+  `- 4:0:0:3 sdk 8:160 active ready running</screen>
+    <para>
+     Tenga en cuenta el estado de cada enlace. Para una configuración activa-activa, añada
+    </para>
+<screen>defaults {
+  user_friendly_names yes
+}
+
+devices {
+  device {
+    vendor "(LIO-ORG|SUSE)"
+    product "RBD"
+    path_grouping_policy "multibus"
+    path_checker "tur"
+    features "0"
+    hardware_handler "1 alua"
+    prio "alua"
+    failback "immediate"
+    rr_weight "uniform"
+    no_path_retry 12
+    rr_min_io 100
+  }
+}</screen>
+    <para>
+     a <filename>/etc/multipath.conf</filename>. Reinicie <systemitem>multipathd</systemitem> y ejecute
+    </para>
+<screen><prompt role="root">root # </prompt>multipath -ll
+mpathd (36001405dbb561b2b5e439f0aed2f8e1e) dm-3 SUSE,RBD
+size=2.0G features='1 queue_if_no_path' hwhandler='1 alua' wp=rw
+`-+- policy='service-time 0' prio=50 status=active
+  |- 4:0:0:3 sdj 8:144 active ready running
+  |- 3:0:0:3 sdk 8:160 active ready running
+  `- 2:0:0:3 sdl 8:176 active ready running</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-connect-win">
+   <title>Conexión de Microsoft Windows (iniciador de Microsoft iSCSI)</title>
+   <para>
+    Para conectarse a un destino iSCSI de SUSE Enterprise Storage desde un servidor Windows 2012, siga estos pasos:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Abra Windows Server Manager. En la consola, seleccione <menuchoice><guimenu>Herramientas</guimenu><guimenu>Iniciador iSCSI</guimenu></menuchoice>. Se abre el recuadro de diálogo <guimenu>Propiedades del iniciador iSCSI</guimenu>. Seleccione la pestaña <guimenu>Descubrimiento</guimenu>:
+     </para>
+     <figure>
+      <title>Propiedades del iniciador iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-initiator-props.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-initiator-props.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      En el recuadro de diálogo <guimenu>Descubrimiento del portal de destino</guimenu>, introduzca el nombre de host o la dirección IP del destino en el campo <guimenu>Destino</guimenu> y haga clic en <guimenu>Aceptar</guimenu>:
+     </para>
+     <figure>
+      <title>Descubrir portal de destino</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-ip.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-ip.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Repita este proceso con todas las demás direcciones IP o nombres de host de la pasarela. Cuando haya terminado, revise la lista <guimenu>Portales de destino</guimenu>:
+     </para>
+     <figure>
+      <title>Portales de destino</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-ip-list.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-ip-list.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      A continuación, cambie a la pestaña <guimenu>Destinos</guimenu> y revise los destinos que ha descubierto.
+     </para>
+     <figure>
+      <title>Destinos</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-targets.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-targets.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Haga clic en <guimenu>Conectar</guimenu> en la pestaña <guimenu>Destinos</guimenu>. Se abre el recuadro de diálogo <guimenu>Conectar con destino</guimenu>. Marque la casilla de verificación <guimenu>Habilitar múltiples rutas</guimenu> para habilitar múltiples rutas de E/S (MPIO) y, a continuación, haga clic en <guimenu>Aceptar</guimenu>:
+     </para>
+    </step>
+    <step>
+     <para>
+      Cuando se cierre el recuadro de diálogo <guimenu>Conectar con destino</guimenu>, seleccione <guimenu>Propiedades</guimenu> para revisar las propiedades del destino:
+     </para>
+     <figure>
+      <title>Propiedades de destino iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-target-properties.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-target-properties.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Seleccione <guimenu>Dispositivos</guimenu> y haga clic en <guimenu>MPIO</guimenu> para revisar la configuración de múltiples rutas de E/S:
+     </para>
+     <figure>
+      <title>Detalles del dispositivo</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-device-details.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-device-details.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      La opción por defecto para <guimenu>Directiva de equilibrio de carga</guimenu> es <guimenu>Carga rotativa con subconjunto</guimenu>. Si prefiere una configuración de failover, cambie este valor a <guimenu>Solo failover.</guimenu>
+     </para>
+    </step>
+   </procedure>
+   <para>
+    Así concluye la configuración del iniciador iSCSI. Los volúmenes iSCSI están ahora disponibles como cualquier otro dispositivo SCSI y se pueden iniciar para usarse como volúmenes y unidades. Haga clic en <guimenu>Aceptar</guimenu> para cerrar el recuadro de diálogo <guimenu>Propiedades del iniciador iSCSI</guimenu> y continúe con la función <guimenu>Servicios de archivo y almacenamiento</guimenu> en la consola <guimenu>Gestor del servidor</guimenu>.
+   </para>
+   <para>
+    Observe el volumen recién conectado. Se identifica como <emphasis>SUSE RBD SCSI Multi-Path Drive</emphasis> en el bus iSCSI e inicialmente se marca con el estado <emphasis>Sin conexión</emphasis> y el tipo de tabla de partición <emphasis>Desconocido</emphasis>. Si el nuevo volumen no aparece de inmediato, seleccione <guimenu>Volver a explorar el almacenamiento</guimenu> en la lista desplegable <guimenu>Tareas</guimenu> para volver a explorar el bus iSCSI
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Haga clic con el botón derecho en el volumen iSCSI y seleccione <guimenu>Nuevo volumen</guimenu> en el menú contextual. Se abre <guimenu>Asistente de nuevo volumen</guimenu>. Haga clic en <guimenu>Siguiente</guimenu>, resalte el volumen iSCSI recién conectado y haga clic en <guimenu>Siguiente</guimenu> para comenzar.
+     </para>
+     <figure>
+      <title>Nuevo asistente de volumen</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-volume-wizard.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-volume-wizard.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Inicialmente, el dispositivo está vacío y no incluye una tabla de particiones. Cuando se le solicite, confirme el recuadro de diálogo que indica que se inicializará el volumen con una tabla de particiones GPT:
+     </para>
+     <figure>
+      <title>Mensaje de disco sin conexión</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-win-prompt1.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-win-prompt1.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Seleccione el tamaño del volumen. Por lo general, utilizará toda la capacidad del dispositivo. Después, asigne una letra de unidad o un nombre de directorio donde estará disponible el volumen recién creado. A continuación, seleccione el sistema de archivos que se va a crear en el volumen nuevo y, por último, confirme la selección con la opción <guimenu>Crear</guimenu> para terminar de crear el volumen:
+     </para>
+     <figure>
+      <title>Confirmación de las opciones del volumen</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-volume-confirm.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-volume-confirm.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Cuando termine el proceso, revise los resultados y haga clic en <guimenu>Cerrar</guimenu> para concluir la inicialización de la unidad. Después de que finalice la inicialización, el volumen (y su sistema de archivos NTFS) estarán disponibles como una unidad local recién inicializada.
+     </para>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="ceph-iscsi-connect-vmware">
+   <title>Conexión de VMware</title>
+   <para/>
+   <procedure>
+    <step>
+     <para>
+      Para conectarse a volúmenes iSCSI gestionados con <systemitem class="daemon">ceph-iscsi</systemitem>, necesita un adaptador de software iSCSI configurado. Si no hay ningún adaptador de ese tipo disponible en la configuración de vSphere, cree uno seleccionando <menuchoice><guimenu>Configuración</guimenu><guimenu>Adaptadores de almacenamiento</guimenu> <guimenu> Añadir</guimenu><guimenu>Iniciador de software iSCSI</guimenu></menuchoice>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Si está disponible, haga clic con el botón derecho en el adaptador y seleccione <guimenu>Propiedades</guimenu> en el menú contextual:
+     </para>
+     <figure>
+      <title>Propiedades del iniciador iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi_vmware_adapter_props.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi_vmware_adapter_props.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      En el recuadro de diálogo <guimenu>Iniciador de software iSCSI,</guimenu> haga clic en el botón <guimenu>Configurar.</guimenu> A continuación, acceda a la pestaña <guimenu>Descubrimiento dinámico</guimenu> y seleccione <guimenu>Añadir</guimenu>.
+     </para>
+    </step>
+    <step>
+     <para>
+      Introduzca la dirección IP o el nombre de host de su pasarela iSCSI <systemitem class="daemon">ceph-iscsi</systemitem>. Si ejecuta varias pasarelas iSCSI en una configuración de failover, repita este paso para todas las pasarelas con las que trabaje.
+     </para>
+     <figure>
+      <title>Adición de un servidor de destino</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-add-target.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-add-target.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Cuando haya introducido todas las pasarelas iSCSI, haga clic en <guimenu>Aceptar</guimenu> en el recuadro de diálogo para iniciar una nueva exploración del adaptador iSCSI.
+     </para>
+    </step>
+    <step>
+     <para>
+      Cuando finalice la nueva exploración, el nuevo dispositivo iSCSI aparece al final de la lista <guimenu>Adaptadores de almacenamiento</guimenu> en el panel <guimenu>Detalles</guimenu>. Para dispositivos de múltiples rutas, ahora puede hacer clic con el botón derecho en el adaptador y seleccionar <guimenu>Gestionar rutas</guimenu> en el menú contextual:
+     </para>
+     <figure>
+      <title>Gestión de dispositivos de múltiples rutas</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-multipath.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-multipath.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Ahora debería ver todas las rutas con una luz verde en <guimenu>Estado</guimenu>. Una de las rutas debe estar marcada como <guimenu>Activa E/S</guimenu> y todas las demás simplemente como <guimenu>Activa</guimenu>:
+     </para>
+     <figure>
+      <title>Lista de vías para múltiples rutas</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-paths.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-paths.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+    <step>
+     <para>
+      Ahora puede cambiar de <guimenu>Adaptadores de almacenamiento</guimenu> al elemento etiquetado como <guimenu>Almacenamiento</guimenu>. Seleccione <guimenu>Añadir almacenamiento</guimenu> en la esquina superior derecha del panel para abrir el recuadro de diálogo <guimenu>Añadir almacenamiento</guimenu>. A continuación, seleccione <guimenu>Disco/Red de unidad lógica</guimenu> y haga clic en <guimenu>Siguiente</guimenu>. El dispositivo iSCSI recién añadido aparece en la lista <guimenu>Seleccionar disco o red de unidad lógica</guimenu>. Selecciónelo y haga clic en <guimenu>Siguiente</guimenu> para continuar:
+     </para>
+     <figure>
+      <title>Recuadro de diálogo para añadir almacenamiento</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-add-storage-dialog.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-add-storage-dialog.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Haga clic en <guimenu>Siguiente</guimenu> para aceptar el diseño de disco por defecto.
+     </para>
+    </step>
+    <step>
+     <para>
+      En el panel <guimenu>Propiedades</guimenu>, asigne un nombre al nuevo almacén de datos y haga clic en <guimenu>Siguiente</guimenu>. Acepte la configuración por defecto para utilizar todo el espacio del volumen para el almacén de datos, o bien seleccione <guimenu>Configuración de espacio personalizada</guimenu> para definir un almacén de datos más pequeño:
+     </para>
+     <figure>
+      <title>Configuración de espacio personalizada</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-custom-datastore.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-custom-datastore.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+     <para>
+      Haga clic en <guimenu>Finalizar</guimenu> para completar la creación del almacén de datos.
+     </para>
+     <para>
+      El nuevo almacén de datos aparece ahora en la lista de almacenes de datos y se puede seleccionar para recuperar la información. Ahora puede usar el volumen iSCSI con <systemitem class="daemon">ceph-iscsi</systemitem> como cualquier otro almacén de datos de vSphere.
+     </para>
+     <figure>
+      <title>Resumen del almacén de datos iSCSI</title>
+      <mediaobject>
+       <imageobject role="fo">
+        <imagedata fileref="iscsi-vmware-overview.png" width="70%" format="PNG"/>
+       </imageobject>
+       <imageobject role="html">
+        <imagedata fileref="iscsi-vmware-overview.png" width="70%" format="PNG"/>
+       </imageobject>
+      </mediaobject>
+     </figure>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-iscsi-conclude">
+  <title>Conclusión</title>
+
+  <para>
+   <systemitem class="daemon">ceph-iscsi</systemitem> es un componente clave de SUSE Enterprise Storage 7 que permite acceder al almacenamiento de bloques distribuido y de alta disponibilidad desde cualquier servidor o cliente capaz de comunicarse con el protocolo iSCSI. Mediante el uso de <systemitem class="daemon">ceph-iscsi</systemitem> en uno o varios hosts de iSCSI Gateway, las imágenes de Ceph RBD están disponibles como unidades lógicas asociados con destinos iSCSI, a los que se puede acceder de forma opcional con equilibrio de carga y con alta disponibilidad.
+  </para>
+
+  <para>
+   Dado que toda la configuración de <systemitem class="daemon">ceph-iscsi</systemitem> se almacena en el almacén de objetos de Ceph RADOS, los hosts de pasarela <systemitem class="daemon">ceph-iscsi</systemitem> son inherentemente no persistentes y, por lo tanto se pueden reemplazar, aumentar o reducir a voluntad. Como resultado, SUSE Enterprise Storage 7 permite a los clientes de SUSE ejecutar una tecnología de almacenamiento empresarial verdaderamente distribuida, de alta disponibilidad, resistente y autorreparable en hardware no especializado y en una plataforma completamente de código abierto.
+  </para>
+ </sect1>
+</chapter>
