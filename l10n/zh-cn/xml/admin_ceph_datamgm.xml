@@ -1,0 +1,1560 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_datamgm.xml" version="5.0" xml:id="cha-storage-datamgm">
+ <title>存储的数据管理</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  CRUSH 算法通过计算数据存储位置来确定如何存储和检索数据。使用 CRUSH，Ceph 客户端无需通过中心服务器或中介程序，即可直接与 OSD 通讯。借助算法确定的数据存储和检索方法，Ceph 可避免单一故障点、性能瓶颈和可伸缩性物理限制。
+ </para>
+ <para>
+  CRUSH 需要获取集群的索引，它使用 CRUSH 索引以伪随机的方式在 OSD 中存储和检索数据，并以一致的方式在整个集群中分布数据。
+ </para>
+ <para>
+  CRUSH 索引包含一个 OSD 列表、一个用于将设备聚合到物理位置的“存储桶”列表，以及一个告知 CRUSH 应如何复制 Ceph 集群存储池中数据的规则列表。通过反映安装的底层物理组织，CRUSH 可对相关设备故障的潜在根源建模，从而解决故障的根源。典型的根源包括物理接近、共用电源和共用网络。通过将这些信息编码到集群索引中，CRUSH 归置策略可将对象副本分隔在不同的故障域中，同时维持所需的分布方式。例如，为了消除可能的并发故障，可能需要确保数据副本位于使用不同机架、机柜、电源、控制器和/或物理位置的设备上。
+ </para>
+ <para>
+  部署 Ceph 集群后，将会生成默认的 CRUSH 索引。这种模式适合 Ceph 沙箱环境。但是，在部署大规模的数据集群时，强烈建议您考虑创建自定义 CRUSH 索引，因为这样做有助于管理 Ceph 集群、提高性能并确保数据安全。
+ </para>
+ <para>
+  例如，如果某个 OSD 停机，而您需要使用现场支持或更换硬件，则 CRUSH 索引可帮助您定位到发生 OSD 故障的主机所在的物理数据中心、机房、设备排和机柜。
+ </para>
+ <para>
+  同样，CRUSH 可以帮助您更快地确定故障。例如，如果特定机柜中的所有 OSD 同时停机，故障可能是由某个网络交换机或者机柜或网络交换机的电源所致，而不是发生在 OSD 自身上。
+ </para>
+ <para>
+  当与故障主机关联的归置组（请参见<xref linkend="op-pgs"/>）处于降级状态时，自定义 CRUSH 索引还可帮助您确定 Ceph 存储数据冗余副本的物理位置。
+ </para>
+ <para>
+  CRUSH 索引包括三个主要部分。
+ </para>
+ <itemizedlist mark="bullet" spacing="normal">
+  <listitem>
+   <para>
+    <xref linkend="datamgm-devices" xrefstyle="select: title"/>包括与 <systemitem>ceph-osd</systemitem> 守护进程对应的任何对象存储设备。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-buckets" xrefstyle="select: title"/>由存储位置（例如设备排、机柜、主机等）及为其指定的权重的分层聚合组成。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-rules" xrefstyle="select: title"/>由存储桶选择方式组成。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="datamgm-devices">
+  <title>OSD 设备</title>
+
+  <para>
+   为了将归置组映射到 OSD，CRUSH 索引需要 OSD 设备（OSD 守护进程的名称）的列表。设备列表显示在 CRUSH 索引的最前面。
+  </para>
+
+<screen>#devices
+device <replaceable>NUM</replaceable> osd.<replaceable>OSD_NAME</replaceable> class <replaceable>CLASS_NAME</replaceable></screen>
+
+  <para>
+   例如：
+  </para>
+
+<screen>
+#devices
+device 0 osd.0 class hdd
+device 1 osd.1 class ssd
+device 2 osd.2 class nvme
+device 3 osd.3class ssd
+</screen>
+
+  <para>
+   一般而言，一个 OSD 守护进程映射到一个磁盘。
+  </para>
+
+  <sect2 xml:id="crush-devclasses">
+   <title>设备类型</title>
+   <para>
+    Ceph 的优势之一是 CRUSH 索引能够灵活控制数据归置。这也是集群最难管理的环节之一。<emphasis>设备类型</emphasis>会自动对 CRUSH 索引执行最常见的更改，以前这些更改都需要由管理员手动完成。
+   </para>
+   <sect3 xml:id="crush-management-problem">
+    <title>CRUSH 管理问题</title>
+    <para>
+     Ceph 集群常由多种存储设备构建而成：HDD、SSD、NVMe，甚至是以上这些类型的混合。我们将这些不同的存储设备类型称为<emphasis>设备类型</emphasis>，以避免与 CRUSH 桶的<emphasis>类型</emphasis>属性（例如 host、rack 和 row，请参见<xref linkend="datamgm-buckets"/>了解更多详细信息）产生混淆。受 SSD 支持的 Ceph OSD 比受旋转磁盘支持的 OSD 速度快得多，因此更适合特定工作负载。借助 Ceph，您可轻松为不同数据集或工作负载创建 RADOS 存储池，以及指定不同的 CRUSH 规则来控制这些存储池的数据归置。
+    </para>
+    <figure>
+     <title>具有混合设备类型的 OSD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     不过，通过设置 CRUSH 规则将数据仅归置到特定类型的设备这个过程十分枯燥。规则是针对 CRUSH 层次结构运作的，但如果将某些设备混合到同一主机或机柜中（如上面的层次结构示例所示），则这些设备默认会混合在一起并显示在层次结构的同一子树中。要手动将它们分隔到单独的树中，需要针对先前版本的 SUSE Enterprise Storage 中的每个设备类型，为每个中间节点创建多个版本。
+    </para>
+   </sect3>
+   <sect3 xml:id="osd-crush-device-classes">
+    <title>设备类型</title>
+    <para>
+     Ceph 提供了一个较佳的解决方案，就是为每个 OSD 添加一个名为<emphasis>设备类型</emphasis>的属性。默认情况下，OSD 会根据 Linux 内核所公开的硬件属性，自动将自己的设备类型设置为“hdd”、“ssd”或“nvme”。<command>ceph osd tree</command> 命令输出的新列中会报告这些设备类型：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd tree
+ ID CLASS WEIGHT   TYPE NAME      STATUS REWEIGHT PRI-AFF
+ -1       83.17899 root default
+ -4       23.86200     host cpach
+ 2   hdd  1.81898         osd.2      up  1.00000 1.00000
+ 3   hdd  1.81898         osd.3      up  1.00000 1.00000
+ 4   hdd  1.81898         osd.4      up  1.00000 1.00000
+ 5   hdd  1.81898         osd.5      up  1.00000 1.00000
+ 6   hdd  1.81898         osd.6      up  1.00000 1.00000
+ 7   hdd  1.81898         osd.7      up  1.00000 1.00000
+ 8   hdd  1.81898         osd.8      up  1.00000 1.00000
+ 15  hdd  1.81898         osd.15     up  1.00000 1.00000
+ 10  nvme 0.93100         osd.10     up  1.00000 1.00000
+ 0   ssd  0.93100         osd.0      up  1.00000 1.00000
+ 9   ssd  0.93100         osd.9      up  1.00000 1.00000</screen>
+    <para>
+     如果设备类型自动检测失败（例如由于未通过 <filename>/sys/block</filename> 正确向设备驱动程序公开设备的相关信息而导致失败），您可以使用命令行调整设备类型：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rm-device-class osd.2 osd.3
+done removing class of osd(s): 2,3
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush set-device-class ssd osd.2 osd.3
+set osd(s) 2,3 to class 'ssd'
+</screen>
+   </sect3>
+   <sect3 xml:id="crush-placement-rules">
+    <title>设置 CRUSH 归置规则</title>
+    <para>
+     CRUSH 规则可限制对特定设备类型执行归置操作。例如，您可以通过运行以下命令来创建仅将数据分布在 SSD 磁盘上的“fast”<emphasis role="bold">副本</emphasis>存储池：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rule create-replicated <replaceable>RULE_NAME</replaceable> <replaceable>ROOT</replaceable> <replaceable>FAILURE_DOMAIN_TYPE</replaceable> <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+    <para>
+     例如：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rule create-replicated fast default host ssd
+</screen>
+    <para>
+     创建名为“fast_pool”的存储池并将其分配给“fast”规则：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool create fast_pool 128 128 replicated fast</screen>
+    <para>
+     创建<emphasis role="bold">纠删码</emphasis>规则的过程略有不同。首先，创建包含所需设备类型对应属性的纠删码配置。然后，在创建纠删码存储池时使用该配置：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd erasure-code-profile set myprofile \
+ k=4 m=2 crush-device-class=ssd crush-failure-domain=host
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool create mypool 64 erasure myprofile
+</screen>
+    <para>
+     为应对您需要手动编辑 CRUSH 索引来自定义规则的情况，该语法已经过扩展，允许指定设备类型。例如，上述命令生成的 CRUSH 规则如下所示：
+    </para>
+<screen>
+rule ecpool {
+  id 2
+  type erasure
+  min_size 3
+  max_size 6
+  step set_chooseleaf_tries 5
+  step set_choose_tries 100
+  step take default <emphasis role="bold">class ssd</emphasis>
+  step chooseleaf indep 0 type host
+  step emit
+}
+</screen>
+    <para>
+     此处的重要差别是“take”命令包含额外的“class <replaceable>CLASS_NAME</replaceable>”后缀。
+    </para>
+   </sect3>
+   <sect3 xml:id="crush-additional-commands">
+    <title>其他命令</title>
+    <para>
+     要列出 CRUSH 索引中使用的设备类型，请运行以下命令：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush class ls
+[
+  "hdd",
+  "ssd"
+]
+</screen>
+    <para>
+     要列出现有的 CRUSH 规则，请运行以下命令：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush rule ls
+replicated_rule
+fast</screen>
+    <para>
+     要查看名为“fast”的 CRUSH 规则的详细信息，请运行以下命令：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush rule dump fast
+{
+		"rule_id": 1,
+		"rule_name": "fast",
+		"ruleset": 1,
+		"type": 1,
+		"min_size": 1,
+		"max_size": 10,
+		"steps": [
+						{
+										"op": "take",
+										"item": -21,
+										"item_name": "default~ssd"
+						},
+						{
+										"op": "chooseleaf_firstn",
+										"num": 0,
+										"type": "host"
+						},
+						{
+										"op": "emit"
+						}
+		]
+}</screen>
+    <para>
+     要列出属于“ssd”类型的 OSD，请运行以下命令：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush class ls-osd ssd
+0
+1
+</screen>
+   </sect3>
+   <sect3 xml:id="device-classes-reclassify">
+    <title>从旧版 SSD 规则迁移到设备类型</title>
+    <para>
+     在早于版本 5 的 SUSE Enterprise Storage 中，要写入适用于设备的规则，您需要手动编辑 CRUSH 索引并为每个具体的设备类型（例如 SSD）维护并行的层次结构。自 SUSE Enterprise Storage 5 起，设备类型特性透明地实现了这一目的。
+    </para>
+    <para>
+     您可以使用 <command>crushtool</command> 命令将旧版规则和层次结构转换为基于类型的新版规则。系统提供以下几种转换类型：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>crushtool --reclassify-root <replaceable>ROOT_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        此命令会获取 <replaceable>ROOT_NAME</replaceable> 下的层次结构中的所有内容，并将通过
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable>
+</screen>
+       <para>
+        引用该根的所有规则调整为
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable> class <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+       <para>
+        它会对存储桶重新编号，以便为指定类型的“shadow tree”使用旧 ID。因此，数据不会发生移动。
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-root</command></title>
+        <para>
+         假设有以下现有规则：
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+        <para>
+         如果您将根“default”重新分类为“hdd”类型，规则将变为
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default class hdd
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+       </example>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --set-subtree-class <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        此方法会将根目录为 <replaceable>BUCKET_NAME</replaceable> 的子树中的每个设备标记为指定的设备类型。
+       </para>
+       <para>
+        <option>--set-subtree-class</option> 通常与 <option>--reclassify-root</option> 选项结合使用，以确保该根中的所有设备均标为正确的类型。不过，其中一些设备可能特意使用了不同的类型，因此您不需要重新对它们进行标记。在此类情况下，请勿使用 <option>--set-subtree-class</option> 选项。请记住，这样的重新映射并不完美，因为之前的规则是跨多个类型的设备分发的，而调整后的规则将仅映射到指定设备类型的设备。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>MATCH_PATTERN</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>DEFAULT_PATTERN</replaceable></command></term>
+      <listitem>
+       <para>
+        此方法允许将特定于类型的并行层次结构与常规层次结构合并。例如，许多用户会有类似以下的 CRUSH 索引：
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-bucket</command></title>
+<screen>
+host node1 {
+   id -2           # do not change unnecessarily
+   # weight 109.152
+   alg straw
+   hash 0  # rjenkins1
+   item osd.0 weight 9.096
+   item osd.1 weight 9.096
+   item osd.2 weight 9.096
+   item osd.3 weight 9.096
+   item osd.4 weight 9.096
+   item osd.5 weight 9.096
+   [...]
+}
+
+host node1-ssd {
+   id -10          # do not change unnecessarily
+   # weight 2.000
+   alg straw
+   hash 0  # rjenkins1
+   item osd.80 weight 2.000
+   [...]
+}
+
+root default {
+   id -1           # do not change unnecessarily
+   alg straw
+   hash 0  # rjenkins1
+   item node1 weight 110.967
+   [...]
+}
+
+root ssd {
+   id -18          # do not change unnecessarily
+   # weight 16.000
+   alg straw
+   hash 0  # rjenkins1
+   item node1-ssd weight 2.000
+   [...]
+}
+</screen>
+       </example>
+       <para>
+        此函数会将与给定模式相匹配的每个存储桶重新分类。模式的格式可能为 <literal>%suffix</literal> 或 <literal>prefix%</literal>。在上面的示例中，您需要使用 <literal>%-ssd</literal> 模式。对于每个匹配的存储桶，与“%”通配符相匹配的名称的其余部分指定了基本存储桶。所匹配存储桶中的所有设备都会标记为指定的设备类型，随后会移至基本存储桶中。如果基本存储桶不存在（例如，如果“node12-ssd”存在，但“node12”不存在），则系统会创建基本存储桶，并将其关联到指定的默认父存储桶下。系统会为新的阴影存储桶保留旧的存储桶 ID，以防数据移动。系统会对包含引用旧存储桶的 <literal>take</literal> 步骤的规则进行调整。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>BASE_BUCKET</replaceable></command></term>
+      <listitem>
+       <para>
+        您可以使用不包含通配符的 <option>--reclassify-bucket</option> 选项来映射单个存储桶。例如，在上面的示例中，我们希望将“ssd”存储桶映射到默认存储桶。
+       </para>
+       <para>
+        用于转换由上述片段组成的索引的最后一个命令将如下所示：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd getcrushmap -o original
+<prompt>cephuser@adm &gt; </prompt>crushtool -i original --reclassify \
+  --set-subtree-class default hdd \
+  --reclassify-root default hdd \
+  --reclassify-bucket %-ssd ssd default \
+  --reclassify-bucket ssd ssd default \
+  -o adjusted
+</screen>
+       <para>
+        要确认转换是否正确，可以使用 <option>--compare</option> 选项。该选项会测试大量对 CRUSH 索引的输入，并比较是否会产生相同的结果。这些输入通过适用于 <option>--test</option> 的相同选项来控制。对于上面的示例，命令将如下所示：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>crushtool -i original --compare adjusted
+rule 0 had 0/10240 mismatched mappings (0)
+rule 1 had 0/10240 mismatched mappings (0)
+maps appear equivalent
+</screen>
+       <tip>
+        <para>
+         如果存在差异，括号中将会显示重新映射的输入比率。
+        </para>
+       </tip>
+       <para>
+        如果您对调整后的 CRUSH 索引满意，便可将其应用于集群：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd setcrushmap -i adjusted
+</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>详细信息</title>
+    <para>
+     有关 CRUSH 索引的更多详细信息，请参见<xref linkend="op-crush"/>。
+    </para>
+    <para>
+     有关 Ceph 存储池的更多一般详细信息，请参见<xref linkend="ceph-pools"/>
+    </para>
+    <para>
+     有关纠删码存储池的更多详细信息，请参见<xref linkend="cha-ceph-erasure"/>。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="datamgm-buckets">
+  <title>存储桶</title>
+
+  <para>
+   CRUSH 索引包含 OSD 的列表，可将这些 OSD 组织成存储桶的树形结构排列形式，以便将设备聚合到物理位置。单个 OSD 构成树形结构中的树叶。
+  </para>
+
+  <informaltable frame="none">
+   <tgroup cols="3">
+    <colspec colwidth="10*"/>
+    <colspec colwidth="30*"/>
+    <colspec colwidth="70*"/>
+    <tbody>
+     <row>
+      <entry>
+       <para>
+        0
+       </para>
+      </entry>
+      <entry>
+       <para>
+        osd
+       </para>
+      </entry>
+      <entry>
+       <para>
+        特定的设备或 OSD（<literal>osd.1</literal>、<literal>osd.2</literal> 等）。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        1
+       </para>
+      </entry>
+      <entry>
+       <para>
+        host
+       </para>
+      </entry>
+      <entry>
+       <para>
+        包含一个或多个 OSD 的主机的主机名。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        2
+       </para>
+      </entry>
+      <entry>
+       <para>
+        chassis
+       </para>
+      </entry>
+      <entry>
+       <para>
+        机架中包含该 <literal>host</literal> 的机箱的标识符。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        3
+       </para>
+      </entry>
+      <entry>
+       <para>
+        rack
+       </para>
+      </entry>
+      <entry>
+       <para>
+        计算机机柜。默认值为 <literal>unknownrack</literal>。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        4
+       </para>
+      </entry>
+      <entry>
+       <para>
+        row
+       </para>
+      </entry>
+      <entry>
+       <para>
+        由一系列机柜组成的设备排。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        5
+       </para>
+      </entry>
+      <entry>
+       <para>
+        pdu
+       </para>
+      </entry>
+      <entry>
+       <para>
+        “Power Distribution Unit”（电源分配单元）的缩写。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        6
+       </para>
+      </entry>
+      <entry>
+       <para>
+        pod
+       </para>
+      </entry>
+      <entry>
+       <para>
+        “Point of Delivery”（分发点）的缩写。在此环境中为一组 PDU 或一组机架排。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        7
+       </para>
+      </entry>
+      <entry>
+       <para>
+        room
+       </para>
+      </entry>
+      <entry>
+       <para>
+        包含多排机架的房间。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        8
+       </para>
+      </entry>
+      <entry>
+       <para>
+        datacenter
+       </para>
+      </entry>
+      <entry>
+       <para>
+        包含一个或多个房间的物理数据中心。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        9
+       </para>
+      </entry>
+      <entry>
+       <para>
+        region
+       </para>
+      </entry>
+      <entry>
+       <para>
+        全球的地理地区（例如 NAM、LAM、EMEA、APAC 等）
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        10
+       </para>
+      </entry>
+      <entry>
+       <para>
+        root
+       </para>
+      </entry>
+      <entry>
+       <para>
+        OSD 存储桶的树形结构根节点（通常设为 <literal>default</literal>）。
+       </para>
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </informaltable>
+
+  <tip>
+   <para>
+    您可以修改现有类型，以及创建自己的存储桶类型。
+   </para>
+  </tip>
+
+  <para>
+   Ceph 的部署工具可生成 CRUSH 索引，其中包含每个主机的存储桶，以及名为“default”的根（可用于默认的 <literal>rbd</literal> 存储池）。剩余的存储桶类型提供了一种存储有关节点/存储桶的物理位置信息的方法，当 OSD、主机或网络硬件发生故障，并且管理员需要访问物理硬件时，这种方法可大大简化集群管理工作。
+  </para>
+
+  <para>
+   存储桶具有类型、唯一的名称（字符串）、以负整数表示的唯一 ID、相对于其项目总容量/权限的权重、存储桶算法（默认为 <literal>straw2</literal>）和哈希（默认为 <literal>0</literal>，代表 CRUSH 哈希 <literal>rjenkins1</literal>）。一个存储桶可以包含一个或多个项目。项目可由其他存储桶或 OSD 组成。项目可能会有一个权重来反映该项目的相对权重。
+  </para>
+
+<screen>[bucket-type] [bucket-name] {
+  id [a unique negative numeric ID]
+  weight [the relative capacity/capability of the item(s)]
+  alg [the bucket type: uniform | list | tree | straw2 | straw ]
+  hash [the hash type: 0 by default]
+  item [item-name] weight [weight]
+}</screen>
+
+  <para>
+   下面的示例说明如何使用存储桶来聚合存储池，以及诸如数据中心、机房、机柜和设备排的物理位置。
+  </para>
+
+<screen>host ceph-osd-server-1 {
+        id -17
+        alg straw2
+        hash 0
+        item osd.0 weight 0.546
+        item osd.1 weight 0.546
+}
+
+row rack-1-row-1 {
+        id -16
+        alg straw2
+        hash 0
+        item ceph-osd-server-1 weight 2.00
+}
+
+rack rack-3 {
+        id -15
+        alg straw2
+        hash 0
+        item rack-3-row-1 weight 2.00
+        item rack-3-row-2 weight 2.00
+        item rack-3-row-3 weight 2.00
+        item rack-3-row-4 weight 2.00
+        item rack-3-row-5 weight 2.00
+}
+
+rack rack-2 {
+        id -14
+        alg straw2
+        hash 0
+        item rack-2-row-1 weight 2.00
+        item rack-2-row-2 weight 2.00
+        item rack-2-row-3 weight 2.00
+        item rack-2-row-4 weight 2.00
+        item rack-2-row-5 weight 2.00
+}
+
+rack rack-1 {
+        id -13
+        alg straw2
+        hash 0
+        item rack-1-row-1 weight 2.00
+        item rack-1-row-2 weight 2.00
+        item rack-1-row-3 weight 2.00
+        item rack-1-row-4 weight 2.00
+        item rack-1-row-5 weight 2.00
+}
+
+room server-room-1 {
+        id -12
+        alg straw2
+        hash 0
+        item rack-1 weight 10.00
+        item rack-2 weight 10.00
+        item rack-3 weight 10.00
+}
+
+datacenter dc-1 {
+        id -11
+        alg straw2
+        hash 0
+        item server-room-1 weight 30.00
+        item server-room-2 weight 30.00
+}
+
+root data {
+        id -10
+        alg straw2
+        hash 0
+        item dc-1 weight 60.00
+        item dc-2 weight 60.00
+}</screen>
+ </sect1>
+ <sect1 xml:id="datamgm-rules">
+  <title>规则集</title>
+
+  <para>
+   CRUSH 索引支持“CRUSH 规则”概念，这些规则确定存储池的数据归置。对于大型集群，您可能会创建许多存储池，其中每个存储池各自可能具有自己的 CRUSH 规则组和规则。默认 CRUSH 索引具有适用于默认根的规则。如果您想使用更多根和更多规则，则需稍后自行创建，或者在创建新存储池时让系统自动创建。
+  </para>
+
+  <note>
+   <para>
+    大多数情况下，无需修改默认规则。创建新存储池时，该存储池的默认规则组为 0。
+   </para>
+  </note>
+
+  <para>
+   规则采用以下格式：
+  </para>
+
+<screen>rule <replaceable>rulename</replaceable> {
+
+        ruleset <replaceable>ruleset</replaceable>
+        type <replaceable>type</replaceable>
+        min_size <replaceable>min-size</replaceable>
+        max_size <replaceable>max-size</replaceable>
+        step <replaceable>step</replaceable>
+
+}</screen>
+
+  <variablelist>
+   <varlistentry>
+    <term>ruleset</term>
+    <listitem>
+     <para>
+      一个整数。将规则分类，使其属于一个规则组。通过在存储池中设置规则组来激活。必须指定此选项。默认值为 <literal>0</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>type</term>
+    <listitem>
+     <para>
+      一个字符串。描述了适用于“副本”或“纠删码”存储池的规则。必须指定此选项。默认值为 <literal>replicated</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>min_size</term>
+    <listitem>
+     <para>
+      一个整数。如果存储池组创建的副本数小于此数字，CRUSH 将不选择此规则。必须指定此选项。默认值为 <literal>2</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>max_size</term>
+    <listitem>
+     <para>
+      一个整数。如果存储池组创建的副本数大于此数字，CRUSH 将不选择此规则。必须指定此选项。默认值为 <literal>10</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step take <replaceable>bucket</replaceable></term>
+    <listitem>
+     <para>
+      采用以名称指定的存储桶，并开始在树中向下迭代。必须指定此选项。有关在树中迭代的说明，请参见<xref linkend="datamgm-rules-step-iterate"/>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step <replaceable>target</replaceable><replaceable>mode</replaceable><replaceable>num</replaceable> type <replaceable>bucket-type</replaceable></term>
+    <listitem>
+     <para>
+      <replaceable>target</replaceable> 可以是 <literal>choose</literal> 或 <literal>chooseleaf</literal>。如果设置为 <literal>choose</literal>，则会选择许多存储桶。<literal>chooseleaf</literal> 直接从存储桶集的每个存储桶的子树中选择 OSD（叶节点）。
+     </para>
+     <para>
+      <replaceable>mode</replaceable> 可以是 <literal>firstn</literal> 或 <literal>indep</literal>。请参见<xref linkend="datamgm-rules-step-mode"/>。
+     </para>
+     <para>
+      选择给定类型的存储桶的数量。其中，N 是可用选项的数量，如果 <replaceable>num</replaceable> &gt; 0 且 &lt; N，则选择该数量的存储桶；如果 <replaceable>num</replaceable> &lt; 0，则表示 N - <replaceable>num</replaceable>；如果 <replaceable>num</replaceable> == 0，则选择 N 个存储桶（全部可用）。跟在 <literal>step take</literal> 或 <literal>step choose</literal> 后使用。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step emit</term>
+    <listitem>
+     <para>
+      输出当前值并清空堆栈。通常在规则的末尾使用，但也可在同一规则中用来构成不同的树。跟在 <literal>step choose</literal> 后使用。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <sect2 xml:id="datamgm-rules-step-iterate">
+   <title>迭代节点树</title>
+   <para>
+    可采用节点树的形式来查看使用存储桶定义的结构。在此树中，存储桶是节点，OSD 是叶。
+   </para>
+   <para>
+    CRUSH 索引中的规则定义如何从此树中选择 OSD。规则从某个节点开始，然后在树中向下迭代，以返回一组 OSD。无法定义需要选择哪个分支。CRUSH 算法可确保 OSD 集能够满足复制要求并均衡分布数据。
+   </para>
+   <para>
+    使用 <literal>step take</literal> <replaceable>bucket</replaceable> 时，节点树中的迭代从给定的存储桶（而不是存储桶类型）开始。如果要返回树中所有分支上的 OSD，该存储桶必须是根存储桶。否则，以下步骤只会在子树中迭代。
+   </para>
+   <para>
+    完成 <literal>step take</literal> 后，接下来会执行规则定义中的一个或多个 <literal>step choose</literal> 项。每个 <literal>step choose</literal> 项从前面选定的上层节点中选择定义数量的节点（或分支）。
+   </para>
+   <para>
+    最后，使用 <literal>step emit</literal> 返回选定的 OSD。
+   </para>
+   <para>
+    <literal>step chooseleaf</literal> 是一个便捷函数，可直接从给定存储桶的分支中选择 OSD。
+   </para>
+   <para>
+    <xref linkend="datamgm-rules-step-iterate-figure"/>中提供了说明如何使用 <literal>step</literal> 在树中迭代的示例。在下面的规则定义中，橙色箭头和数字与 <literal>example1a</literal> 和 <literal>example1b</literal> 对应，蓝色箭头和数字与 <literal>example2</literal> 对应。
+   </para>
+   <figure xml:id="datamgm-rules-step-iterate-figure">
+    <title>示例树</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-step.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-step.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+<screen># orange arrows
+rule example1a {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2)
+        step choose firstn 0 host
+        # orange (3)
+        step choose firstn 1 osd
+        step emit
+}
+
+rule example1b {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2) + (3)
+        step chooseleaf firstn 0 host
+        step emit
+}
+
+# blue arrows
+rule example2 {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # blue (1)
+        step take room1
+        # blue (2)
+        step chooseleaf firstn 0 rack
+        step emit
+}</screen>
+  </sect2>
+
+  <sect2 xml:id="datamgm-rules-step-mode">
+   <title><literal/>firstn 和 indep<literal/></title>
+   <para>
+    CRUSH 规则定义有故障节点或 OSD 的替换项（请参见<xref linkend="datamgm-rules"/>）。关键字 <literal>step</literal> 要求使用 <literal>firstn</literal> 或 <literal>indep</literal> 参数。<xref linkend="datamgm-rules-step-mode-indep-figure"/>提供了示例。
+   </para>
+   <para>
+    <literal>firstn</literal> 将替换节点添加到工作节点列表的末尾。如果某个节点发生故障，其后的正常节点会移位到左侧，以填充有故障节点留下的空缺。这是<emphasis>副本存储池</emphasis>的默认方法，也是需要采取的方法，因为次要节点已包含所有数据，因此可立即接管主要节点的职责。
+   </para>
+   <para>
+    <literal>indep</literal> 为每个工作节点选择固定的替换节点。替换有故障节点不会更改剩余节点的顺序。这对于<emphasis>纠删码存储池</emphasis>而言是所需的行为。在纠删码存储池中，节点上存储的数据取决于在选择节点时它所在的位置。如果节点的顺序发生变化，受影响节点上的所有数据都需要重新放置。
+   </para>
+   <figure xml:id="datamgm-rules-step-mode-indep-figure">
+    <title>节点替换方法</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-firstn-indep.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-firstn-indep.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-pgs">
+  <title>归置组</title>
+
+  <para>
+   Ceph 会将对象映射到归置组 (PG)。归置组是指逻辑对象存储池的分片或片段，可将对象以组形式归置到 OSD 中。归置组可减少 Ceph 将数据存储到 OSD 中时每个对象的元数据量。如果归置组的数量较多（例如，每个 OSD 有 100 个归置组），将能实现较佳的平衡。
+  </para>
+
+  <sect2 xml:id="op-pgs-usage">
+   <title>使用归置组</title>
+   <para>
+    归置组 (PG) 聚合了存储池内的对象。主要原因是基于每个对象来跟踪对象归置和元数据的计算成本较高。例如，包含数百万个对象的系统无法直接跟踪各个对象的归置。
+   </para>
+   <figure>
+    <title>存储池中的归置组</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Ceph 客户端负责计算对象将属于哪个归置组。它会对对象 ID 进行哈希处理，并根据所定义存储池中的 PG 数及存储池的 ID 来应用操作。
+   </para>
+   <para>
+    归置组内的对象内容存储在一组 OSD 中。例如，在大小为 2 的副本存储池中，每个归置组将对象存储到两个 OSD 中：
+   </para>
+   <figure>
+    <title>归置组和 OSD</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    如果 OSD 2 发生故障，则系统会将另一个 OSD 指定给归置组 1，并在该 OSD 中填充 OSD 1 内所有对象的副本。如果存储池大小从 2 变为 3，则系统会向归置组另外再分配一个 OSD，并在该 OSD 中填充归置组内所有对象的副本。
+   </para>
+   <para>
+    归置组并不拥有 OSD，它们与同一存储池甚至其他存储池内的其他归置组共享 OSD。如果 OSD 2 发生故障，归置组 2 也将需要使用 OSD 3 来恢复对象的副本。
+   </para>
+   <para>
+    当归置组的数量增加时，系统会向新归置组分配 OSD。CRUSH 函数的结果也会发生更改，而且系统会将之前的归置组的部分对象复制到新归置组并将它们从旧归置组删除。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pg-num">
+   <title>确定 <replaceable>PG_NUM</replaceable> 的值</title>
+   <note>
+    <para>
+     从 Ceph Nautilus (v14.x) 开始，您可以使用 Ceph Manager <literal>pg_autoscaler</literal> 模块根据需要自动扩展 PG。如果要启用此功能，请参考<xref linkend="default-pg-and-pgp-counts"/>。
+    </para>
+   </note>
+   <para>
+    创建新存储池时，您仍可手动选择 <replaceable>PG_NUM</replaceable> 的值：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool create <replaceable>POOL_NAME</replaceable> <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    <replaceable>PG_NUM</replaceable> 无法自动计算得出。以下是一些常用的值，选择哪个值取决于集群中的 OSD 数量：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>少于 5 个 OSD：</term>
+     <listitem>
+      <para>
+       将 <replaceable>PG_NUM</replaceable> 设置为 128。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>5 到 10 个 OSD：</term>
+     <listitem>
+      <para>
+       将 <replaceable>PG_NUM</replaceable> 设置为 512。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>10 到 50 个 OSD：</term>
+     <listitem>
+      <para>
+       将 <replaceable>PG_NUM</replaceable> 设置为 1024。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    随着 OSD 数量的增加，选择正确的 <replaceable>PG_NUM</replaceable> 值也变得愈加重要。<replaceable>PG_NUM</replaceable> 对集群的行为以及 OSD 发生故障时的数据持久性具有很大影响。
+   </para>
+   <sect3 xml:id="op-pgs-choosing">
+    <title>计算超过 50 个 OSD 的归置组</title>
+    <para>
+     如果 OSD 数量低于 50，请使用<xref linkend="op-pgs-pg-num"/>中所述的预选值。如果 OSD 数量超过 50，建议为每个 OSD 使用约 50 到 100 个归置组，以平衡资源的使用、数据持久性和数据分布。对于单个对象存储池，您可以使用以下公式来计算基线数量：
+    </para>
+<screen>total PGs = (OSDs * 100) / <replaceable>POOL_SIZE</replaceable></screen>
+    <para>
+     其中，<replaceable>POOL_SIZE</replaceable> 是副本的个数（如果是副本存储池）或 <command>ceph osd erasure-code-profile get</command> 命令所返回的“k”和“m”之和（如果是纠删码存储池）。应将结果舍入到最接近的 2 的幂。对于 CRUSH 算法，建议进行舍入，以便均衡归置组之间的对象数。
+    </para>
+    <para>
+     例如，如果集群包含 200 个 OSD 和大小为 3 个副本的存储池，您需要按如下方式预估 PG 数：
+    </para>
+<screen>
+          (200 * 100) / 3 = 6667
+</screen>
+    <para>
+     最接近的 2 的幂为 <emphasis role="bold">8192</emphasis>。
+    </para>
+    <para>
+     使用多个数据存储池存储对象时，您需要确保在每个存储池的归置组数与每个 OSD 的归置组数之间取得平衡。您需要采用合理的归置组总数，在不过度占用系统资源或导致互联过程过慢的前提下，确保每个 OSD 的差异保持在合理的较低水平。
+    </para>
+    <para>
+     例如，如果集群包含 10 个存储池，每个存储池有 512 个归置组（位于 10 个 OSD 中），则表示共有 5,120 个归置组分布于 10 个 OSD 中，即每个 OSD 有 512 个归置组。这样的设置不会使用过多资源。但是，如果创建了 1000 个存储池，且每个存储池有 512 个归置组，那么每个 OSD 需要处理约 50,000 个归置组，这样完成互联所需的资源和时间便会显著增加。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-pg-set">
+   <title>设置归置组数量</title>
+   <note>
+    <para>
+     从 Ceph Nautilus (v14.x) 开始，您可以使用 Ceph Manager <literal>pg_autoscaler</literal> 模块根据需要自动扩展 PG。如果要启用此功能，请参考<xref linkend="default-pg-and-pgp-counts"/>。
+    </para>
+   </note>
+   <para>
+    如果您仍需手动指定存储池中的归置组数量，则需要在创建存储池时指定（请参见<xref linkend="ceph-pools-operate-add-pool"/>）。为存储池设置归置组后，您可以运行以下命令来增加归置组的数量：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_num <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    增加归置组数量后，您还需要增加要归置的归置组数量 (<option>PGP_NUM</option>)，以便您的集群重新达到平衡。<option>PGP_NUM</option> 是考虑要通过 CRUSH 算法归置的归置组数。增加 <option>PG_NUM</option> 会分割归置组，但在增加 <option>PGP_NUM</option> 之前数据不会迁移到较新的归置组。<option>PGP_NUM</option> 应等于 <option>PG_NUM</option>。要增加应归置的归置组数量，请运行以下命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pgp_num <replaceable>PGP_NUM</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-get">
+   <title>获取归置组数量</title>
+   <para>
+    要获取存储池中的归置组数量，请运行以下 <command>get</command> 命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool get <replaceable>POOL_NAME</replaceable> pg_num
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getpgstat">
+   <title>获取集群的 PG 统计数据</title>
+   <para>
+    要获取集群内归置组的统计数据，请运行以下命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg dump [--format <replaceable>FORMAT</replaceable>]
+</screen>
+   <para>
+    有效格式为“plain”（默认值）和“json”。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getstuckstat">
+   <title>获取卡住的 PG 统计数据</title>
+   <para>
+    要获取所有卡在指定状态的归置组的统计数据，请运行以下命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg dump_stuck <replaceable>STATE</replaceable> \
+ [--format <replaceable>FORMAT</replaceable>] [--threshold <replaceable>THRESHOLD</replaceable>]
+</screen>
+   <para>
+    可能的<replaceable>状态</replaceable>有：“inactive”（PG 由于在等待拥有最新数据的 OSD 恢复启用状态而无法处理读取或写入）、“unclean”（PG 包含未复制所需次数的对象）、“stale”（PG 处于未知状态，即托管 PG 的 OSD 未在 <option>mon_osd_report_timeout</option> 选项所指定的时间间隔内向 Monitor 集群报告相关信息）、“undersized”或“degraded”。
+   </para>
+   <para>
+    有效格式为“plain”（默认值）和“json”。
+   </para>
+   <para>
+    该阈值定义归置组至少卡住多少秒（默认为 300 秒）后系统会将其包含到返回的统计数据中。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pgmap">
+   <title>搜索归置组索引</title>
+   <para>
+    要搜索特定归置组的索引，请运行以下命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg map <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Ceph 将返回归置组索引、归置组和 OSD 状态：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg map 1.6c
+osdmap e13 pg 1.6c (1.6c) -&gt; up [1,0] acting [1,0]
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-pgstats">
+   <title>检索归置组统计数据</title>
+   <para>
+    要检索特定归置组的统计数据，请运行以下命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg <replaceable>PG_ID</replaceable> query
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-scrubpg">
+   <title>洗刷归置组</title>
+   <para>
+    要洗刷（<xref linkend="scrubbing-pgs"/>）归置组，请运行以下命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg scrub <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Ceph 会检查主节点和副本节点、生成归置组内所有对象的编目，并对它们进行比较，以确保没有缺少或不匹配的对象且对象的内容均一致。假设所有副本均匹配，最后的语义整理便可确保所有与快照相关的对象元数据均一致。错误通过日志来报告。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-backfill">
+   <title>设置归置组回填和恢复的优先顺序</title>
+   <para>
+    您可能会遇到数个归置组需要恢复和/或回填，而其中一些归置组存储的数据比其他归置组更为重要的情况。例如，这些 PG 可能存储着运行中计算机所使用的映像数据，其他 PG 则可能存储的是由非活跃计算机使用的数据或相关度较低的数据。在该情况下，您可能需要优先恢复这些归置组，以便更早地恢复存储在这些归置组中的数据的性能和可用性。要将特定归置组标记为在回填或恢复过程中优先处理，请运行以下命令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt role="root">root # </prompt>ceph pg force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    这将导致 Ceph 先对指定归置组执行恢复或回填，然后再处理其他归置组。这并不会中断当前正在进行的回填或恢复，而是会使指定的 PG 尽快得到处理。如果您改变了主意或将错误的归置组设为优先处理，请使用以下命令取消优先顺序：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg cancel-force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt role="root">root # </prompt>ceph pg cancel-force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    <command>cancel-*</command> 命令会删除 PG 的“force”标志，使其按默认顺序接受处理。同样，这并不会影响当前正在处理的归置组，只会影响仍在排队的归置组。完成归置组恢复或回填后，系统即会自动清除“force”标志。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-revert">
+   <title>还原丢失的对象</title>
+   <para>
+    如果集群丢失了一个或多个对象，而您已决定放弃搜索丢失的数据，则需要将未找到的对象标记为“lost”。
+   </para>
+   <para>
+    如果在查询过所有可能的位置后仍未找到这些对象，您可能需要放弃这些丢失的对象。这可能是由于几种故障同时发生（这种情况很少见）导致的，致使集群在写入本身恢复之前便得知写入已执行。
+   </para>
+   <para>
+    目前唯一支持的选项为“revert”，该选项会回滚到对象的先前版本，或在有新对象时完全忽略丢失的对象。要将“未找到”的对象标记为“lost”，请运行以下命令：
+   </para>
+<screen>
+  <prompt>cephuser@adm &gt; </prompt>ceph pg <replaceable>PG_ID</replaceable> mark_unfound_lost revert|delete
+  </screen>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-autoscaler">
+   <title>启用 PG 自动扩展器</title>
+   <para>
+    归置组 (PG) 是 Ceph 分布数据方式的详细内部实现。通过启用 PG 自动扩展功能，您可以允许集群根据集群的使用情况创建或自动调整 PG。
+   </para>
+   <para>
+    系统中的每个存储池都有一个 <option>pg_autoscale_mode</option> 属性，可将其设为 <literal>off</literal>、<literal>on</literal> 或 <literal>warn</literal>：
+   </para>
+   <para>
+    自动扩展器按存储池配置，可在以下三种模式下运行：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>off</term>
+     <listitem>
+      <para>
+       为此存储池禁用自动扩展功能。由管理员为每个存储池选择合适的 PG 数量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>on</term>
+     <listitem>
+      <para>
+       为给定存储池启用 PG 计数自动调整功能。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>warn</term>
+     <listitem>
+      <para>
+       一旦应调整 PG 计数，系统将发出运行状况告警。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    要为现有存储池设置自动扩展模式，请运行以下命令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_autoscale_mode <replaceable>mode</replaceable></screen>
+   <para>
+    您也可以运行以下命令，以配置将应用于日后创建的所有存储池的默认 <option>pg_autoscale_mode</option>：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set global osd_pool_default_pg_autoscale_mode <replaceable>MODE</replaceable></screen>
+   <para>
+    您可以运行以下命令来查看每个存储池、它的相关使用情况，以及对 PG 计数的任何更改建议：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool autoscale-status</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-crush">
+  <title>CRUSH 索引操作</title>
+
+  <para>
+   本节介绍基本的 CRUSH 索引操作方法，例如编辑 CRUSH 索引、更改 CRUSH 索引参数，以及添加/移动/删除 OSD。
+  </para>
+
+  <sect2>
+   <title>编辑 CRUSH 索引</title>
+   <para>
+    要编辑现有的 CRUSH 索引，请执行以下操作：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      获取 CRUSH 索引。要获取集群的 CRUSH 索引，请执行以下命令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd getcrushmap -o <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph 会将编译的 CRUSH 索引输出 (<option>-o</option>) 到您指定名称的文件。由于该 CRUSH 索引采用编译格式，您必须先将其反编译，然后才能对其进行编辑。
+     </para>
+    </step>
+    <step>
+     <para>
+      反编译 CRUSH 索引。要反编译 CRUSH 索引，请执行以下命令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>crushtool -d <replaceable>compiled-crushmap-filename</replaceable> \
+ -o <replaceable>decompiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph 将对已编译的 CRUSH 索引进行反编译 (<option>-d</option>)，并将其输出 (<option>-o</option>) 到您指定名称的文件。
+     </para>
+    </step>
+    <step>
+     <para>
+      至少编辑“设备”、“存储桶”和“规则”中的其中一个参数。
+     </para>
+    </step>
+    <step>
+     <para>
+      编译 CRUSH 索引。要编译 CRUSH 索引，请执行以下命令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>crushtool -c <replaceable>decompiled-crush-map-filename</replaceable> \
+ -o <replaceable>compiled-crush-map-filename</replaceable></screen>
+     <para>
+      Ceph 会将编译的 CRUSH 索引存储到您指定名称的文件。
+     </para>
+    </step>
+    <step>
+     <para>
+      设置 CRUSH 索引。要设置集群的 CRUSH 索引，请执行以下命令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd setcrushmap -i <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph 将输入您所指定文件名的已编译 CRUSH 索引，作为集群的 CRUSH 索引。
+     </para>
+    </step>
+   </procedure>
+   <tip>
+    <title>使用版本控制系统</title>
+    <para>
+     请为导出并修改过的 CRUSH 索引文件使用 git 或 svn 这样的版本控制系统。这可以让可能发生的回滚变得简单。
+    </para>
+   </tip>
+   <tip>
+    <title>测试新 CRUSH 索引</title>
+    <para>
+     请使用 <command>crushtool --test</command> 命令测试经过调整的新 CRUSH 索引，并与应用新 CRUSH 索引之前的状态进行比较。以下命令开关十分有用：<option>--show-statistics</option>、<option>--show-mappings</option>、<option>--show-bad-mappings</option>、<option>--show-utilization</option>、<option>--show-utilization-all</option>、<option>--show-choose-tries</option>
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addosd">
+   <title>添加或移动 OSD</title>
+   <para>
+    要在运行中集群的 CRUSH 索引中添加或移动 OSD，请执行以下命令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush set <replaceable>id_or_name</replaceable> <replaceable>weight</replaceable> root=<replaceable>pool-name</replaceable>
+<replaceable>bucket-type</replaceable>=<replaceable>bucket-name</replaceable> ...</screen>
+   <variablelist>
+    <varlistentry>
+     <term>id</term>
+     <listitem>
+      <para>
+       一个整数。OSD 的数字 ID。必须指定此选项。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>name</term>
+     <listitem>
+      <para>
+       一个字符串。OSD 的全名。必须指定此选项。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>weight</term>
+     <listitem>
+      <para>
+       一个双精度值。OSD 的 CRUSH 权重。必须指定此选项。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>root</term>
+     <listitem>
+      <para>
+       一个键/值对。默认情况下，CRUSH 层次结构包含 default 存储池作为根。必须指定此选项。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bucket-type</term>
+     <listitem>
+      <para>
+       键/值对。可在 CRUSH 层次结构中指定 OSD 的位置。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    下面的示例将 <literal>osd.0</literal> 添加到层次结构，或移动之前某个位置的 OSD。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush set osd.0 1.0 root=data datacenter=dc1 room=room1 \
+row=foo rack=bar host=foo-bar-1</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdweight">
+   <title><command>ceph osd reweight</command> 与 <command>ceph osd crush reweight</command> 之间的差异</title>
+   <para>
+    有两个相似的命令都可更改 Ceph OSD 的权重。它们的使用情境不同，可能会造成混淆。
+   </para>
+   <sect3 xml:id="ceph-osd-reweight">
+    <title><command>ceph osd reweight</command></title>
+    <para>
+     用法：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     <command>ceph osd reweight</command> 用于对 Ceph OSD 设置覆盖权重。此值介于 0 到 1 之间，会强制 CRUSH 重新放置将以其他方式存储于此驱动器上的数据。该命令<emphasis role="bold">不会</emphasis>更改为 OSD 上方的存储桶指定的权重，它是一种在正常 CRUSH 分布出现问题时的纠正措施。例如，如果您的其中一个 OSD 处于 90%，而其他 OSD 处于 40%，则您可缩小此权重，以尝试对其进行补偿。
+    </para>
+    <note>
+     <title>OSD 权重是暂时的</title>
+     <para>
+      请注意，<command>ceph osd reweight</command> 并非永久性设置。当某个 OSD 被标记为“out”时，它的权重会被设置为 0，当它一旦重新被标记为“in”，其权重又会更改为 1。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="ceph-osd-crush-reweight">
+    <title><command>ceph osd crush reweight</command></title>
+    <para>
+     用法：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     <command>ceph osd crush reweight</command> 用于设置 OSD 的 <emphasis role="bold">CRUSH</emphasis> 权重。此权重可以是任意值（通常是以 TB 为单位的磁盘大小），用于控制系统尝试分配给 OSD 的数据量。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdremove">
+   <title>删除 OSD</title>
+   <para>
+    要从运行中集群的 CRUSH 索引中删除 OSD，请执行以下命令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush remove <replaceable>OSD_NAME</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addbaucket">
+   <title>添加存储桶</title>
+   <para>
+    要向运行中集群的 CRUSH 索引添加某个存储桶，请执行 <command>ceph osd crush add-bucket</command> 命令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush add-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-movebucket">
+   <title>移动存储桶</title>
+   <para>
+    要将某个存储桶移到 CRUSH 索引层次结构中的不同位置，请执行以下命令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush move <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable>=<replaceable>BUCKET_NAME</replaceable> [...]</screen>
+   <para>
+    例如：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush move bucket1 datacenter=dc1 room=room1 row=foo rack=bar host=foo-bar-1
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-rmbucket">
+   <title>删除存储桶</title>
+   <para>
+    要从 CRUSH 索引层次结构中删除某个存储桶，请执行以下命令：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush remove <replaceable>BUCKET_NAME</replaceable>
+</screen>
+   <note>
+    <title>仅限空存储桶</title>
+    <para>
+     从 CRUSH 层次结构中只能删除空存储桶。
+    </para>
+   </note>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="scrubbing-pgs">
+  <title>洗刷归置组</title>
+
+  <para>
+   除了为对象创建多个副本外，Ceph 还可通过<emphasis>洗刷</emphasis>归置组来确保数据完整性（请参见<xref linkend="storage-intro-structure-pg"/>了解有关归置组的详细信息）。Ceph 的洗刷类似于在对象存储层运行 <command>fsck</command>。对于每个归置组，Ceph 都会生成一个包含所有对象的编目，并比较每个主对象及其副本，以确保不会有缺失或不匹配的对象。每天的浅层洗刷会检查对象大小和属性，而每周的深层洗刷则会读取数据并使用校验和来确保数据完整性。
+  </para>
+
+  <para>
+   洗刷对于维护数据完整性非常重要，但该操作可能会降低性能。您可以通过调整以下设置来增加或减少洗刷操作：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>osd max scrubs</option></term>
+    <listitem>
+     <para>
+      同时针对一个 Ceph OSD 执行的洗刷操作数量上限。默认值为 1。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub begin hour</option>、<option>osd scrub end hour</option></term>
+    <listitem>
+     <para>
+      按小时定义的一天内可以执行洗刷的时间段（0 到 24）。默认开始时间为 0，结束时间为 24。
+     </para>
+     <important>
+      <para>
+       如果归置组的洗刷间隔超出 <option>osd scrub max interval</option> 设置的值，则无论您定义了何种洗刷时间段，都将执行洗刷。
+      </para>
+     </important>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub during recovery</option></term>
+    <listitem>
+     <para>
+      允许恢复期间执行洗刷。如果将此选项设置为“false”，则当存在工作的恢复进程时，将禁止安排新的洗刷。已在运行的洗刷将继续执行。此选项有助于降低忙碌集群上的负载。默认值为“true”。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub thread timeout</option></term>
+    <listitem>
+     <para>
+      洗刷线程超时前的最长时间（以秒为单位）。默认值为 60。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub finalize thread timeout</option></term>
+    <listitem>
+     <para>
+      洗刷完成线程超时前的最长时间（以秒为单位）。默认值为 60*10。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub load threshold</option></term>
+    <listitem>
+     <para>
+      规范化的最大负载。当系统负载（由 <literal>getloadavg()</literal> 与 <literal>online cpus</literal> 数量之比定义）高于此数字时，Ceph 将不会执行洗刷。默认值为 0.5。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub min interval</option></term>
+    <listitem>
+     <para>
+      当 Ceph 集群负载较低时洗刷 Ceph OSD 的最短间隔（以秒为单位）。默认值为 60*60*24（一天一次）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub max interval</option></term>
+    <listitem>
+     <para>
+      无论集群负载如何都洗刷 Ceph OSD 的最长间隔（以秒为单位）。默认值为 7*60*60*24（一周一次）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk min</option></term>
+    <listitem>
+     <para>
+      单次操作期间要洗刷的对象存储块数量下限。洗刷期间，Ceph 会阻止向单个块写入数据。默认值为 5。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk max</option></term>
+    <listitem>
+     <para>
+      单次操作期间要洗刷的对象存储块数量上限。默认值为 25。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub sleep</option></term>
+    <listitem>
+     <para>
+      洗刷下一组块之前休眠的时间。增大此值会降低整个洗刷操作的速度，但对客户端操作的影响较小。默认值为 0。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub interval</option></term>
+    <listitem>
+     <para>
+      深层洗刷（完整读取所有数据）的间隔。<option>osd scrub load threshold</option> 选项不会影响此设置。默认值为 60*60*24*7（一周一次）。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub interval randomize ratio</option></term>
+    <listitem>
+     <para>
+      在安排归置组的下一次洗刷作业时，为 <option>osd scrub min interval</option> 值增加一个随机延迟。该延迟为一个随机的值，小于 <option>osd scrub min interval</option> * <option>osd scrub interval randomized ratio</option> 所得结果。因此，该默认设置实际上是将洗刷随机地安排在允许的时间段 [1, 1.5] * <option>osd scrub min interval</option> 内执行。默认值为 0.5。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub stride</option></term>
+    <listitem>
+     <para>
+      执行深层洗刷时读取的大小。默认值为 524288 (512 kB)。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+</chapter>

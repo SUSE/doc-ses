@@ -1,0 +1,829 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_cifs.xml" version="5.0" xml:id="cha-ses-cifs">
+
+ <title>Sambaを介したCephデータのエクスポート</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  この章では、Cephクラスタに保存されたデータをSamba/CIFS共有を介してエクスポートし、Windows*クライアントマシンからデータに簡単にアクセスできるようにする方法について説明します。また、Ceph Sambaゲートウェイを設定してWindows*ドメインのActive Directoryに参加し、ユーザを認証および承認するのに役立つ情報も含まれています。
+ </para>
+ <note>
+  <title>Sambaゲートウェイのパフォーマンス</title>
+  <para>
+   プロトコルオーバーヘッドが増加し、クライアントとストレージ間の余分なネットワークホップによって追加の遅延が発生するため、Sambaゲートウェイ経由でCephFSにアクセスすると、ネイティブのCephFSクライアントと比較して、アプリケーションのパフォーマンスが大幅に低下する場合があります。
+  </para>
+ </note>
+ <sect1 xml:id="cephfs-samba">
+  <title>Samba共有を介したCephFSのエクスポート</title>
+
+  <warning>
+   <title>クロスプロトコルアクセス</title>
+   <para>
+    ネイティブのCephFSおよびNFSクライアントは、Sambaを介して取得されるファイルロックによる制限を受けません。また、その逆も同様です。クロスプロトコルファイルロックに依存するアプリケーションでは、CephFSを利用するSamba共有パスに他の手段でアクセスした場合、データの破壊が発生することがあります。
+   </para>
+  </warning>
+
+  <sect2 xml:id="cephfs-samba-packages">
+   <title>Sambaパッケージの設定とエクスポート</title>
+   <para>
+    Samba共有を設定およびエクスポートするには、パッケージ <package>samba-ceph</package> および
+    <package>samba-winbind</package>をインストールします。これらのパッケージがインストールされていない場合、インストールします。
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>zypper install samba-ceph samba-winbind
+</screen>
+  </sect2>
+
+  <sect2 xml:id="sec-ses-cifs-example">
+   <title>ゲートウェイが1つの場合の例</title>
+   <para>
+    Samba共有をエクスポートする準備として、Sambaゲートウェイとして動作する適切なノードを選択します。このノードは、Cephクライアントネットワークに加え、十分なCPU、メモリ、およびネットワーキングリソースにアクセスできる必要があります。
+   </para>
+   <para>
+    フェールオーバー機能は、CTDBとSUSE Linux Enterprise High Availability Extensionで提供できます。HAセットアップの詳細については、<xref linkend="sec-ses-cifs-ha"/>を参照してください。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      クラスタ内に動作中のCephFSがすでに存在することを確認します。
+     </para>
+    </step>
+    <step>
+     <para>
+      Ceph管理ノード上にSambaゲートウェイに固有のキーリングを作成して、両方のSambaゲートウェイノードにコピーします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt><command>ceph</command> auth get-or-create client.samba.gw mon 'allow r' \
+ osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
+<prompt>cephuser@adm &gt; </prompt><command>scp</command> ceph.client.samba.gw.keyring <replaceable>SAMBA_NODE</replaceable>:/etc/ceph/</screen>
+     <para>
+      <replaceable>SAMBA_NODE</replaceable>は、Sambaゲートウェイノードの名前に置き換えます。
+     </para>
+    </step>
+    <step>
+     <para>
+      Sambaゲートウェイノードで次の手順を実行します。Ceph統合パッケージとともにSambaをインストールします。
+     </para>
+<screen><prompt>cephuser@smb &gt; </prompt>sudo zypper in samba samba-ceph</screen>
+    </step>
+    <step>
+     <para>
+      <filename>/etc/samba/smb.conf</filename>ファイルのデフォルトの内容を以下に置き換えます。
+     </para>
+<screen>
+[global]
+  netbios name = SAMBA-GW
+  clustering = no
+  idmap config * : backend = tdb2
+  passdb backend = tdbsam
+  # disable print server
+  load printers = no
+  smbd: backgroundqueue = no
+
+[<replaceable>SHARE_NAME</replaceable>]
+  path = <replaceable>CEPHFS_MOUNT</replaceable>
+  read only = no
+  oplocks = no
+  kernel share modes = no
+ </screen>
+     <para>
+      先の<replaceable>CEPHFS_MOUNT</replaceable>パスは、カーネルCephFS共有設定でSambaを起動する前にマウントする必要があります。<xref linkend="ceph-cephfs-cephfs-fstab"/>を参照してください。
+     </para>
+     <para>
+      この共有設定はLinuxカーネルのCephFSクライアントを使用しています。パフォーマンス上の理由から、この設定をお勧めします。もしくは、Samba <systemitem>vfs_ceph</systemitem>モジュールをCephクラスタとの通信に使用することもできます。設定内容を以下に示します。この方法は旧来の用途向けであり、新しいSambaの展開にはお勧めしません。
+     </para>
+<screen>
+[<replaceable>SHARE_NAME</replaceable>]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+  kernel share modes = no
+</screen>
+     <tip>
+      <title>Oplocksと共有モード</title>
+      <para>
+       <option>oplocks</option> (SMB2+ leasesとしても知られている)は、積極的なクライアントキャッシングによってパフォーマンスを向上させることができますが、現在のところ、Sambaが他のCephFSクライアント(カーネル<literal>mount.cephf</literal>、FUSE、NFS Ganeshaなど)とともに展開されている場合は安全ではありません。
+      </para>
+      <para>
+       すべてのCephFSファイルシステムパスアクセスをSambaで排他的に処理する場合は、<option>oplocks</option>パラメータを有効化しても安全です。
+      </para>
+      <para>
+       現在のところ、ファイルサービスを正しく動作させるには、CephFS vfsモジュールで実行されている共有では、<option>kernel share modes</option>を無効にする必要があります。
+      </para>
+     </tip>
+     <important>
+      <title>アクセスの許可</title>
+      <para>
+       SambaはSMBユーザとグループをローカルアカウントにマッピングします。次のコマンドにより、Samba共有アクセス用のパスワードをローカルユーザに割り当てることができます。
+      </para>
+<screen>
+<prompt role="root">root # </prompt>smbpasswd -a <replaceable>USERNAME</replaceable>
+</screen>
+      <para>
+       I/Oを正常に実行するには、共有パスのアクセス制御リスト(ACL)を使用して、Samba経由で接続されているユーザへのアクセスを許可する必要があります。ACLを変更するには、CephFSカーネルクライアントを介して一時的にマウントし、共有パスに対して<command>chmod</command>、<command>chown</command>、または<command>setfacl</command>のユーティリティを使用します。たとえば、すべてのユーザに対してアクセスを許可するには、次のコマンドを実行します。
+      </para>
+<screen>
+<prompt role="root">root # </prompt>chmod 777 <replaceable>MOUNTED_SHARE_PATH</replaceable>
+</screen>
+     </important>
+    </step>
+   </procedure>
+   <sect3 xml:id="samba-service-restart">
+    <title>Sambaサービスの起動</title>
+    <para>
+     次のコマンドを使用して、スタンドアロンのSambaサービスを起動または再起動します。
+    </para>
+<screen>
+<prompt role="root">root # </prompt>systemctl restart smb.service
+<prompt role="root">root # </prompt>systemctl restart nmb.service
+<prompt role="root">root # </prompt>systemctl restart winbind.service
+</screen>
+    <para>
+     Sambaサービスがブート時に起動するようにするには、次のコマンドで有効化します。
+    </para>
+<screen>
+<prompt role="root">root # </prompt>systemctl enable smb.service
+<prompt role="root">root # </prompt>systemctl enable nmb.service
+<prompt role="root">root # </prompt>systemctl enable winbind.service
+</screen>
+    <tip>
+     <title>オプションの<systemitem class="daemon">nmb</systemitem>サービスと<systemitem class="daemon">winbind</systemitem>サービス</title>
+     <para>
+      ネットワーク共有ブラウジングが不要な場合は、<systemitem class="daemon">nmb</systemitem>サービスの有効化と起動は不要です。
+     </para>
+     <para>
+      <systemitem class="daemon">winbind</systemitem>サービスは、Active Directoryドメインメンバーとして設定する場合にのみ必要です。<xref linkend="cephfs-ad"/>を参照してください。
+     </para>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="sec-ses-cifs-ha">
+   <title>高可用性の設定</title>
+   <important>
+    <title>透過的なフェールオーバーはサポートされない</title>
+    <para>
+     Samba + CTDBのマルチノード展開では単一ノードと比較して可用性が高くなりますが(<xref linkend="cha-ses-cifs"/>を参照)、クライアント側の透過的なフェールオーバーはサポートされていません。Sambaゲートウェイノードで障害が発生した場合、アプリケーションが短時間停止する可能性があります。
+    </para>
+   </important>
+   <para>
+    このセクションでは、Sambaサーバの2ノード高可用性設定の方法について例を使って説明します。このセットアップでは、SUSE Linux Enterprise High Availability Extensionが必要です。これら2つのノードは、<systemitem class="domainname">earth</systemitem> (<systemitem class="ipaddress">192.168.1.1</systemitem>)および<systemitem class="domainname">mars</systemitem> (<systemitem class="ipaddress">192.168.1.2</systemitem>)という名前です。
+   </para>
+   <para>
+    SUSE Linux Enterprise High Availability Extensionの詳細については、<link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/"/>を参照してください。
+   </para>
+   <para>
+    さらに、2つの浮動仮想IPアドレスにより、実行している物理ノードがどれであれ、クライアントからの該当サービスへの接続が可能になります。Hawk2でのクラスタ管理には<systemitem class="ipaddress">192.168.1.10</systemitem>を使用し、CIFSエクスポートには<systemitem class="ipaddress">192.168.2.1</systemitem>を排他的に使用します。これにより、後で簡単にセキュリティ制約を適用できます。
+   </para>
+   <para>
+    次の手順では、インストールの例について説明します。詳細については、<link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/single-html/SLE-HA-install-quick/"/>を参照してください。
+   </para>
+   <procedure xml:id="proc-sec-ses-cifs-ha">
+    <step>
+     <para>
+      管理ノード上にSambaゲートウェイに固有のキーリングを作成して、両方のノードにコピーします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt><command>ceph</command> auth get-or-create client.samba.gw mon 'allow r' \
+    osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
+<prompt>cephuser@adm &gt; </prompt><command>scp</command> ceph.client.samba.gw.keyring <systemitem class="domainname">earth</systemitem>:/etc/ceph/
+<prompt>cephuser@adm &gt; </prompt><command>scp</command> ceph.client.samba.gw.keyring <systemitem class="domainname">mars</systemitem>:/etc/ceph/</screen>
+    </step>
+    <step>
+     <para>
+      SLE-HAセットアップには、アクティブクラスタノードが非同期状態になった場合に「スプリットブレイン」<emphasis/>状態に陥ることを避けるため、フェンシングデバイスが必要です。このため、SBD (Stonith Block Device)を使用したCeph RBDイメージを使用できます。詳細については、<link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/single-html/SLE-HA-guide/#sec-ha-storage-protect-fencing-setup"/>を参照してください。
+     </para>
+     <para>
+      RBDイメージが存在しない場合は、<literal>rbd</literal>という名前のRBDプールを作成し(<xref linkend="ceph-pools-operate-add-pool"/>を参照してください)、<literal>rbd</literal>を関連付けます(<xref linkend="ceph-pools-associate"/>を参照してください)。そして、<literal>sbd01</literal>という名前の関連するRBDイメージを作成します。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool create rbd
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool application enable rbd rbd
+<prompt>cephuser@adm &gt; </prompt>rbd -p rbd create sbd01 --size 64M --image-shared
+</screen>
+    </step>
+    <step>
+     <para>
+      <systemitem class="domainname">earth</systemitem>および<systemitem class="domainname">mars</systemitem>を、Sambaサービスをホストするように準備します。
+     </para>
+     <substeps>
+      <step>
+       <para>
+        次のパッケージがインストールされていることを確認してから進んでください: 
+        <package>ctdb</package>、 <package>tdb-tools</package>、および
+        <package>samba</package>をインストールします。
+       </para>
+<screen><prompt role="root">root # </prompt><command>zypper</command> in ctdb tdb-tools samba samba-ceph</screen>
+      </step>
+      <step>
+       <para>
+        SambaサービスとCTDBサービスが停止され、無効化されていることを確認します。
+       </para>
+<screen><prompt role="root">root # </prompt>systemctl disable ctdb
+<prompt role="root">root # </prompt>systemctl disable smb
+<prompt role="root">root # </prompt>systemctl disable nmb
+<prompt role="root">root # </prompt>systemctl disable winbind
+<prompt role="root">root # </prompt>systemctl stop ctdb
+<prompt role="root">root # </prompt>systemctl stop smb
+<prompt role="root">root # </prompt>systemctl stop nmb
+<prompt role="root">root # </prompt>systemctl stop winbind</screen>
+      </step>
+      <step>
+       <para>
+        すべてのノードのファイアウォールのポート<literal>4379</literal>を開きます。これは、CTDBが他のクラスタノードと通信するために必要です。
+       </para>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      <systemitem class="domainname">earth</systemitem>上にSambaの設定ファイルを作成します。これらは、後で自動的に<systemitem class="domainname">mars</systemitem>に同期します。
+     </para>
+     <substeps>
+      <step>
+       <para>
+        Sambaゲートウェイノード上のプライベートIPアドレスのリストを<filename>/etc/ctdb/nodes</filename>ファイルに挿入します。詳細については、ctdbのマニュアルのページ(<command>man 7 ctdb</command>)を参照してください。
+       </para>
+<screen>192.168.1.1
+192.168.1.2</screen>
+      </step>
+      <step>
+       <para>
+        Sambaを設定します。<literal>/etc/samba/smb.conf</literal>の<filename>[global]</filename>セクションに次の行を追加します。<replaceable>CTDB-SERVER</replaceable>の代わりに、任意のホスト名を使用します(クラスタ内のすべてのノードは、この名前を持つ1つの大きなノードとして表示されます)。共有の定義も追加します。一例として、<replaceable>SHARE_NAME</replaceable>を検討してください。
+       </para>
+<screen>
+[global]
+  netbios name = SAMBA-HA-GW
+  clustering = yes
+  idmap config * : backend = tdb2
+  passdb backend = tdbsam
+  ctdbd socket = /var/lib/ctdb/ctdb.socket
+  # disable print server
+  load printers = no
+  smbd: backgroundqueue = no
+
+[SHARE_NAME]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+  kernel share modes = no
+</screen>
+       <para>
+        すべてのSambaゲートウェイノードで<filename>/etc/ctdb/nodes</filename>のファイルと<filename>/etc/samba/smb.conf</filename>のファイルが一致している必要があることに注意してください。
+       </para>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      SUSE Linux Enterprise High Availabilityクラスタをインストールして起動します。
+     </para>
+     <substeps>
+      <step>
+       <para>
+        <systemitem class="domainname">earth</systemitem>および<systemitem class="domainname">mars</systemitem>でSUSE Linux Enterprise High Availability Extensionを登録します。
+       </para>
+<screen><prompt>root@earth # </prompt><command>SUSEConnect</command> -r <replaceable>ACTIVATION_CODE</replaceable> -e <replaceable>E_MAIL</replaceable></screen>
+<screen><prompt>root@mars # </prompt><command>SUSEConnect</command> -r <replaceable>ACTIVATION_CODE</replaceable> -e <replaceable>E_MAIL</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        両方のノードに <package>ha-cluster-bootstrap</package> をインストールします。
+       </para>
+<screen><prompt>root@earth # </prompt><command>zypper</command> in ha-cluster-bootstrap</screen>
+<screen><prompt>root@mars # </prompt><command>zypper</command> in ha-cluster-bootstrap</screen>
+      </step>
+      <step>
+       <para>
+        RBDイメージ<literal>sbd01</literal>を両方のSambaゲートウェイに<systemitem class="daemon">rbdmap.service</systemitem>を介してマッピングします。
+       </para>
+       <para>
+        <filename>/etc/ceph/rbdmap</filename>を編集して、SBDイメージのエントリを追加します。
+       </para>
+<screen>rbd/sbd01 id=samba.gw,keyring=/etc/ceph/ceph.client.samba.gw.keyring</screen>
+       <para>
+        <systemitem class="daemon">rbdmap.service</systemitem>を有効化し、起動します。
+       </para>
+<screen>
+<prompt>root@earth # </prompt>systemctl enable rbdmap.service &amp;&amp; systemctl start rbdmap.service
+<prompt>root@mars # </prompt>systemctl enable rbdmap.service &amp;&amp; systemctl start rbdmap.service
+</screen>
+       <para>
+        <filename>/dev/rbd/rbd/sbd01</filename>のデバイスは両方のSambaゲートウェイで使用可能である必要があります。
+       </para>
+      </step>
+      <step>
+       <para>
+        <systemitem class="domainname">earth</systemitem>のクラスタを初期化し、<systemitem class="domainname">mars</systemitem>を参加させます。
+       </para>
+<screen><prompt>root@earth # </prompt><command>ha-cluster-init</command></screen>
+<screen><prompt>root@mars # </prompt><command>ha-cluster-join</command> -c earth</screen>
+       <important>
+        <para>
+         クラスタの初期化および参加の処理中に、SBDを使用するかどうかが対話形式で確認されます。<option>y</option>で確定し、ストレージデバイスのパスとして<filename>/dev/rbd/rbd/sbd01</filename>を指定してください。
+        </para>
+       </important>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      クラスタの状態を確認します。クラスタに2つのノードが追加されたことがわかります。
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> status
+2 nodes configured
+1 resource configured
+
+Online: [ earth mars ]
+
+Full list of resources:
+
+ admin-ip       (ocf::heartbeat:IPaddr2):       Started earth</screen>
+    </step>
+    <step>
+     <para>
+      <systemitem class="domainname">earth</systemitem>で次のコマンドを実行して、CTDBリソースを設定します。
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> configure
+<prompt>crm(live)configure# </prompt><command>primitive</command> ctdb ocf:heartbeat:CTDB params \
+    ctdb_manages_winbind="false" \
+    ctdb_manages_samba="false" \
+    ctdb_recovery_lock="!/usr/lib64/ctdb/ctdb_mutex_ceph_rados_helper
+        ceph client.samba.gw cephfs_metadata ctdb-mutex"
+    ctdb_socket="/var/lib/ctdb/ctdb.socket" \
+        op monitor interval="10" timeout="20" \
+        op start interval="0" timeout="200" \
+        op stop interval="0" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> smb systemd:smb \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> nmb systemd:nmb \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> winbind systemd:winbind \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>group</command> g-ctdb ctdb winbind nmb smb
+<prompt>crm(live)configure# </prompt><command>clone</command> cl-ctdb g-ctdb meta interleave="true"
+<prompt>crm(live)configure# </prompt><command>commit</command></screen>
+     <tip>
+      <title>オプションの<systemitem class="daemon">nmb</systemitem>プリミティブと<systemitem class="daemon">winbind</systemitem>プリミティブ</title>
+      <para>
+       ネットワーク共有ブラウジングが不要な場合は、<systemitem class="daemon">nmb</systemitem>プリミティブの追加は不要です。
+      </para>
+      <para>
+       <systemitem class="daemon">winbind</systemitem>プリミティブは、Active Directoryドメインメンバーとして設定する場合にのみ必要です。<xref linkend="cephfs-ad"/>を参照してください。
+      </para>
+     </tip>
+     <para>
+      設定オプション<command>ctdb_recovery_lock</command>のバイナリ<literal>/usr/lib64/ctdb/ctdb_mutex_rados_helper</literal>には、パラメータ<replaceable>CLUSTER_NAME</replaceable>、<replaceable>CEPHX_USER</replaceable>、<replaceable>CEPH_POOL</replaceable>、および<replaceable>RADOS_OBJECT</replaceable>がこの順序で指定されています。
+     </para>
+     <para>
+      追加のlock-timeoutパラメータを付加して、使用されているデフォルト値(10秒)を上書きできます。値を大きくすると、CTDB回復マスタのフェールオーバー時間が長くなり、値を小さくすると、回復マスタがダウンとして不正確に検出され、フラッピングフェールオーバーがトリガされる可能性があります。
+     </para>
+    </step>
+    <step>
+     <para>
+      クラスタ対応のIPアドレスを追加します。
+     </para>
+<screen><prompt>crm(live)configure# </prompt><command>primitive</command> ip ocf:heartbeat:IPaddr2
+    params ip=192.168.2.1 \
+    unique_clone_address="true" \
+    op monitor interval="60" \
+    meta resource-stickiness="0"
+<prompt>crm(live)configure# </prompt><command>clone</command> cl-ip ip \
+    meta interleave="true" clone-node-max="2" globally-unique="true"
+<prompt>crm(live)configure# </prompt><command>colocation</command> col-with-ctdb 0: cl-ip cl-ctdb
+<prompt>crm(live)configure# </prompt><command>order</command> o-with-ctdb 0: cl-ip cl-ctdb
+<prompt>crm(live)configure# </prompt><command>commit</command></screen>
+     <para>
+      <literal>unique_clone_address</literal>が<literal>true</literal>に設定されている場合、IPaddr2リソースエージェントはクローンIDを指定のアドレスに追加し、3つの異なるIPアドレスを設定します。これらは通常必要とされませんが、負荷分散に役立ちます。この項目の詳細については、<link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/single-html/SLE-HA-guide/#cha-ha-lb"/>を参照してください。
+     </para>
+    </step>
+    <step>
+     <para>
+      結果を確認します。
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> status
+Clone Set: base-clone [dlm]
+     Started: [ factory-1 ]
+     Stopped: [ factory-0 ]
+ Clone Set: cl-ctdb [g-ctdb]
+     Started: [ factory-1 ]
+     Started: [ factory-0 ]
+ Clone Set: cl-ip [ip] (unique)
+     ip:0       (ocf:heartbeat:IPaddr2):       Started factory-0
+     ip:1       (ocf:heartbeat:IPaddr2):       Started factory-1</screen>
+    </step>
+    <step>
+     <para>
+      クライアントコンピュータからテストを行います。次のコマンドをLinuxクライアントで実行して、システムからファイルをコピーしたり、システムにファイルをコピーできるかどうか確認します。
+     </para>
+<screen><prompt role="root">root # </prompt><command>smbclient</command> <option>//192.168.2.1/myshare</option></screen>
+    </step>
+   </procedure>
+   <sect3 xml:id="samba-ha-service-restart">
+    <title>HA Sambaリソースの再起動</title>
+    <para>
+     SambaまたはCTDBの設定に何らかの変更を加えた場合、変更を有効にするためHAリソースの再起動が必要になる場合があります。再起動は次のコマンドにより実行できます。
+    </para>
+<screen><prompt role="root">root # </prompt><command>crm</command> resource restart cl-ctdb</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cephfs-ad">
+  <title>SambaゲートウェイとActive Directoryの参加</title>
+
+  <para>
+   Ceph Sambaゲートウェイを、AD (Active Directory)をサポートするSambaドメインのメンバーになるように設定できます。Sambaドメインのメンバーは、エクスポートされたCephFSのファイルとディレクトリで、ローカルACL (アクセスリスト)のドメインユーザとグループを使用できます。
+  </para>
+
+  <sect2 xml:id="cephfs-ad-preparation">
+   <title>Sambaのインストール準備</title>
+   <para>
+    このセクションでは、Samba自体を設定する前に、注意する必要がある準備手順について説明します。クリーンな環境から開始することで、混乱を防ぎ、以前のSambaインストールのファイルが新しいドメインメンバーのインストールと混在しないようにします。
+   </para>
+   <tip>
+    <title>クロックの同期</title>
+    <para>
+     すべてのSambaゲートウェイノードのクロックをActive Directoryドメインコントローラと同期する必要があります。クロックスキューがあると、認証が失敗する場合があります。
+    </para>
+   </tip>
+   <para>
+    Sambaまたは名前キャッシュプロセスが実行されていないことを確認します。
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>ps ax | egrep "samba|smbd|nmbd|winbindd|nscd"
+</screen>
+   <para>
+    この出力に、<literal>samba</literal>、<literal>smbd</literal>、<literal>nmbd</literal>、<literal>winbindd</literal>、または<literal>nscd</literal>のプロセスが一覧にされる場合は、これらを停止します。
+   </para>
+   <para>
+    以前にこのホストでSambaのインストールを実行したことがある場合は、<filename>/etc/samba/smb.conf</filename>ファイルを削除します。また、<filename>*.tdb</filename>ファイル、<filename>*.ldb</filename>ファイルなど、Sambaデータベースファイルもすべて削除します。Sambaデータベースが含まれるディレクトリを一覧にするには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>smbd -b | egrep "LOCKDIR|STATEDIR|CACHEDIR|PRIVATE_DIR"
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-dns">
+   <title>DNSの検証</title>
+   <para>
+    AD (Active Directory)は、DNSを使用して、Kerberosなどの他のDC (ドメインコントローラ)とサービスを検索します。したがって、ADドメインメンバーとサーバがAD DNSゾーンを解決できる必要があります。
+   </para>
+   <para>
+    DNSが正しく設定されていること、および前方参照と逆引き参照の両方が正しく解決されることを確認します。次に例を示します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>nslookup DC1.domain.example.com
+Server:         10.99.0.1
+Address:        10.99.0.1#53
+
+Name:   DC1.domain.example.com
+Address: 10.99.0.1
+</screen>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>10.99.0.1
+Server:        10.99.0.1
+Address:	10.99.0.1#53
+
+1.0.99.10.in-addr.arpa	name = DC1.domain.example.com.
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-srv">
+   <title>SRVレコードの解決</title>
+   <para>
+    ADは、SRVレコードを使用して、KerberosやLDAPなどのサービスを検索します。SRVレコードが正しく解決されることを確認するには、次のように<command>nslookup</command>の対話型シェルを使用します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>nslookup
+Default Server:  10.99.0.1
+Address:  10.99.0.1
+
+&gt; set type=SRV
+&gt; _ldap._tcp.domain.example.com.
+Server:  UnKnown
+Address:  10.99.0.1
+
+_ldap._tcp.domain.example.com   SRV service location:
+          priority       = 0
+          weight         = 100
+          port           = 389
+          svr hostname   = dc1.domain.example.com
+domain.example.com      nameserver = dc1.domain.example.com
+dc1.domain.example.com  internet address = 10.99.0.1
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-kerberos">
+   <title>Kerberos の設定</title>
+   <para>
+    Sambaは、HeimdalおよびMIT Kerberosのバックエンドをサポートしています。ドメインメンバーにKerberosを設定するには、<filename>/etc/krb5.conf</filename>ファイルに以下を設定します。
+   </para>
+<screen>
+[libdefaults]
+	default_realm = DOMAIN.EXAMPLE.COM
+	dns_lookup_realm = false
+	dns_lookup_kdc = true
+</screen>
+   <para>
+    前の例では、DOMAIN.EXAMPLE.COMレルムに対してKerberosを設定します。<filename>/etc/krb5.conf</filename>ファイルには、他のパラメータを設定しないことをお勧めします。<filename>/etc/krb5.conf</filename>に<literal>include</literal>行が含まれる場合、この行は機能しません。この行を削除する「必要があります」。<emphasis role="bold"/>
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-local-resolution">
+   <title>ローカルホスト名の解決</title>
+   <para>
+    ホストをドメインに参加させる場合、Sambaは、そのホスト名をAD DNSゾーンに登録しようとします。このため、<command>net</command>ユーティリティで、DNSまたは<filename>/etc/hosts</filename>ファイルの正しいエントリを使用してホスト名を解決できる必要があります。
+   </para>
+   <para>
+    ホスト名が正しく解決されることを確認するには、<command>getent hosts</command>コマンドを使用します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>getent hosts example-host
+10.99.0.5      example-host.domain.example.com    example-host
+</screen>
+   <para>
+    ホスト名とFQDNは、IPアドレス127.0.0.1、またはドメインメンバーのLANインタフェースで使用するアドレス以外のIPアドレスに解決されてはなりません。出力が表示されないか、またはホストが間違ったIPアドレスに解決される場合に、DHCPを使用しないときは、<filename>/etc/hosts</filename>ファイルに正しいエントリを設定します。
+   </para>
+<screen>
+127.0.0.1      localhost
+10.99.0.5      example-host.samdom.example.com    example-host
+</screen>
+   <tip>
+    <title>DHCPと<filename>/etc/hosts</filename></title>
+    <para>
+     DHCPを使用する場合、<filename>/etc/hosts</filename>には「127.0.0.1」の行のみが含まれていることを確認します。問題が続く場合は、DHCPサーバの管理者に連絡してください。
+    </para>
+    <para>
+     マシンのホスト名にエイリアスを追加する必要がある場合は、「127.0.0.1」の行ではなく、マシンのIPアドレスで始まる行の終わりに追加します。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-smb-conf">
+   <title>Sambaの設定</title>
+   <para>
+    このセクションでは、Sambaの設定に含める必要がある特定の設定オプションについて説明します。
+   </para>
+   <para>
+    Active Directoryのドメインメンバーシップの主要な設定を行うにはは、<filename>/etc/samba/smb.conf</filename>の<literal>[global]</literal>セクションで、<literal>security = ADS</literal>に加えて、適切なKerberosレルムとIDマッピングパラメータを設定します。
+   </para>
+<screen>
+[global]
+  security = ADS
+  workgroup = DOMAIN
+  realm = DOMAIN.EXAMPLE.COM
+  ...
+</screen>
+   <sect3 xml:id="smb-backend-id-mapping-winbindd">
+    <title><systemitem>winbindd</systemitem>でのIDマッピングのバックエンドの選択</title>
+    <para>
+     ユーザが異なるログインシェルやUnixホームディレクトリパスを使用する必要がある場合、またはユーザにすべての場所で同じIDを使用させたい場合は、winbindの「ad」バックエンドを使用し、RFC2307の属性をADに追加する必要があります。
+    </para>
+    <important>
+     <title>RFC2307の属性とID番号</title>
+     <para>
+      ユーザまたはグループの作成時に、RFC2307属性は自動的には追加されません。
+     </para>
+     <para>
+      DCで見つかるID番号(3000000の範囲の番号)は、RFC2307の属性では「ない」ので、<emphasis/>Unixドメインメンバーでは使用されません。すべての場所で同じID番号が必要な場合は、<literal>uidNumber</literal>属性と<literal>gidNumber</literal>属性をADに追加し、Unixドメインメンバーで「ad」バックエンドを使用します。<literal>uidNumber</literal>属性と<literal>gidNumber</literal>属性をADに追加する場合は、3000000の範囲の番号を使用しないでください。
+     </para>
+    </important>
+    <para>
+     ユーザがSamba AD DCを認証にのみ使用し、Samba AD DCにデータを保存したりログインしたりしない場合は、「ind」バックエンドを使用できます。この場合、ユーザとグループのIDはWindows* RIDから計算されます。すべてのUnixドメインメンバーで<filename>smb.conf</filename>の同じ<literal>[global]</literal>セクションを使用している場合は、同じIDが取得されます。「rid」バックエンドを使用する場合は、ADに何も追加する必要はなく、RFC2307の属性は無視されます。「rid」バックエンドを使用する場合、<filename>smb.conf</filename>で<option>template shell</option>パラメータと<option>template homedir</option>パラメータを設定します。これらの設定はグルーバルで、全員が同じログインシェルとUnixホームディレクトリパスを取得します(個別のUnixホームディレクトリパスとシェルを設定可能なRFC2307の属性とは異なります)。
+    </para>
+    <para>
+     Sambaを設定する方法はもう1つあります。この方法は、すべての場所でユーザとグループに同じIDを設定する必要があるものの、ユーザに同じログインシェルを設定し、ユーザが同じUnixホームディレクトリパスを使用するだけで良い場合に使用できます。このためには、winbindの「rid」バックエンドと<filename>smb.conf</filename>のテンプレート行を使用します。このように、<literal>uidNumber</literal>属性と<literal>gidNumber</literal>属性をADに追加するだけで済みます。
+    </para>
+    <tip>
+     <title>IDマッピングのためのバックエンドの詳細情報</title>
+     <para>
+      IDマッピングに使用可能なバックエンドの詳細については、関連するマニュアルページの<command>man 8 idmap_ad</command>、<command>man 8 idmap_rid</command>、および<command>man 8 idmap_autorid</command>を参照してください。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="smb-setting-user-group-id-ranges">
+    <title>ユーザとグループのID範囲の設定</title>
+    <para>
+     使用するwinbindバックエンドを決定した後、<filename>smb.conf</filename>の<option>idmap config</option>オプションで、使用する範囲を指定する必要があります。Unixドメインメンバーでは、複数のブロックのユーザIDとグループIDが最初から予約されています。
+    </para>
+    <table>
+     <title>ユーザとグループのデフォルトのIDブロック</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+     <tgroup cols="2">
+      <thead>
+       <row>
+        <entry>ID</entry>
+        <entry>範囲</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>0～999</entry>
+        <entry>ローカルシステムユーザとグループ</entry>
+       </row>
+       <row>
+        <entry>1000から開始</entry>
+        <entry>ローカルUnixユーザとグループ</entry>
+       </row>
+       <row>
+        <entry>10000から開始</entry>
+        <entry>DOMAINユーザとグループ</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+    <para>
+     上の範囲からわかるように、「*」または「DOMAIN」の範囲を999以下から始まるように設定しないでください。この範囲は、ローカルシステムユーザとグループに干渉するためです。また、ローカルUnixユーザとグループの領域も残しておく必要があるため、<option>idmap config</option>の範囲を3000にするのが適切な妥協点である可能性があります。
+    </para>
+    <para>
+     「DOMAIN」の規模がどのくらい拡大する可能性があるか、および信頼できるドメインを使用する計画があるかどうかを判断する必要があります。その後、<option>idmap config</option>の範囲を次のように設定できます。
+    </para>
+    <table>
+     <title>ID範囲</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+     <tgroup cols="2">
+      <thead>
+       <row>
+        <entry>Domain</entry>
+        <entry>範囲</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>*</entry>
+        <entry>3000～7999</entry>
+       </row>
+       <row>
+        <entry>DOMAIN</entry>
+        <entry>10000～999999</entry>
+       </row>
+       <row>
+        <entry>TRUSTED</entry>
+        <entry>1000000～9999999</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+   </sect3>
+   <sect3 xml:id="smb-mapping-domain-admin-account-local">
+    <title>ローカル<systemitem class="username">root</systemitem>ユーザへのドメイン管理者アカウントのマッピング</title>
+    <para>
+     Sambaでは、ドメインアカウントをローカルアカウントにマップすることができます。この機能を使用して、クライアントで操作を要求したアカウントとは異なるユーザとして、ドメインメンバーのファイルシステムでファイル操作を実行します。
+    </para>
+    <tip>
+     <title>ドメイン管理者のマッピング(オプション)</title>
+     <para>
+      ドメイン管理者をローカル<systemitem class="username">root</systemitem>アカウントにマッピングするかどうかはオプションです。このマッピングを設定するのは、ドメイン管理者が<systemitem class="username">root</systemitem>許可を使用してドメインメンバーでファイル操作を実行できる必要がある場合だけにしてください。また、管理者を<systemitem class="username">root</systemitem>アカウントにマッピングしても、「管理者」としてUnixドメインメンバーにログインすることはできないことに注意してください。
+     </para>
+    </tip>
+    <para>
+     ドメイン管理者をローカル<systemitem class="username">root</systemitem>アカウントにマップするには、次の手順に従います。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       <filename>smb.conf</filename>ファイルの<literal>[global]</literal>セクションに次のパラメータを追加します。
+      </para>
+<screen>
+username map = /etc/samba/user.map
+</screen>
+     </step>
+     <step>
+      <para>
+       次の内容で<filename>/etc/samba/user.map</filename>ファイルを作成します。
+      </para>
+<screen>
+!root = <replaceable>DOMAIN</replaceable>\Administrator
+</screen>
+     </step>
+    </procedure>
+    <important>
+     <para>
+      「ad」のIDマッピングバックエンドを使用する場合は、ドメイン管理者アカウントに<option>uidNumber</option>属性を設定しないでください。アカウントにこの属性が設定されていると、その値によって<systemitem class="username">root</systemitem>ユーザのローカルUID「0」が上書きされるため、マッピングが失敗します。
+     </para>
+    </important>
+    <para>
+     詳細については、<filename>smb.conf</filename>マニュアルページの<option>username map</option>パラメータ(<command>man 5 smb.conf</command>)を参照してください。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-joining">
+   <title>Active Directoryドメインへの参加</title>
+   <para>
+    ホストをActive Directoryドメインに参加させるには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>net ads join -U administrator
+Enter administrator's password: <replaceable>PASSWORD</replaceable>
+Using short domain name -- <replaceable>DOMAIN</replaceable>
+Joined <replaceable>EXAMPLE-HOST</replaceable> to dns domain <replaceable>'DOMAIN</replaceable>.example.com'
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-nss">
+   <title>ネームサービススイッチの設定</title>
+   <para>
+    ドメインユーザとグループをローカルシステムで利用できるようにするには、NSS (ネームサービススイッチ)ライブラリを有効にする必要があります。<filename>/etc/nsswitch.conf</filename>ファイルの次のデータベースに<option>winbind</option>のエントリを追加します。
+   </para>
+<screen>
+passwd: files winbind
+group:  files winbind
+</screen>
+   <important>
+    <title>考慮すべきポイント</title>
+    <itemizedlist>
+     <listitem>
+      <para>
+       両方のデータベースに対し、<option>files</option>エントリを最初のソースのままにします。これにより、NSSは、<systemitem class="daemon">winbind</systemitem>サービスに照会する前に、<filename>/etc/passwd</filename>ファイルと<filename>/etc/group</filename>ファイルからドメインユーザとグループを検索できます。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       NSS <literal>shadow</literal>データベースには<option>winbind</option>エントリを追加しないでください。これにより、<command>wbinfo</command>ユーティリティが失敗する可能性があります。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       ローカルの<filename>/etc/passwd</filename>ファイルで、ドメイン内のファイルと同じユーザ名を使用しないでください。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-services">
+   <title>サービスの起動</title>
+   <para>
+    設定の変更後、<xref linkend="samba-service-restart"/>または<xref linkend="samba-ha-service-restart"/>に従って、Sambaサービスを再起動してください。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-testing">
+   <title><systemitem class="daemon">winbindd</systemitem>接続のテスト</title>
+   <sect3 xml:id="cephfs-ad-send-ping">
+    <title><systemitem class="daemon">winbindd</systemitem>のping送信</title>
+    <para>
+     <systemitem class="daemon">winbindd</systemitem>サービスがAD DC (ドメインコントローラ)またはPDC (プライマリドメインコントローラ)に接続できるかどうかを確認するには、次のコマンドを入力します。
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>wbinfo --ping-dc
+checking the NETLOGON for domain[<replaceable>DOMAIN</replaceable>] dc connection to "DC.DOMAIN.EXAMPLE.COM" succeeded
+</screen>
+    <para>
+     上のコマンドが失敗する場合は、<systemitem class="daemon">winbindd</systemitem>サービスが実行されていること、および<filename>smb.conf</filename>ファイルが正しく設定されていることを確認します。
+    </para>
+   </sect3>
+   <sect3 xml:id="smb-domain-users-groups-cephfs">
+    <title>ドメインユーザとグループの検索</title>
+    <para>
+     <systemitem>libnss_winbind</systemitem>ライブラリでは、ドメインユーザとグループを検索できます。たとえば、ドメインユーザ「DOMAIN\demo01」を検索するには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>getent passwd DOMAIN\\demo01
+DOMAIN\demo01:*:10000:10000:demo01:/home/demo01:/bin/bash
+</screen>
+    <para>
+     ドメイングループ「Domain Users」を検索するには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>getent group "DOMAIN\\Domain Users"
+DOMAIN\domain users:x:10000:
+</screen>
+   </sect3>
+   <sect3 xml:id="smb-assign-file-perms-domain-users-groups">
+    <title>ドメインユーザとグループへのファイル許可の割り当て</title>
+    <para>
+     NSS (ネームサービススイッチ)ライブラリでは、ドメインユーザアカウントとグループをコマンドで使用できます。たとえば、ファイルの所有者を「demo01」ドメインユーザに設定し、グループを「Domain Users」ドメイングループに設定するには、次のコマンドを入力します。
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>chown "DOMAIN\\demo01:DOMAIN\\domain users" file.txt
+</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

@@ -1,0 +1,1560 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_datamgm.xml" version="5.0" xml:id="cha-storage-datamgm">
+ <title>儲存的資料管理</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  CRUSH 演算法透過運算資料儲存位置來確定如何儲存和擷取資料。利用 CRUSH，Ceph 用戶端無需透過集中式伺服器或仲介，即可直接與 OSD 通訊。借助演算法確定的資料儲存和擷取方法，Ceph 可避免單一故障點、效能瓶頸和延展性實體限制。
+ </para>
+ <para>
+  CRUSH 需要獲取叢集的地圖，它使用 CRUSH 地圖以虛擬隨機方式在 OSD 中儲存和擷取資料，並以一致的方式在整個叢集中分發資料。
+ </para>
+ <para>
+  CRUSH 地圖包含一個 OSD 清單、一個用於將裝置聚合到實體位置的「桶」清單，以及一個指示 CRUSH 應如何複製 Ceph 叢集池中資料的規則清單。透過反映安裝的基礎實體組織，CRUSH 可對相關裝置故障的潛在根源塑模，從而解決故障的根源。一般的根源包括實體距離、共用電源和共用網路。透過將這些資訊編碼到叢集地圖中，CRUSH 放置規則可將物件複本分隔在不同的故障網域中，同時維持所需的分發方式。例如，為了消除可能的並行故障，可能需要確定資料複本位於使用不同機架、機櫃、電源、控制器和/或實體位置的裝置上。
+ </para>
+ <para>
+  部署 Ceph 叢集後，將會產生預設的 CRUSH 地圖。這種模式適合 Ceph 沙箱環境。但是，在部署大規模的資料叢集時，強烈建議您考慮建立自訂 CRUSH 地圖，因為這樣做有助於管理 Ceph 叢集、提高效能並確保資料安全。
+ </para>
+ <para>
+  例如，如果某個 OSD 停機，而您需要使用現場支援或更換硬體，則 CRUSH 地圖可協助您定位到發生 OSD 故障的主機所在的實體資料中心、機房、裝置排和機櫃。
+ </para>
+ <para>
+  同樣，CRUSH 可以協助您更快地確定故障。例如，如果特定機櫃中的所有 OSD 同時停機，故障可能是由某個網路交換器或者機櫃或網路交換器的電源所致，而不是發生在 OSD 自身上。
+ </para>
+ <para>
+  當與故障主機關聯的放置群組 (請參閱<xref linkend="op-pgs"/>) 處於降級狀態時，自訂 CRUSH 地圖還可協助您確定 Ceph 儲存資料備援副本的實體位置。
+ </para>
+ <para>
+  CRUSH 地圖包括三個主要部分。
+ </para>
+ <itemizedlist mark="bullet" spacing="normal">
+  <listitem>
+   <para>
+    <xref linkend="datamgm-devices" xrefstyle="select: title"/>包括與 <systemitem>ceph-osd</systemitem> 精靈對應的任何物件儲存裝置。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-buckets" xrefstyle="select: title"/>由儲存位置 (例如裝置排、機櫃、主機等)及為其指定的權數的階層聚合組成。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="datamgm-rules" xrefstyle="select: title"/>由桶選取方式組成。
+   </para>
+  </listitem>
+ </itemizedlist>
+ <sect1 xml:id="datamgm-devices">
+  <title>OSD 裝置</title>
+
+  <para>
+   為了將放置群組對應到 OSD，CRUSH 地圖需要 OSD 裝置 (OSD 精靈的名稱) 的清單。裝置清單顯示在 CRUSH 地圖的最前面。
+  </para>
+
+<screen>#devices
+device <replaceable>NUM</replaceable> osd.<replaceable>OSD_NAME</replaceable> class <replaceable>CLASS_NAME</replaceable></screen>
+
+  <para>
+   例如：
+  </para>
+
+<screen>
+#devices
+device 0 osd.0 class hdd
+device 1 osd.1 class ssd
+device 2 osd.2 class nvme
+device 3 osd.3class ssd
+</screen>
+
+  <para>
+   一般而言，一個 OSD 精靈對應到一個磁碟。
+  </para>
+
+  <sect2 xml:id="crush-devclasses">
+   <title>裝置類別</title>
+   <para>
+    Ceph 的優勢之一是 CRUSH 地圖能夠靈活控制資料的放置。這也是叢集最難管理的環節之一。<emphasis>裝置類別</emphasis>會自動對 CRUSH 地圖執行最常見的變更，先前這些變更都需要由管理員手動完成。
+   </para>
+   <sect3 xml:id="crush-management-problem">
+    <title>CRUSH 管理問題</title>
+    <para>
+     Ceph 叢集常由多種類型的儲存裝置建構而成：HDD、SSD、NVMe，甚至是以上這些類別的混合。我們將這些不同的儲存裝置類型稱為<emphasis>裝置類別</emphasis>，以避免與 CRUSH 桶的<emphasis>類型</emphasis>內容 (例如 host、rack 和 row，請參閱<xref linkend="datamgm-buckets"/>以瞭解更多詳細資料) 產生混淆。受 SSD 支援的 Ceph OSD 比受旋轉式磁碟支援的 OSD 速度快得多，因此更適合特定工作負載。利用 Ceph，您可輕鬆為不同資料集或工作負載建立 RADOS 池，以及指定不同的 CRUSH 規則來控制這些池的資料放置。
+    </para>
+    <figure>
+     <title>使用混合裝置類別的 OSD</title>
+     <mediaobject>
+      <imageobject role="fo">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+      <imageobject role="html">
+       <imagedata fileref="device_classes.svg" width="70%" format="SVG"/>
+      </imageobject>
+     </mediaobject>
+    </figure>
+    <para>
+     不過，透過設定 CRUSH 規則將資料僅放置到特定類別的裝置這個過程十分枯燥。規則是針對 CRUSH 階層運作的，但如果將某些裝置混合到同一主機或機架中 (如上面的範例階層所示)，則這些裝置預設會混合在一起並顯示在階層的同一子樹狀結構中。若要手動將它們分隔到單獨的樹狀結構中，需要針對先前版本的 SUSE Enterprise Storage 中的每個裝置類別，為每個中間節點建立多個版本。
+    </para>
+   </sect3>
+   <sect3 xml:id="osd-crush-device-classes">
+    <title>裝置類別</title>
+    <para>
+     Ceph 提供了一個較佳的解決方案，就是新增一個名為<emphasis>裝置類別</emphasis>的內容至每個 OSD。依預設，OSD 會依據 Linux 核心所公開的硬體內容，自動將自己的裝置類別設定為「hdd」、「ssd」或「nvme」。<command>ceph osd tree</command> 指令輸出的新欄中會報告這些裝置類別：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd tree
+ ID CLASS WEIGHT   TYPE NAME      STATUS REWEIGHT PRI-AFF
+ -1       83.17899 root default
+ -4       23.86200     host cpach
+ 2   hdd  1.81898         osd.2      up  1.00000 1.00000
+ 3   hdd  1.81898         osd.3      up  1.00000 1.00000
+ 4   hdd  1.81898         osd.4      up  1.00000 1.00000
+ 5   hdd  1.81898         osd.5      up  1.00000 1.00000
+ 6   hdd  1.81898         osd.6      up  1.00000 1.00000
+ 7   hdd  1.81898         osd.7      up  1.00000 1.00000
+ 8   hdd  1.81898         osd.8      up  1.00000 1.00000
+ 15  hdd  1.81898         osd.15     up  1.00000 1.00000
+ 10  nvme 0.93100         osd.10     up  1.00000 1.00000
+ 0   ssd  0.93100         osd.0      up  1.00000 1.00000
+ 9   ssd  0.93100         osd.9      up  1.00000 1.00000</screen>
+    <para>
+     如果裝置類別自動偵測失敗 (例如由於未透過 <filename>/sys/block</filename> 正確向裝置驅動程式公開裝置的相關資訊而導致失敗)，您可以使用指令行調整裝置類別：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rm-device-class osd.2 osd.3
+done removing class of osd(s): 2,3
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush set-device-class ssd osd.2 osd.3
+set osd(s) 2,3 to class 'ssd'
+</screen>
+   </sect3>
+   <sect3 xml:id="crush-placement-rules">
+    <title>設定 CRUSH 放置規則</title>
+    <para>
+     CRUSH 規則可限制對特定裝置類別執行放置操作。例如，您可以透過執行以下指令來建立僅將資料分佈在 SSD 磁碟上的「fast」<emphasis role="bold">複本</emphasis>池：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rule create-replicated <replaceable>RULE_NAME</replaceable> <replaceable>ROOT</replaceable> <replaceable>FAILURE_DOMAIN_TYPE</replaceable> <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+    <para>
+     例如：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush rule create-replicated fast default host ssd
+</screen>
+    <para>
+     建立名為「fast_pool」的池，並將其指定給「fast」規則：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool create fast_pool 128 128 replicated fast</screen>
+    <para>
+     建立<emphasis role="bold">糾刪碼</emphasis>規則的程序略有不同。首先，建立包含所需裝置類別所對應內容的糾刪碼設定檔。然後，在建立糾刪碼池時使用該設定檔：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd erasure-code-profile set myprofile \
+ k=4 m=2 crush-device-class=ssd crush-failure-domain=host
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool create mypool 64 erasure myprofile
+</screen>
+    <para>
+     為應對您需要手動編輯 CRUSH 地圖來自訂規則的情況，已將該語法進行擴充，以便允許指定裝置類別。例如，上述指令產生的 CRUSH 規則如下所示：
+    </para>
+<screen>
+rule ecpool {
+  id 2
+  type erasure
+  min_size 3
+  max_size 6
+  step set_chooseleaf_tries 5
+  step set_choose_tries 100
+  step take default <emphasis role="bold">class ssd</emphasis>
+  step chooseleaf indep 0 type host
+  step emit
+}
+</screen>
+    <para>
+     此處的重要差異是，「take」指令包含額外的「class <replaceable>CLASS_NAME</replaceable>」尾碼。
+    </para>
+   </sect3>
+   <sect3 xml:id="crush-additional-commands">
+    <title>其他指令</title>
+    <para>
+     若要列出 CRUSH 地圖中使用的裝置類別，請執行以下指令：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush class ls
+[
+  "hdd",
+  "ssd"
+]
+</screen>
+    <para>
+     若要列出現有的 CRUSH 規則，請執行以下指令：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush rule ls
+replicated_rule
+fast</screen>
+    <para>
+     若要檢視名為「fast」的 CRUSH 規則的詳細資料，請執行以下指令：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush rule dump fast
+{
+		"rule_id": 1,
+		"rule_name": "fast",
+		"ruleset": 1,
+		"type": 1,
+		"min_size": 1,
+		"max_size": 10,
+		"steps": [
+						{
+										"op": "take",
+										"item": -21,
+										"item_name": "default~ssd"
+						},
+						{
+										"op": "chooseleaf_firstn",
+										"num": 0,
+										"type": "host"
+						},
+						{
+										"op": "emit"
+						}
+		]
+}</screen>
+    <para>
+     若要列出屬於「ssd」類別的 OSD，請執行以下指令：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush class ls-osd ssd
+0
+1
+</screen>
+   </sect3>
+   <sect3 xml:id="device-classes-reclassify">
+    <title>從舊版 SSD 規則移轉至裝置類別</title>
+    <para>
+     在早於版本 5 的 SUSE Enterprise Storage 中，若要寫入適用於裝置的規則，您需要手動編輯 CRUSH 地圖，並為每個具體的裝置類型 (例如 SSD) 維護平行的階層。自 SUSE Enterprise Storage 5 起，裝置類別特性透明地實現了這一目的。
+    </para>
+    <para>
+     您可以使用 <command>crushtool</command> 指令將舊版規則和階層轉換為基於類別的新版規則。系統提供了以下幾種轉換類型：
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><command>crushtool --reclassify-root <replaceable>ROOT_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        此指令會獲取 <replaceable>ROOT_NAME</replaceable> 下的階層中的所有內容，並將透過
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable>
+</screen>
+       <para>
+        參考該根的所有規則都調整為
+       </para>
+<screen>
+take <replaceable>ROOT_NAME</replaceable> class <replaceable>DEVICE_CLASS</replaceable>
+</screen>
+       <para>
+        它會對桶重新編號，以便為指定類別的「shadow tree」使用舊 ID。因此不會移動資料。
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-root</command></title>
+        <para>
+         假設存在以下現有規則：
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+        <para>
+         如果您將根「default」重新分類為「hdd」類別，規則將變為
+        </para>
+<screen>
+rule replicated_ruleset {
+   id 0
+   type replicated
+   min_size 1
+   max_size 10
+   step take default class hdd
+   step chooseleaf firstn 0 type rack
+   step emit
+}
+</screen>
+       </example>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --set-subtree-class <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable></command></term>
+      <listitem>
+       <para>
+        此方法會將根目錄為 <replaceable>BUCKET_NAME</replaceable> 的子樹狀結構中的每部裝置標示為指定的裝置類別。
+       </para>
+       <para>
+        <option>--set-subtree-class</option> 通常與 <option>--reclassify-root</option> 選項結合使用，以確定該根中的所有裝置均標為正確的類別。不過，其中一些裝置可能特意使用了不同的類別，因此您不需要重新對它們進行標記。在此類情況下，請勿使用 <option>--set-subtree-class</option> 選項。請記住，這樣的重新對應並不完美，因為之前的規則是跨多個類別的裝置配送的，而調整後的規則將僅對應至指定裝置類別的裝置。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>MATCH_PATTERN</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>DEFAULT_PATTERN</replaceable></command></term>
+      <listitem>
+       <para>
+        此方法允許將類型特定的平行階層與一般階層合併。例如，許多使用者會具有類似如下的 CRUSH 地圖：
+       </para>
+       <example>
+        <title><command>crushtool --reclassify-bucket</command></title>
+<screen>
+host node1 {
+   id -2           # do not change unnecessarily
+   # weight 109.152
+   alg straw
+   hash 0  # rjenkins1
+   item osd.0 weight 9.096
+   item osd.1 weight 9.096
+   item osd.2 weight 9.096
+   item osd.3 weight 9.096
+   item osd.4 weight 9.096
+   item osd.5 weight 9.096
+   [...]
+}
+
+host node1-ssd {
+   id -10          # do not change unnecessarily
+   # weight 2.000
+   alg straw
+   hash 0  # rjenkins1
+   item osd.80 weight 2.000
+   [...]
+}
+
+root default {
+   id -1           # do not change unnecessarily
+   alg straw
+   hash 0  # rjenkins1
+   item node1 weight 110.967
+   [...]
+}
+
+root ssd {
+   id -18          # do not change unnecessarily
+   # weight 16.000
+   alg straw
+   hash 0  # rjenkins1
+   item node1-ssd weight 2.000
+   [...]
+}
+</screen>
+       </example>
+       <para>
+        此函數會將與給定模式相符的每個桶重新分類。模式的格式可能為 <literal>%suffix</literal> 或 <literal>prefix%</literal>。在上面的範例中，您需要使用 <literal>%-ssd</literal> 模式。對於每個相符的桶，與「%」萬用字元相符的名稱的其餘部分指定了基本桶。相符桶中的所有裝置都標示為指定的裝置類別，隨後會移至基本桶中。如果基本桶不存在 (例如，如果「node12-ssd」存在，但「node12」不存在)，則系統會建立基本桶，並將其關聯到指定的預設父桶下。系統會為新的陰影桶保留舊桶 ID，以防資料移動。系統會對包含參考舊桶的 <literal>take</literal> 步驟的規則進行調整。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><command>crushtool --reclassify-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>DEVICE_CLASS</replaceable> <replaceable>BASE_BUCKET</replaceable></command></term>
+      <listitem>
+       <para>
+        您可以使用不包含萬用字元的 <option>--reclassify-bucket</option> 選項來對應單個桶。例如，在上面的範例中，我們希望將「ssd」桶對應至預設桶。
+       </para>
+       <para>
+        用於轉換由上述片段組成的地圖的最後一個指令將如下所示：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd getcrushmap -o original
+<prompt>cephuser@adm &gt; </prompt>crushtool -i original --reclassify \
+  --set-subtree-class default hdd \
+  --reclassify-root default hdd \
+  --reclassify-bucket %-ssd ssd default \
+  --reclassify-bucket ssd ssd default \
+  -o adjusted
+</screen>
+       <para>
+        若要確認轉換是否正確，可以使用 <option>--compare</option> 選項。該選項會測試大量對 CRUSH 地圖的輸入，並比較是否會產生相同的結果。透過適用於 <option>--test</option> 的相同選項來控制這些輸入。對於上面的範例，指令將如下所示：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>crushtool -i original --compare adjusted
+rule 0 had 0/10240 mismatched mappings (0)
+rule 1 had 0/10240 mismatched mappings (0)
+maps appear equivalent
+</screen>
+       <tip>
+        <para>
+         如果存在差異，括號中將會顯示重新對應的輸入比率。
+        </para>
+       </tip>
+       <para>
+        如果您對調整後的 CRUSH 地圖滿意，便可將其套用於叢集：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd setcrushmap -i adjusted
+</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3>
+    <title>相關資訊</title>
+    <para>
+     如需 CRUSH 地圖的更多詳細資料，請參閱<xref linkend="op-crush"/>。
+    </para>
+    <para>
+     如需 Ceph 池的更多一般詳細資料，請參閱<xref linkend="ceph-pools"/>
+    </para>
+    <para>
+     如需糾刪碼池的更多詳細資料，請參閱<xref linkend="cha-ceph-erasure"/>。
+    </para>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="datamgm-buckets">
+  <title>桶</title>
+
+  <para>
+   CRUSH 地圖包含 OSD 的清單，可將這些 OSD 組織成桶的樹狀結構排列方式，以便將裝置聚合到實體位置。個別 OSD 組成樹狀結構上的葉。
+  </para>
+
+  <informaltable frame="none">
+   <tgroup cols="3">
+    <colspec colwidth="10*"/>
+    <colspec colwidth="30*"/>
+    <colspec colwidth="70*"/>
+    <tbody>
+     <row>
+      <entry>
+       <para>
+        0
+       </para>
+      </entry>
+      <entry>
+       <para>
+        osd
+       </para>
+      </entry>
+      <entry>
+       <para>
+        特定裝置或 OSD (<literal>osd.1</literal>、<literal>osd.2</literal> 等)。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        1
+       </para>
+      </entry>
+      <entry>
+       <para>
+        host
+       </para>
+      </entry>
+      <entry>
+       <para>
+        包含一或多個 OSD 之主機的主機名稱。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        2
+       </para>
+      </entry>
+      <entry>
+       <para>
+        chassis
+       </para>
+      </entry>
+      <entry>
+       <para>
+        機架中包含該 <literal>host</literal> 之機箱的識別碼。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        3
+       </para>
+      </entry>
+      <entry>
+       <para>
+        rack
+       </para>
+      </entry>
+      <entry>
+       <para>
+        電腦機櫃。預設值為 <literal>unknownrack</literal>。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        4
+       </para>
+      </entry>
+      <entry>
+       <para>
+        row
+       </para>
+      </entry>
+      <entry>
+       <para>
+        由一系列機櫃組成的裝置排。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        5
+       </para>
+      </entry>
+      <entry>
+       <para>
+        pdu
+       </para>
+      </entry>
+      <entry>
+       <para>
+        「Power Distribution Unit」(電源分配器) 的縮寫。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        6
+       </para>
+      </entry>
+      <entry>
+       <para>
+        pod
+       </para>
+      </entry>
+      <entry>
+       <para>
+        「Point of Delivery」(傳遞點) 的縮寫。在此情境中為一組 PDU 或一組機架列。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        7
+       </para>
+      </entry>
+      <entry>
+       <para>
+        room
+       </para>
+      </entry>
+      <entry>
+       <para>
+        包含多列機架的機房。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        8
+       </para>
+      </entry>
+      <entry>
+       <para>
+        datacenter
+       </para>
+      </entry>
+      <entry>
+       <para>
+        包含一或多個機房的實體資料中心。
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        9
+       </para>
+      </entry>
+      <entry>
+       <para>
+        region
+       </para>
+      </entry>
+      <entry>
+       <para>
+        全球的地理區域 (例如 NAM、LAM、EMEA、APAC 等)
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        10
+       </para>
+      </entry>
+      <entry>
+       <para>
+        root
+       </para>
+      </entry>
+      <entry>
+       <para>
+        OSD 桶的樹狀結構根節點 (通常設定為 <literal>default</literal>)。
+       </para>
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </informaltable>
+
+  <tip>
+   <para>
+    您可以修改現有類型，以及建立自己的桶類型。
+   </para>
+  </tip>
+
+  <para>
+   Ceph 的部署工具可產生 CRUSH 地圖，其中包含每個主機的桶，以及名為「default」的根 (可用於預設的 <literal>rbd</literal> 池)。剩餘的桶類型提供了一種儲存有關節點/桶的實體位置資訊的方法，當 OSD、主機或網路硬體無法正常運作，並且管理員需要存取實體硬體時，這種方法可顯著簡化叢集管理工作。
+  </para>
+
+  <para>
+   桶具有類型、唯一的名稱 (字串)、以負整數表示的唯一的 ID、相對於其項目總容量/功能的權數、桶演算法 (預設為 <literal>straw2</literal>)，以及雜湊 (預設為 <literal>0</literal>，代表 CRUSH 雜湊 <literal>rjenkins1</literal>)。一個桶可以包含一或多個項目。項目可由其他桶或 OSD 組成。項目可能會有一個權數來反映該項目的相對權數。
+  </para>
+
+<screen>[bucket-type] [bucket-name] {
+  id [a unique negative numeric ID]
+  weight [the relative capacity/capability of the item(s)]
+  alg [the bucket type: uniform | list | tree | straw2 | straw ]
+  hash [the hash type: 0 by default]
+  item [item-name] weight [weight]
+}</screen>
+
+  <para>
+   下面的範例說明如何使用桶來聚合池，以及諸如資料中心、機房、機櫃和裝置排的實體位置。
+  </para>
+
+<screen>host ceph-osd-server-1 {
+        id -17
+        alg straw2
+        hash 0
+        item osd.0 weight 0.546
+        item osd.1 weight 0.546
+}
+
+row rack-1-row-1 {
+        id -16
+        alg straw2
+        hash 0
+        item ceph-osd-server-1 weight 2.00
+}
+
+rack rack-3 {
+        id -15
+        alg straw2
+        hash 0
+        item rack-3-row-1 weight 2.00
+        item rack-3-row-2 weight 2.00
+        item rack-3-row-3 weight 2.00
+        item rack-3-row-4 weight 2.00
+        item rack-3-row-5 weight 2.00
+}
+
+rack rack-2 {
+        id -14
+        alg straw2
+        hash 0
+        item rack-2-row-1 weight 2.00
+        item rack-2-row-2 weight 2.00
+        item rack-2-row-3 weight 2.00
+        item rack-2-row-4 weight 2.00
+        item rack-2-row-5 weight 2.00
+}
+
+rack rack-1 {
+        id -13
+        alg straw2
+        hash 0
+        item rack-1-row-1 weight 2.00
+        item rack-1-row-2 weight 2.00
+        item rack-1-row-3 weight 2.00
+        item rack-1-row-4 weight 2.00
+        item rack-1-row-5 weight 2.00
+}
+
+room server-room-1 {
+        id -12
+        alg straw2
+        hash 0
+        item rack-1 weight 10.00
+        item rack-2 weight 10.00
+        item rack-3 weight 10.00
+}
+
+datacenter dc-1 {
+        id -11
+        alg straw2
+        hash 0
+        item server-room-1 weight 30.00
+        item server-room-2 weight 30.00
+}
+
+root data {
+        id -10
+        alg straw2
+        hash 0
+        item dc-1 weight 60.00
+        item dc-2 weight 60.00
+}</screen>
+ </sect1>
+ <sect1 xml:id="datamgm-rules">
+  <title>規則集</title>
+
+  <para>
+   CRUSH 地圖支援「CRUSH 規則」概念，這些規則確定池的資料放置。對於大型叢集，您可能會建立許多池，其中每個池各自可能具有自己的 CRUSH 規則集和規則。預設 CRUSH 地圖具有適用於預設根的規則。如果您想使用更多根和更多規則，則需稍後自行建立，或者在建立新池時讓系統自動建立。
+  </para>
+
+  <note>
+   <para>
+    大多數情況下，您無需修改預設規則。建立新池時，該池的預設規則集為 0。
+   </para>
+  </note>
+
+  <para>
+   規則採用以下格式：
+  </para>
+
+<screen>rule <replaceable>rulename</replaceable> {
+
+        ruleset <replaceable>ruleset</replaceable>
+        type <replaceable>type</replaceable>
+        min_size <replaceable>min-size</replaceable>
+        max_size <replaceable>max-size</replaceable>
+        step <replaceable>step</replaceable>
+
+}</screen>
+
+  <variablelist>
+   <varlistentry>
+    <term>ruleset</term>
+    <listitem>
+     <para>
+      一個整數。將規則分類，使其屬於一個規則集。透過在池中設定規則集來啟用。必須指定此選項。預設值為 <literal>0</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>type</term>
+    <listitem>
+     <para>
+      一個字串。描述了適用於「複本」或「糾刪碼」池的規則。必須指定此選項。預設值為 <literal>replicated</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>min_size</term>
+    <listitem>
+     <para>
+      一個整數。如果池群組建立的複本數小於此數字，CRUSH 將不選取此規則。必須指定此選項。預設值為 <literal>2</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>max_size</term>
+    <listitem>
+     <para>
+      一個整數。如果池群組建立的複本數大於此數字，CRUSH 將不選取此規則。必須指定此選項。預設值為 <literal>10</literal>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step take <replaceable>bucket</replaceable></term>
+    <listitem>
+     <para>
+      採用以名稱指定的桶，並開始在樹狀結構中向下逐一查看。必須指定此選項。如需在樹中逐一查看的說明，請參閱<xref linkend="datamgm-rules-step-iterate"/>。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step <replaceable>target</replaceable><replaceable>mode</replaceable><replaceable>num</replaceable> type <replaceable>bucket-type</replaceable></term>
+    <listitem>
+     <para>
+      <replaceable>target</replaceable> 可以是 <literal>choose</literal> 或 <literal>chooseleaf</literal>。如果設定為 <literal>choose</literal>，則會選取許多桶。<literal>chooseleaf</literal> 直接從桶集的每個桶的子樹中選取 OSD (葉節點)。
+     </para>
+     <para>
+      <replaceable>mode</replaceable> 可以是 <literal>firstn</literal> 或 <literal>indep</literal>。請參閱<xref linkend="datamgm-rules-step-mode"/>。
+     </para>
+     <para>
+      選取給定類型的桶的數量。其中，N 是可用選項的數量，如果 <replaceable>num</replaceable> &gt; 0 且 &lt; N，則選擇該數量的桶；如果 <replaceable>num</replaceable> &lt; 0，則表示 N - <replaceable>數量</replaceable>；如果 <replaceable>num</replaceable> = 0，則選擇 N 個桶 (全部可用)。跟在 <literal>step take</literal> 或 <literal>step choose</literal> 後使用。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>step emit</term>
+    <listitem>
+     <para>
+      輸出目前的值並清空堆疊。一般在規則的結尾使用，但也可在同一規則中用來構成不同的樹。跟在 <literal>step choose</literal> 後使用。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <sect2 xml:id="datamgm-rules-step-iterate">
+   <title>逐一查看節點樹</title>
+   <para>
+    可採用節點樹的形式來檢視使用桶定義的結構。在此樹中，桶是節點，OSD 是葉。
+   </para>
+   <para>
+    CRUSH 地圖中的規則定義如何從此樹中選取 OSD。規則從某個節點開始，然後在樹中向下逐一查看，以傳回一組 OSD。無法定義需要選取哪個分支。CRUSH 演算法可保證 OSD 集能夠符合複製要求並均衡分發資料。
+   </para>
+   <para>
+    使用 <literal>step take</literal> <replaceable>bucket</replaceable> 時，在節點樹中從給定的桶 (而不是桶類型) 開始逐一查看。如果要傳回樹中所有分支上的 OSD，該桶必須是根桶。否則，以下步驟只會在子樹中逐一查看。
+   </para>
+   <para>
+    完成 <literal>step take</literal> 後，接下來會執行規則定義中的一或多個 <literal>step choose</literal> 項目。每個 <literal>step choose</literal> 會從前面選定的上層節點中選擇指定數量的節點 (或分支)。
+   </para>
+   <para>
+    最後，使用 <literal>step emit</literal> 傳回選定的 OSD。
+   </para>
+   <para>
+    <literal>step chooseleaf</literal> 是一個便捷函數，可直接從給定桶的分支中選取 OSD。
+   </para>
+   <para>
+    <xref linkend="datamgm-rules-step-iterate-figure"/>中提供了展示如何使用 <literal>step</literal> 在樹中逐一查看的範例。在下面的規則定義中，橙色箭頭和數字與 <literal>example1a</literal> 和 <literal>example1b</literal> 對應，藍色箭頭和數字與 <literal>example2</literal> 對應。
+   </para>
+   <figure xml:id="datamgm-rules-step-iterate-figure">
+    <title>範例樹</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-step.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-step.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+<screen># orange arrows
+rule example1a {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2)
+        step choose firstn 0 host
+        # orange (3)
+        step choose firstn 1 osd
+        step emit
+}
+
+rule example1b {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # orange (1)
+        step take rack1
+        # orange (2) + (3)
+        step chooseleaf firstn 0 host
+        step emit
+}
+
+# blue arrows
+rule example2 {
+        ruleset 0
+        type replicated
+        min_size 2
+        max_size 10
+        # blue (1)
+        step take room1
+        # blue (2)
+        step chooseleaf firstn 0 rack
+        step emit
+}</screen>
+  </sect2>
+
+  <sect2 xml:id="datamgm-rules-step-mode">
+   <title><literal/>firstn 和 indep<literal/></title>
+   <para>
+    CRUSH 規則定義有故障節點或 OSD 的取代項 (請參閱<xref linkend="datamgm-rules"/>)。關鍵字 <literal>step</literal> 要求使用 <literal>firstn</literal> 或 <literal>indep</literal> 參數。<xref linkend="datamgm-rules-step-mode-indep-figure"/>提供了範例。
+   </para>
+   <para>
+    <literal>firstn</literal> 將取代節點新增至使用中節點清單的結尾。如果某個節點發生故障，其後的正常節點會移位到左側，以填滿有故障節點留下的空缺。這是<emphasis>副本池</emphasis>的預設方法，也是需要採取的方法，因為次要節點已包含所有資料，因此可立即接管主要節點的職責。
+   </para>
+   <para>
+    <literal>indep</literal> 為每個使用中節點選取固定的取代節點。取代有故障節點不會變更剩餘節點的順序。這對於<emphasis>糾刪碼池</emphasis>而言是所需的行為。在糾刪碼池中，節點上儲存的資料取決於在選取節點時它所在的位置。如果節點的順序發生變化，受影響節點上的所有資料都需要重新放置。
+   </para>
+   <figure xml:id="datamgm-rules-step-mode-indep-figure">
+    <title>節點取代方法</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="crush-firstn-indep.svg" width="100%" format="SVG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="crush-firstn-indep.png" width="100%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-pgs">
+  <title>放置群組</title>
+
+  <para>
+   Ceph 會將物件對應至放置群組 (PG)。放置群組是指邏輯物件池的分區或片段，可將物件以群組形式放置到 OSD 中。放置群組可減少 Ceph 將資料儲存到 OSD 中時每個物件的中繼資料數量。如果放置群組的數量較多 (例如，每個 OSD 有 100 個放置群組)，將可實現較佳的平衡。
+  </para>
+
+  <sect2 xml:id="op-pgs-usage">
+   <title>使用放置群組</title>
+   <para>
+    放置群組 (PG) 聚合了池內的物件。主要原因是基於每個物件來追蹤物件放置和中繼資料的計算成本較高。例如，包含數百萬個物件的系統無法直接追蹤各個物件的放置。
+   </para>
+   <figure>
+    <title>池中的放置群組</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_schema.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    Ceph 用戶端負責計算物件將屬於哪個放置群組。它會對物件 ID 進行雜湊處理，並依據所定義池中的 PG 數及池的 ID 來套用操作。
+   </para>
+   <para>
+    系統會在一組 OSD 中儲存放置群組內的物件內容。例如，在大小為 2 的複本池中，每個放置群組將物件儲存到兩個 OSD 中：
+   </para>
+   <figure>
+    <title>放置群組和 OSD</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="ceph_pgs_osds.png" width="70%" format="PNG"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <para>
+    如果 OSD 2 發生故障，則系統會將另一個 OSD 指定給放置群組 1，並在該 OSD 中填入 OSD 1 內所有物件的複本。如果池大小從 2 變為 3，則系統會向放置群組另外再指定一個 OSD，並在該 OSD 中填入放置群組內所有物件的複本。
+   </para>
+   <para>
+    放置群組並不擁有 OSD，它們與同一池甚至其他池內的其他放置群組共用 OSD。如果 OSD 2 發生故障，放置群組 2 也將需要使用 OSD 3 來還原物件的複本。
+   </para>
+   <para>
+    當放置群組的數量增加時，系統會向新放置群組指定 OSD。CRUSH 函數的結果也會發生變更，並且系統會將之前的放置群組的部分物件複製到新放置群組，並將它們從舊放置群組移除。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pg-num">
+   <title>確定 <replaceable>PG_NUM</replaceable> 的值</title>
+   <note>
+    <para>
+     從 Ceph Nautilus (v14.x) 開始，您可以使用 Ceph 管理員 <literal>pg_autoscaler</literal> 模組視需要自動調整 PG。如果要啟用此功能，請參閱<xref linkend="default-pg-and-pgp-counts"/>。
+    </para>
+   </note>
+   <para>
+    建立新池時，您仍可手動選擇 <replaceable>PG_NUM</replaceable> 的值：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool create <replaceable>POOL_NAME</replaceable> <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    系統無法自動計算 <replaceable>PG_NUM</replaceable> 的值。以下是一些常用的值，選擇哪個值取決於叢集中的 OSD 數量：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>少於 5 個 OSD：</term>
+     <listitem>
+      <para>
+       將 <replaceable>PG_NUM</replaceable> 設定為 128。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>5 到 10 個 OSD：</term>
+     <listitem>
+      <para>
+       將 <replaceable>PG_NUM</replaceable> 設定為 512。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>10 到 50 個 OSD：</term>
+     <listitem>
+      <para>
+       將 <replaceable>PG_NUM</replaceable> 設定為 1024。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    隨著 OSD 數量的增加，選擇正確的 <replaceable>PG_NUM</replaceable> 值也變得愈加重要。<replaceable>PG_NUM</replaceable> 對叢集的行為以及 OSD 發生故障時的資料持久性具有很大影響。
+   </para>
+   <sect3 xml:id="op-pgs-choosing">
+    <title>計算超過 50 個 OSD 的放置群組</title>
+    <para>
+     如果 OSD 數量低於 50，請使用<xref linkend="op-pgs-pg-num"/>中所述的預先選取的值。如果 OSD 數量超過 50，建議為每個 OSD 使用約 50 到 100 個放置群組，以平衡資源的使用、資料持久性和資料分佈。對於單個物件池，您可以使用以下公式來計算基線數量：
+    </para>
+<screen>total PGs = (OSDs * 100) / <replaceable>POOL_SIZE</replaceable></screen>
+    <para>
+     其中，<replaceable>POOL_SIZE</replaceable> 是複本的數量 (如果是複本池) 或 <command>ceph osd erasure-code-profile get</command> 指令所傳回的「k」和「m」之和 (如果是糾刪碼池)。應將結果捨入至最接近的 2 的次方數。對於 CRUSH 演算法，建議進行捨入，以便均衡放置群組之間的物件數。
+    </para>
+    <para>
+     例如，如果叢集包含 200 個 OSD 和大小為 3 個複本的池，您需要依照如下方式預估 PG 數：
+    </para>
+<screen>
+          (200 * 100) / 3 = 6667
+</screen>
+    <para>
+     最接近的 2 的次方數為 <emphasis role="bold">8192</emphasis>。
+    </para>
+    <para>
+     使用多個資料池儲存物件時，您需要確保在每個池的放置群組數與每個 OSD 的放置群組數之間取得平衡。您需要採用合理的放置群組總數，在不過度佔用系統資源或導致互聯程序過慢的前提下，確保每個 OSD 的差異保持在合理的較低水平。
+    </para>
+    <para>
+     例如，如果叢集包含 10 個池，每個池有 512 個放置群組 (位於 10 個 OSD 中)，則表示共有 5,120 個放置群組分佈於 10 個 OSD 中，即每個 OSD 有 512 個放置群組。這樣的設定不會使用過多資源。但是，如果建立了 1000 個池，且每個池有 512 個放置群組，那麼每個 OSD 需要處理約 50,000 個放置群組，這樣完成互聯所需的資源和時間便會顯著增加。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-pg-set">
+   <title>設定放置群組的數量</title>
+   <note>
+    <para>
+     從 Ceph Nautilus (v14.x) 開始，您可以使用 Ceph 管理員 <literal>pg_autoscaler</literal> 模組視需要自動調整 PG。如果要啟用此功能，請參閱<xref linkend="default-pg-and-pgp-counts"/>。
+    </para>
+   </note>
+   <para>
+    如果您仍需手動指定池中的放置群組數量，則需要在建立池時指定 (請參閱<xref linkend="ceph-pools-operate-add-pool"/>)。為池設定放置群組後，您可以透過執行以下指令來增加放置群組的數量：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_num <replaceable>PG_NUM</replaceable>
+</screen>
+   <para>
+    增加放置群組數量後，您還需要增加要放置的放置群組數量 (<option>PGP_NUM</option>)，以便您的叢集重新達到平衡。<option>PGP_NUM</option> 是考慮要透過 CRUSH 演算法放置的放置群組數。增加 <option>PG_NUM</option> 會分割放置群組，但在增加 <option>PGP_NUM</option> 之前，資料不會移轉至較新的放置群組。<option>PGP_NUM</option> 應等於 <option>PG_NUM</option>。若要增加應放置的放置群組數量，請執行以下指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pgp_num <replaceable>PGP_NUM</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-get">
+   <title>獲取放置群組的數量</title>
+   <para>
+    獲取某個池中放置群組的數量，請執行以下 <command>get</command> 指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd pool get <replaceable>POOL_NAME</replaceable> pg_num
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getpgstat">
+   <title>獲取叢集的 PG 統計資料</title>
+   <para>
+    若要獲取叢集內放置群組的統計資料，請執行以下指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg dump [--format <replaceable>FORMAT</replaceable>]
+</screen>
+   <para>
+    有效格式為「plain」(預設值) 和「json」。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-getstuckstat">
+   <title>獲取卡住的 PG 統計資料</title>
+   <para>
+    若要獲取所有卡在指定狀態之放置群組的統計資料，請執行以下指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg dump_stuck <replaceable>STATE</replaceable> \
+ [--format <replaceable>FORMAT</replaceable>] [--threshold <replaceable>THRESHOLD</replaceable>]
+</screen>
+   <para>
+    可能的<replaceable>狀態</replaceable>有：「inactive」(PG 由於在等待擁有最新資料的 OSD 恢復啟用狀態而無法處理讀取或寫入)、「unclean」(PG 包含未複製所需次數的物件)、「stale」(PG 處於未知狀態，即代管 PG 的 OSD 未在 <option>mon_osd_report_timeout</option> 選項所指定的時間間隔內向監控程式叢集報告相關資訊)、「undersized」或「degraded」。
+   </para>
+   <para>
+    有效格式為「plain」(預設值) 和「json」。
+   </para>
+   <para>
+    該閾值定義放置群組至少卡住多少秒 (預設為 300 秒) 後，系統會將其包含到傳回的統計資料中。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-pgmap">
+   <title>搜尋放置群組地圖</title>
+   <para>
+    若要搜尋特定放置群組的地圖，請執行以下指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg map <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Ceph 將傳回放置群組地圖、放置群組和 OSD 狀態：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg map 1.6c
+osdmap e13 pg 1.6c (1.6c) -&gt; up [1,0] acting [1,0]
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-pgstats">
+   <title>擷取放置群組統計資料</title>
+   <para>
+    若要擷取特定放置群組的統計資料，請執行以下指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg <replaceable>PG_ID</replaceable> query
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-pg-scrubpg">
+   <title>整理放置群組</title>
+   <para>
+    若要整理 (<xref linkend="scrubbing-pgs"/>) 放置群組，請執行以下指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg scrub <replaceable>PG_ID</replaceable>
+</screen>
+   <para>
+    Ceph 會檢查主要節點和複本節點、產生放置群組內所有物件的目錄，並對它們進行比較，以確定沒有缺少或不符的物件且物件的內容均一致。假設所有複本均相符，最後的語意整理便可確定所有與快照相關的物件中繼資料均一致。系統透過記錄來報告錯誤。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pg-backfill">
+   <title>設定放置群組回填和復原的優先程度</title>
+   <para>
+    您可能會遇到數個放置群組需要復原和/或回填，而其中一些放置群組儲存的資料比其他放置群組更為重要的情況。例如，這些 PG 可能儲存著執行中機器所使用的影像資料，其他 PG 則可能儲存的是由非使用中機器使用的資料或相關度較低的資料。在該情況下，您可能需要優先復原這些放置群組，以便更早地還原這些放置群組中所儲存資料的效能和可用性。若要將特定放置群組標示為在回填或復原期間優先處理，請執行以下指令：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt role="root">root # </prompt>ceph pg force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    這將導致 Ceph 先對指定放置群組執行復原或回填，然後再處理其他放置群組。這并不會中斷目前正在進行的回填或復原，而是會使指定的 PG 儘快得到處理。如果您改變了主意或將錯誤的放置群組設為優先處理，請使用以下指令取消優先程度：
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph pg cancel-force-recovery <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+<prompt role="root">root # </prompt>ceph pg cancel-force-backfill <replaceable>PG_ID1</replaceable> [<replaceable>PG_ID2</replaceable> ... ]
+</screen>
+   <para>
+    <command>cancel-*</command> 指令會移除 PG 的「force」旗標，這樣系統便會依預設順序處理這些 PG。同樣，這並不會影響目前正在處理的放置群組，只會影響仍排在佇列中的放置群組。完成放置群組復原或回填後，系統即會自動清除「force」旗標。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-revert">
+   <title>復原遺失的物件</title>
+   <para>
+    如果叢集遺失了一或多個物件，而您已決定放棄搜尋遺失的資料，則需要將未找到的物件標示為「lost」。
+   </para>
+   <para>
+    如果在查詢過所有可能的位置後仍未找到這些物件，您可能需要放棄這些遺失的物件。這可能是由於幾種故障同時發生 (這種情況很少見) 所導致，致使叢集在寫入自身復原之前便得知寫入已執行。
+   </para>
+   <para>
+    目前唯一支援的選項為「revert」，該選項會復原到物件的先前版本，或在有新物件時完全忽略遺失物件。若要將「未找到」的物件標示為「lost」，請執行以下指令：
+   </para>
+<screen>
+  <prompt>cephuser@adm &gt; </prompt>ceph pg <replaceable>PG_ID</replaceable> mark_unfound_lost revert|delete
+  </screen>
+  </sect2>
+
+  <sect2 xml:id="op-pgs-autoscaler">
+   <title>啟用 PG 自動調整器</title>
+   <para>
+    放置群組 (PG) 是 Ceph 分佈資料方式的詳細內部實作。透過啟用 PG 自動調整功能，您可以允許叢集依據叢集的使用情況建立或自動調整 PG。
+   </para>
+   <para>
+    系統中的每個池都有一個 <option>pg_autoscale_mode</option> 內容，可將其設定為 <literal>off</literal>、<literal>on</literal> 或 <literal>warn</literal>：
+   </para>
+   <para>
+    自動調整器基於每個池設定，可在以下三種模式下執行：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term>off</term>
+     <listitem>
+      <para>
+       為此池停用自動調整功能。由管理員為每個池選擇適當的 PG 數量。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>on</term>
+     <listitem>
+      <para>
+       為給定池啟用 PG 計數自動調整功能。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>warn</term>
+     <listitem>
+      <para>
+       當 PG 計數應進行調整時，系統將發出狀況警示。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    若要為現有池設定自動調整模式，請執行以下指令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool set <replaceable>POOL_NAME</replaceable> pg_autoscale_mode <replaceable>mode</replaceable></screen>
+   <para>
+    您也可以執行以下指令，以設定將套用至未來將建立之所有池的預設 <option>pg_autoscale_mode</option>：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set global osd_pool_default_pg_autoscale_mode <replaceable>MODE</replaceable></screen>
+   <para>
+    您可以執行以下指令來檢視每個池、其相關使用情況，以及對 PG 計數的任何變更建議：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool autoscale-status</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="op-crush">
+  <title>CRUSH 地圖操作</title>
+
+  <para>
+   本節介紹基本的 CRUSH 地圖操作方法，例如編輯 CRUSH 地圖、變更 CRUSH 地圖參數，以及新增/移動/移除 OSD。
+  </para>
+
+  <sect2>
+   <title>編輯 CRUSH 地圖</title>
+   <para>
+    若要編輯現有的 CRUSH 地圖，請執行以下操作：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      獲取 CRUSH 地圖。要獲取叢集的 CRUSH 地圖，請執行以下指令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd getcrushmap -o <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph 會將編譯的 CRUSH 地圖輸出 (<option>-o</option>) 至您指定名稱的檔案。由於該 CRUSH 地圖採用編譯格式，您必須先將其反編譯，才能對其進行編輯。
+     </para>
+    </step>
+    <step>
+     <para>
+      反編譯 CRUSH 地圖。若要反編譯 CRUSH 地圖，請執行以下指令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>crushtool -d <replaceable>compiled-crushmap-filename</replaceable> \
+ -o <replaceable>decompiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph 將對已編譯的 CRUSH 地圖進行反編譯 (<option>-d</option>)，並將其輸出 (<option>-o</option>) 至您指定名稱的檔案。
+     </para>
+    </step>
+    <step>
+     <para>
+      至少編輯「裝置」、「桶」和「規則」中的其中一個參數。
+     </para>
+    </step>
+    <step>
+     <para>
+      編譯 CRUSH 地圖。若要編譯 CRUSH 地圖，請執行以下指令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>crushtool -c <replaceable>decompiled-crush-map-filename</replaceable> \
+ -o <replaceable>compiled-crush-map-filename</replaceable></screen>
+     <para>
+      Ceph 會將編譯的 CRUSH 地圖儲存至您指定名稱的檔案。
+     </para>
+    </step>
+    <step>
+     <para>
+      設定 CRUSH 地圖。若要設定叢集的 CRUSH 地圖，請執行以下指令：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd setcrushmap -i <replaceable>compiled-crushmap-filename</replaceable></screen>
+     <para>
+      Ceph 將輸入您所指定檔案名稱的已編譯 CRUSH 地圖，做為叢集的 CRUSH 地圖。
+     </para>
+    </step>
+   </procedure>
+   <tip>
+    <title>使用版本設定系統</title>
+    <para>
+     請為輸出並修改過的 CRUSH 地圖檔案使用諸如 git 或 svn 的版本設定系統。這可以讓可能發生的復原變得簡單。
+    </para>
+   </tip>
+   <tip>
+    <title>測試新 CRUSH 地圖</title>
+    <para>
+     請使用 <command>crushtool --test</command> 指令測試調整後的新 CRUSH 地圖，並與套用新 CRUSH 地圖之前的狀態進行比較。以下指令參數十分有用：<option>--show-statistics</option>、<option>--show-mappings</option>、<option>--show-bad-mappings</option>、<option>--show-utilization</option>、<option>--show-utilization-all</option>、<option>--show-choose-tries</option>
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addosd">
+   <title>新增或移動 OSD</title>
+   <para>
+    若要在執行中叢集的 CRUSH 地圖中新增或移動 OSD，請執行以下指令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush set <replaceable>id_or_name</replaceable> <replaceable>weight</replaceable> root=<replaceable>pool-name</replaceable>
+<replaceable>bucket-type</replaceable>=<replaceable>bucket-name</replaceable> ...</screen>
+   <variablelist>
+    <varlistentry>
+     <term>id</term>
+     <listitem>
+      <para>
+       一個整數。OSD 的數字 ID。必須指定此選項。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>name</term>
+     <listitem>
+      <para>
+       一個字串。OSD 的全名。必須指定此選項。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>weight</term>
+     <listitem>
+      <para>
+       一個雙精度浮點數。OSD 的 CRUSH 權數。必須指定此選項。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>root</term>
+     <listitem>
+      <para>
+       一個鍵值組。依預設，CRUSH 階層包含 default 池做為根。必須指定此選項。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>bucket-type</term>
+     <listitem>
+      <para>
+       多個鍵值組。您可在 CRUSH 階層中指定 OSD 的位置。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <para>
+    下面的範例將 <literal>osd.0</literal> 新增至階層，或移動先前某個位置的 OSD。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush set osd.0 1.0 root=data datacenter=dc1 room=room1 \
+row=foo rack=bar host=foo-bar-1</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdweight">
+   <title><command>ceph osd reweight</command> 與 <command>ceph osd crush reweight</command> 之間的差異</title>
+   <para>
+    有兩個相似的指令都可變更 Ceph OSD 的權數。它們的使用情境不同，可能會造成混淆。
+   </para>
+   <sect3 xml:id="ceph-osd-reweight">
+    <title><command>ceph osd reweight</command></title>
+    <para>
+     用法：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     <command>ceph osd reweight</command> 用於對 Ceph OSD 設定覆寫權數。此值介於 0 到 1 之間，會強制 CRUSH 重新放置此磁碟機上將以其他方式儲存的資料。該指令<emphasis role="bold">不會</emphasis>變更指定給 OSD 上方的桶的權數，它是一種在正常 CRUSH 分佈出現問題時的矯正措施。例如，如果您的其中一個 OSD 處於 90%，而其他 OSD 處於 40%，則您可縮小此權數，以嘗試對其進行補償。
+    </para>
+    <note>
+     <title>OSD 權數是暫時的</title>
+     <para>
+      請注意，<command>ceph osd reweight</command> 並非永久設定。將某個 OSD 標示為「out」時，它的權數將設為 0，一旦將它重新標示為「in」，其權數又會變更為 1。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="ceph-osd-crush-reweight">
+    <title><command>ceph osd crush reweight</command></title>
+    <para>
+     用法：
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush reweight <replaceable>OSD_NAME</replaceable> <replaceable>NEW_WEIGHT</replaceable></screen>
+    <para>
+     <command>ceph osd crush reweight</command> 用於設定 OSD 的 <emphasis role="bold">CRUSH</emphasis> 權數。此權數可以是任意值 (通常是以 TB 計的磁碟大小)，用於控制系統嘗試指定給 OSD 的資料量。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="op-crush-osdremove">
+   <title>移除 OSD</title>
+   <para>
+    若要從執行中叢集的 CRUSH 地圖中移除 OSD，請執行以下指令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush remove <replaceable>OSD_NAME</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-addbaucket">
+   <title>新增桶</title>
+   <para>
+    若要新增桶至執行中叢集的 CRUSH 地圖，請執行 <command>ceph osd crush add-bucket</command> 指令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush add-bucket <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-movebucket">
+   <title>移動桶</title>
+   <para>
+    若要將某個桶移至 CRUSH 地圖階層中的不同位置，請執行以下指令：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd crush move <replaceable>BUCKET_NAME</replaceable> <replaceable>BUCKET_TYPE</replaceable>=<replaceable>BUCKET_NAME</replaceable> [...]</screen>
+   <para>
+    例如：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush move bucket1 datacenter=dc1 room=room1 row=foo rack=bar host=foo-bar-1
+</screen>
+  </sect2>
+
+  <sect2 xml:id="op-crush-rmbucket">
+   <title>移除桶</title>
+   <para>
+    若要從 CRUSH 地圖階層中移除某個桶，請執行以下指令：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd crush remove <replaceable>BUCKET_NAME</replaceable>
+</screen>
+   <note>
+    <title>僅限空的桶</title>
+    <para>
+     從 CRUSH 階層中只能移除空的桶。
+    </para>
+   </note>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="scrubbing-pgs">
+  <title>整理放置群組</title>
+
+  <para>
+   除了為物件建立多個複本外，Ceph 還可透過<emphasis>整理</emphasis>放置群組來確保資料完整性 (請參閱<xref linkend="storage-intro-structure-pg"/>以瞭解有關放置群組的詳細資訊)。Ceph 的整理類似於在物件儲存層上執行 <command>fsck</command>。對於每個放置群組，Ceph 都會產生一個包含所有物件的目錄，並比較每個主要物件及其複本，以確定不會有遺失或不相符的物件。每天的淺層整理會檢查物件大小和屬性，而每週的深層整理則會讀取資料，並使用檢查總數來確保資料完整性。
+  </para>
+
+  <para>
+   整理對於維護資料完整性非常重要，但該操作可能會降低效能。您可以透過調整以下設定來增加或減少整理操作：
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>osd max scrubs</option></term>
+    <listitem>
+     <para>
+      同時針對一個 Ceph OSD 執行的整理操作數量上限。預設值為 1。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub begin hour</option>、<option>osd scrub end hour</option></term>
+    <listitem>
+     <para>
+      依小時定義的一天內可以執行整理的時間段 (0 到 24)。預設開始時間為 0，結束時間為 24。
+     </para>
+     <important>
+      <para>
+       如果放置群組的整理間隔超出 <option>osd scrub max interval</option> 設定的值，則無論您定義的整理時間段為何，都將執行整理。
+      </para>
+     </important>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub during recovery</option></term>
+    <listitem>
+     <para>
+      允許復原期間執行整理。若將此選項設定為「false」，則當有復原程序處於使用中狀態時，將禁止排程新的整理。已在執行的整理將繼續執行。此選項有助於降低忙碌叢集上的負載。預設值為「true」。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub thread timeout</option></term>
+    <listitem>
+     <para>
+      整理線串逾時前的最長時間 (以秒計)。預設值為 60。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub finalize thread timeout</option></term>
+    <listitem>
+     <para>
+      整理完成線串逾時前的最長時間 (以秒計)。預設值為 60*10。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub load threshold</option></term>
+    <listitem>
+     <para>
+      正常化的最大負載。當系統負載 (由 <literal>getloadavg ()</literal> 與 <literal>online cpus</literal> 數量之比定義) 高於此數字時，Ceph 將不會執行整理。預設值為 0.5。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub min interval</option></term>
+    <listitem>
+     <para>
+      當 Ceph 叢集負載較低時，整理 Ceph OSD 的最短間隔 (以秒計)。預設值為 60*60*24 (一天一次)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub max interval</option></term>
+    <listitem>
+     <para>
+      無論叢集負載如何都整理 Ceph OSD 的最長間隔 (以秒計)。預設值為 7*60*60*24 (一週一次)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk min</option></term>
+    <listitem>
+     <para>
+      單次操作期間要整理的物件儲存區塊數量下限。整理期間，Ceph 會阻止向單個區塊寫入資料。預設值為 5。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub chunk max</option></term>
+    <listitem>
+     <para>
+      單次操作期間要整理的物件儲存區塊數量上限。預設值為 25。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub sleep</option></term>
+    <listitem>
+     <para>
+      整理下一組區塊之前睡眠的時間。增大此值會降低整個整理操作的速度，但對用戶端操作的影響較小。預設值為 0。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub interval</option></term>
+    <listitem>
+     <para>
+      深層整理 (完整讀取所有資料) 的間隔。<option>osd scrub load threshold</option> 選項不會影響此設定。預設值為 60*60*24*7 (一週一次)。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd scrub interval randomize ratio</option></term>
+    <listitem>
+     <para>
+      在排程放置群組的下一次整理工作時，為 <option>osd scrub min interval</option> 值新增一個隨機延遲。該延遲為一個隨機的值，小於 <option>osd scrub min interval</option> * <option>osd scrub interval randomized ratio</option> 所得結果。因此，該預設設定實際上是將整理隨機地排程在允許的時間範圍 [1, 1.5] * <option>osd scrub min interval</option> 內執行。預設值為 0.5。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><option>osd deep scrub stride</option></term>
+    <listitem>
+     <para>
+      執行深層整理時讀取的大小。預設值為 524288 (512 kB)。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect1>
+</chapter>

@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_erasure.xml" version="5.0" xml:id="cha-ceph-erasure">
+ <title>イレージャコーディングプール</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  Cephでは、プール内のデータの通常のレプリケーションに代わる代替手段が提供されています。これを「イレージャ」<emphasis/>または「イレージャコーディング」<emphasis/>プールと呼びます。イレージャプールは「複製」<emphasis/>プールのすべての機能を備えているわけではありませんが(たとえば、RBDプールのメタデータを保存することはできません)、必要な未加工ストレージが少なくて済みます。1TBのデータを保存可能なデフォルトのイレージャプールでは、1.5TBの未加工ストレージが必要で、これによって単一ディスク障害を許容することができます。複製プールでは同じ目的に対して2TBの未加工ストレージが必要であるため、比較しても遜色ありません。
+ </para>
+ <para>
+  イレージャコードの背景情報については、<link xlink:href="https://en.wikipedia.org/wiki/Erasure_code"/>を参照してください。
+ </para>
+ <para>
+  ECプールに関連するプール値のリストについては、<xref linkend="pool-values-ec"/>を参照してください。
+ </para>
+ <sect1 xml:id="ec-prerequisite">
+  <title>イレージャコーディングプールの前提条件</title>
+
+  <para>
+   イレージャコーディングを利用するには、以下を行う必要があります。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     CRUSHマップでイレージャルールを定義する
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     使用するコーディングアルゴリズムを指定するイレージャコードプロファイルを定義する
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     前述したルールとプロファイルを使用してプールを作成する
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   プールを作成してデータを保存した後でプロファイルや、プロファイル内の詳細を変更することはできないことに注意してください。
+  </para>
+
+  <para>
+   「イレージャプール」<emphasis/>のCRUSHルールでは<literal>step</literal>に<literal>indep</literal>を使用するようにしてください。詳細については、<xref linkend="datamgm-rules-step-mode"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-default-profile">
+  <title>サンプルのイレージャコーディングプールの作成</title>
+
+  <para>
+   最もシンプルなイレージャコーディングプールはRAID5と同等で、少なくとも3つのホストを必要とします。この手順では、テスト用のプールを作成する方法について説明します。
+  </para>
+
+  <procedure>
+   <step>
+    <para>
+     コマンド<command>ceph osd pool create</command>を使用して、タイプが「erasure」<emphasis/>のプールを作成します。<literal>12</literal>は、配置グループの数を表します。デフォルトのパラメータの場合、このプールは1つのOSDの障害に対応できます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure
+pool 'ecpool' created</screen>
+   </step>
+   <step>
+    <para>
+     文字列<literal>ABCDEFGHI</literal>を<literal>NYAN</literal>という名前のオブジェクトに書き込みます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -</screen>
+   </step>
+   <step>
+    <para>
+     これで、テストのためにOSDを無効にできます。たとえば、OSDをネットワークから接続解除します。
+    </para>
+   </step>
+   <step>
+    <para>
+     プールがデバイスの障害に対応できるかどうかをテストするため、<command>rados</command>コマンドを使用してファイルの内容にアクセスできます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="cha-ceph-erasure-erasure-profiles">
+  <title>イレージャコードプロファイル</title>
+
+  <para>
+   <command>ceph osd pool create</command>コマンドを起動して「イレージャプール」<emphasis/>を作成する場合、別のプロファイルを指定しない限り、デフォルトのプロファイルが使用されます。プロファイルはデータの冗長性を定義します。このためには、任意に<literal>k</literal>および<literal>m</literal>という名前が付けられた2つのパラメータを定義します。kおよびmは、1つのデータを何個の<literal>chunks</literal> (チャンク)に分割するかと、何個のコーディングチャンクを作成するかを定義します。これにより、冗長チャンクは異なるOSDに保存されます。
+  </para>
+
+  <para>
+   イレージャプールプロファイルに必要な定義は次のとおりです。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>chunk</term>
+    <listitem>
+     <para>
+      エンコーディング関数を呼び出すと、同じサイズの複数のチャンクが返されます。連結して元のオブジェクトを再構成できるデータチャンクと、失われたチャンクの再構築に使用できるコーディングチャンクです。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>k</term>
+    <listitem>
+     <para>
+      データチャンクの数。これは、元のオブジェクトが分割されるチャンクの数です。たとえば、<literal>k = 2</literal>の場合、10KBのオブジェクトはそれぞれが5KBの<literal>k</literal>個のオブジェクトに分割されます。イレージャコーディングプールのデフォルトの<literal>min_size</literal>は、<literal>k + 1</literal>です。ただし、書き込みおよびデータが失われるのを防ぐため、<literal>min_size</literal>を<literal>k + 2</literal>以上にすることをお勧めします。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>m</term>
+    <listitem>
+     <para>
+      コーディングチャンクの数。これは、エンコーディング関数によって計算される追加チャンクの数です。コーディングチャンクが2つある場合、2つのOSDに障害が発生してもデータが失われないことを意味します。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>crush-failure-domain</term>
+    <listitem>
+     <para>
+      チャンクの分散先のデバイスを定義します。値としてバケットタイプを設定する必要があります。すべてのバケットタイプについては、<xref linkend="datamgm-buckets"/>を参照してください。障害ドメインが<literal>rack</literal>の場合、ラック障害時の災害耐性を向上させるため、チャンクは別のラックに保存されます。このためにはk+m個のラックが必要なことに注意してください。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   <xref linkend="cha-ceph-erasure-default-profile"/>で使用されているデフォルトのイレージャコードプロファイルでは、1つのOSDまたはホストに障害が発生した場合は、クラスタデータは失われません。したがって、1TBのデータを保存するには、さらに0.5TBの未加工ストレージが必要です。つまり、1TBのデータには1.5TBの未加工ストレージが必要です(k=2、m=1であるため)。これは、一般的なRAID 5設定と同等です。比較すると、複製プールでは1TBのデータを保存するのに2TBの未加工ストレージが必要です。
+  </para>
+
+  <para>
+   デフォルトのプロファイルの設定は次のコマンドで表示できます。
+  </para>
+
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd erasure-code-profile get default
+directory=.libs
+k=2
+m=1
+plugin=jerasure
+crush-failure-domain=host
+technique=reed_sol_van</screen>
+
+  <para>
+   プール作成後はプロファイルを変更できないため、適切なプロファイルを選択することが重要です。異なるプロファイルを持つ新しいプールを作成し、前のプールにあるオブジェクトをすべて新しいプールに移動する必要があります(<xref linkend="pools-migration"/>を参照)。
+  </para>
+
+  <para>
+   <literal>k</literal>、<literal>m</literal>、および<literal>crush-failure-domain</literal>のパラメータは、ストレージのオーバーヘッドとデータの持続性を定義するので、プロファイルの中で最も重要なパラメータです。たとえば、目的のアーキテクチャが66%のストレージオーバーヘッドでラック2台分の損失に耐える必要がある場合、次のプロファイルを定義できます。これは「ラック」タイプのバケットが設定されたCRUSHマップでのみ有効であることに注意してください。
+  </para>
+
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd erasure-code-profile set <replaceable>myprofile</replaceable> \
+   k=3 \
+   m=2 \
+   crush-failure-domain=rack</screen>
+
+  <para>
+   この新しいプロファイルで、<xref linkend="cha-ceph-erasure-default-profile"/>の例をもう一度使用できます。
+  </para>
+
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool create ecpool 12 12 erasure <replaceable>myprofile</replaceable>
+<prompt>cephuser@adm &gt; </prompt>echo ABCDEFGHI | rados --pool ecpool put NYAN -
+<prompt>cephuser@adm &gt; </prompt>rados --pool ecpool get NYAN -
+ABCDEFGHI</screen>
+
+  <para>
+   NYANオブジェクトは3つ(<literal>k=3</literal>)に分割され、2つの追加チャンク(<literal>m=2</literal>)が作成されます。<literal>m</literal>の値は、データを失うことなく何個のOSDが同時に失われても構わないかを定義します。<literal>crush-failure-domain=rack</literal>は、2つのチャンクが同じラックに保存されないようにするCRUSHルールセットを作成します。
+  </para>
+
+  <informalfigure>
+   <mediaobject>
+    <imageobject role="fo">
+     <imagedata fileref="ceph_erasure_obj.png" width="80%" format="PNG"/>
+    </imageobject>
+    <imageobject role="html">
+     <imagedata fileref="ceph_erasure_obj.png" width="60%" format="PNG"/>
+    </imageobject>
+   </mediaobject>
+  </informalfigure>
+
+  <sect2 xml:id="ec-create">
+   <title>新しいイレージャコードプロファイルの作成</title>
+   <para>
+    次のコマンドで新しいイレージャコードプロファイルを作成します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd erasure-code-profile set <replaceable>NAME</replaceable> \
+ directory=<replaceable>DIRECTORY</replaceable> \
+ plugin=<replaceable>PLUGIN</replaceable> \
+ stripe_unit=<replaceable>STRIPE_UNIT</replaceable> \
+ <replaceable>KEY</replaceable>=<replaceable>VALUE</replaceable> ... \
+ --force
+</screen>
+   <variablelist>
+    <varlistentry>
+     <term>DIRECTORY</term>
+     <listitem>
+      <para>
+       オプション。イレージャコードプラグインをロードするディレクトリの名前を設定します。デフォルトは<filename>/usr/lib/ceph/erasure-code</filename>です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>PLUGIN</term>
+     <listitem>
+      <para>
+       オプション。イレージャコードプラグインを使用して、コーディングチャンクを計算し、欠落しているチャンクを回復します。使用可能なプラグインは、「jerasure」、「isa」、「lrc」、および「shes」です。デフォルトは「jerasure」です。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>STRIPE_UNIT</term>
+     <listitem>
+      <para>
+       オプション。ストライプあたりの、データチャンクのデータ量。たとえば、2つのデータチャンクとstripe_unit=4Kが設定されたプロファイルでは、チャンク0に0～4K、チャンク1に4K～8K、続いてもう一度チャンク0に8K～12Kの範囲が設定されます。最高のパフォーマンスを得るためには、4Kの倍数にする必要があります。デフォルト値は、プールの作成時にモニタ設定オプション<option>osd_pool_erasure_code_stripe_unit</option>から取得されます。このプロファイルを使用するプールの「stripe_width」は、データチャンクの数にこの「stripe_unit」を掛けた値になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>KEY=VALUE</term>
+     <listitem>
+      <para>
+       選択したイレージャコードプラグインに固有のオプションのキー/値のペア。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>--force</term>
+     <listitem>
+      <para>
+       オプション。既存のプロファイルを同じ名前で上書きし、4K以外で配置されたstripe_unitを設定できるようにします。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ec-rm">
+   <title>イレージャコードプロファイルの削除</title>
+   <para>
+    次のコマンドは、<replaceable>NAME</replaceable>で指定したイレージャコードプロファイルを削除します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd erasure-code-profile rm <replaceable>NAME</replaceable>
+</screen>
+   <important>
+    <para>
+     プロファイルがプールによって参照されている場合、削除は失敗します。
+    </para>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="ec-get">
+   <title>イレージャコードプロファイルの詳細の表示</title>
+   <para>
+    次のコマンドは、<replaceable>NAME</replaceable>で指定したイレージャコードプロファイルの詳細を表示します。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd erasure-code-profile get <replaceable>NAME</replaceable>
+</screen>
+  </sect2>
+
+  <sect2 xml:id="ec-ls">
+   <title>イレージャコードプロファイルの一覧</title>
+   <para>
+    次のコマンドは、すべてのイレージャコードプロファイルの名前を一覧にします。
+   </para>
+<screen>
+<prompt role="root">root # </prompt>ceph osd erasure-code-profile ls
+</screen>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ec-rbd">
+  <title>イレージャコーディングプールをRADOS Block Deviceとしてマーク付け</title>
+
+  <para>
+   ECプールにRBDプールとしてマークを付けるには、適切にタグを付けます。
+  </para>
+
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool application enable rbd <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   RBDはECプールにイメージの「データ」<emphasis/>を保存できます。ただし、イメージのヘッダとメタデータは引き続き複製プールに保存する必要があります。このための「rbd」という名前のプールがあると想定した場合、次のコマンドを使用します。
+  </para>
+
+<screen>
+<prompt>cephuser@adm &gt; </prompt>rbd create rbd/<replaceable>image_name</replaceable> --size 1T --data-pool <replaceable>ec_pool_name</replaceable>
+</screen>
+
+  <para>
+   このイメージは他のイメージと同じように通常の方法で使用できますが、すべてのデータは「rbd」プールではなく<replaceable>ec_pool_name</replaceable>プールに保存される点が異なります。
+  </para>
+ </sect1>
+</chapter>

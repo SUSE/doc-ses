@@ -1,0 +1,1633 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deploy_cephadm.xml" version="5.0" xml:id="deploy-cephadm">
+ <title>Déploiement avec cephadm</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>oui</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  SUSE Enterprise Storage 7 utilise l'outil <systemitem class="resource">ceph-salt</systemitem> basé sur Salt pour préparer le système d'exploitation sur chaque noeud de la grappe participant en vue d'un déploiement via cephadm. cephadm déploie et gère une grappe Ceph en se connectant aux hôtes à partir du daemon Ceph Manager via SSH. cephadm gère le cycle de vie complet d'une grappe Ceph. Il commence par démarrer une petite grappe sur un seul noeud (un service MON et un service MGR), puis utilise l'interface d'orchestration pour étendre la grappe afin d'inclure tous les hôtes et de provisionner tous les services Ceph. Vous pouvez effectuer cette opération via l'interface de ligne de commande Ceph (CLI) ou partiellement via Ceph Dashboard (GUI).
+ </para>
+ <important>
+  <para>
+   Notez que la documentation de la communauté Ceph utilise la commande de démarrage <command>cephadm bootstrap</command> lors du déploiement initial. <systemitem class="resource">ceph-salt</systemitem> appelle la commande <command>cephadm bootstrap</command> et ne doit pas être exécuté directement. Tout déploiement manuel de grappes Ceph à l'aide de l'outil de <command>cephdm bootstrap</command> ne sera pas pris en charge.
+  </para>
+ </important>
+ <para>
+  Pour déployer une grappe Ceph à l'aide de cephadm, procédez comme suit :
+ </para>
+ <orderedlist>
+  <listitem>
+   <para>
+    Installez et effectuez la configuration de base du système d'exploitation sous-jacent (SUSE Linux Enterprise Server 15 SP2) sur tous les noeuds de la grappe.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Déployez l'infrastructure Salt sur tous les noeuds de la grappe pour préparer le déploiement initial via <systemitem class="resource">ceph-salt</systemitem>.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Configurez les propriétés de base de la grappe via <systemitem class="resource">ceph-salt</systemitem> et déployez-la.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Ajoutez de nouveaux noeuds et rôles à la grappe et déployez des services sur ces derniers à l'aide de cephadm.
+   </para>
+  </listitem>
+ </orderedlist>
+ <sect1 xml:id="deploy-os">
+  <title>Installation et configuration de SUSE Linux Enterprise Server</title>
+
+  <procedure>
+   <step>
+    <para>
+     Installez et enregistrez SUSE Linux Enterprise Server 15 SP2 sur chaque noeud de la grappe. Lors de l'installation de SUSE Enterprise Storage, vous devrez pouvoir accéder aux dépôts de mise à jour. L'enregistrement est donc obligatoire. Incluez au moins les modules suivants :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Module Basesystem (Système de base)
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Module Server Applications (Applications serveur)
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     Pour plus de détails sur l'installation de SUSE Linux Enterprise Server, reportez-vous à la documentation <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-install.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Installez l'extension <emphasis>SUSE Enterprise Storage 7</emphasis> sur chaque noeud de la grappe.
+    </para>
+    <tip>
+     <title>installez SUSE Enterprise Storage en même temps que SUSE Linux Enterprise Server</title>
+     <para>
+      Vous pouvez installer l'extension SUSE Enterprise Storage 7 séparément après avoir installé SUSE Linux Enterprise Server 15 SP2 ou l'ajouter au cours de la procédure d'installation de SUSE Linux Enterprise Server 15 SP2.
+     </para>
+    </tip>
+    <para>
+     Pour plus de détails sur l'installation des extensions, reportez-vous à la documentation <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-register-sle.html"/>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configurez les paramètres réseau, y compris la résolution de nom DNS appropriée sur chaque noeud. Pour plus d'informations sur la configuration d'un réseau, reportez-vous à l'adresse <link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#sec-network-yast"/>. Pour plus d'informations sur la configuration d'un serveur DNS, reportez-vous à l'adresse <link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#cha-dns"/>.
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-salt">
+  <title>Déploiement de Salt</title>
+
+  <para>
+   SUSE Enterprise Storage utilise Salt et <systemitem class="resource">ceph-salt</systemitem> pour la préparation initiale de la grappe. Salt vous aide à configurer et à exécuter des commandes sur plusieurs noeuds de grappe simultanément à partir d'un hôte dédié appelé <emphasis>Salt Master</emphasis>. Avant de déployer Salt, tenez compte des points importants suivants :
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Les <emphasis>minions Salt</emphasis> sont les noeuds contrôlés par un noeud dédié appelé Salt Master.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Si l'hôte Salt Master doit faire partie de la grappe Ceph, il doit exécuter son propre minion Salt, mais ce n'est pas obligatoire.
+    </para>
+    <tip>
+     <title>partage de plusieurs rôles par serveur</title>
+     <para>
+      Vous obtiendrez les meilleures performances de votre grappe Ceph lorsque chaque rôle est déployé sur un noeud distinct. Toutefois, les déploiements réels nécessitent parfois le partage d'un noeud entre plusieurs rôles. Pour éviter les problèmes liés aux performances et à la procédure de mise à niveau, ne déployez pas le rôle Ceph OSD, Serveur de métadonnées ou Ceph Monitor sur le noeud Admin.
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     Les minions Salt doivent résoudre correctement le nom d'hôte de Salt Master sur le réseau. Par défaut, ils recherchent le nom d'hôte <systemitem>salt</systemitem>, mais vous pouvez spécifier tout autre nom d'hôte accessible par le réseau dans le fichier <filename>/etc/salt/minion</filename>.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <procedure>
+   <step>
+    <para>
+     Installez <literal>salt-master</literal> sur le noeud Salt Master :
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master</screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez si le service <systemitem>salt-master</systemitem> est activé et démarré, puis activez-le et démarrez-le, le cas échéant :
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     Si vous envisagez d'utiliser le pare-feu, vérifiez si les ports 4505 et 4506 du noeud Salt Master sont ouverts pour tous les noeuds minions Salt. Si les ports sont fermés, vous pouvez les ouvrir à l'aide de la commande <command>yast2 firewall</command> en autorisant le service <guimenu>salt-master</guimenu> à accéder à la zone appropriée. Par exemple, <literal>public</literal>.
+    </para>
+   </step>
+   <step>
+    <para>
+     Installez le paquetage <literal>salt-minion</literal> sur tous les noeuds des minions.
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+   </step>
+   <step>
+    <para>
+     Modifiez <filename>/etc/salt/minion</filename> et supprimez les commentaires de la ligne suivante :
+    </para>
+<screen>#log_level_logfile: warning</screen>
+    <para>
+     Remplacez le niveau de consignation <literal>warning</literal> par <literal>info</literal>.
+    </para>
+    <note>
+     <title><option>log_level_logfile</option> et <option>log_level</option></title>
+     <para>
+      Tandis que <option>log_level</option> contrôle quels messages du journal seront affichés à l'écran, <option>log_level_logfile</option> contrôle quels messages du journal seront écrits dans <filename>/var/log/salt/minion</filename>.
+     </para>
+    </note>
+    <note>
+     <para>
+      Veillez à modifier le niveau de consignation sur <emphasis>tous</emphasis> les noeuds de grappe (minion).
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     Assurez-vous que le <emphasis>nom de domaine complet</emphasis> de chaque noeud peut être résolu sur une adresse IP du réseau de grappes public par tous les autres noeuds.
+    </para>
+   </step>
+   <step>
+    <para>
+     Configurez tous les minions pour qu'ils se connectent au maître. Si le nom d'hôte <literal>salt</literal> ne parvient pas à joindre votre Salt Master, modifiez le fichier <filename>/etc/salt/minion</filename> ou créez un fichier <filename>/etc/salt/minion.d/master.conf</filename> avec le contenu suivant :
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     Si vous avez apporté des modifications aux fichiers de configuration mentionnés ci-dessus, redémarrez le service Salt sur tous les minions Salt qui y sont associés :
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez que le service <systemitem>salt-minion</systemitem> est activé et démarré sur tous les noeuds. Activez et démarrez-le, le cas échéant :
+    </para>
+<screen><prompt role="root">root # </prompt>systemctl enable salt-minion.service
+<prompt role="root">root # </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez l'empreinte digitale de chaque minion Salt et acceptez toutes les clés Salt sur Salt Master si les empreintes digitales correspondent.
+    </para>
+    <note>
+     <para>
+      Si l'empreinte de minion Salt revient vide, vérifiez que le minion Salt a une configuration Salt Master et qu'il peut communiquer avec Salt Master.
+     </para>
+    </note>
+    <para>
+     Affichez l'empreinte digitale de chaque minion :
+    </para>
+<screen><prompt>root@minion &gt; </prompt>salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Après avoir collecté les empreintes digitales de tous les minions Salt, répertoriez les empreintes de toutes les clés de minions non acceptées sur Salt Master :
+    </para>
+<screen><prompt>root@master # </prompt>salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     Si les empreintes des minions correspondent, acceptez-les :
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     Vérifiez que les clés ont été acceptées :
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step>
+    <para>
+     Testez si tous les minions Salt répondent :
+    </para>
+<screen><prompt>root@master # </prompt>salt-run manage.status</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day1">
+  <title>Déploiement de la grappe Ceph</title>
+
+  <para>
+   Cette section vous guide tout au long du processus de déploiement d'une grappe Ceph de base. Lisez attentivement les sous-sections suivantes et exécutez les commandes incluses dans l'ordre indiqué.
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-cephsalt">
+   <title>Installation de <systemitem class="resource">ceph-salt</systemitem></title>
+   <para>
+    <systemitem class="resource">ceph-salt</systemitem> fournit des outils pour le déploiement de grappes Ceph gérées par cephdm. <systemitem class="resource">ceph-salt</systemitem> utilise l'infrastructure Salt pour gérer le système d'exploitation (par exemple, les mises à jour logicielles ou la synchronisation horaire) et définir les rôles pour les minions Salt.
+   </para>
+   <para>
+    Sur Salt Master, installez le paquetage <package>ceph-salt</package>  :
+   </para>
+<screen><prompt>root@master # </prompt>zypper install ceph-salt</screen>
+   <para>
+    La commande ci-dessus a installé <package>ceph-salt-formula</package> en tant que dépendance qui a modifié la configuration de Salt Master en insérant des fichiers supplémentaires dans le répertoire <filename>/etc/salt/master.d</filename>. Pour appliquer les modifications, redémarrez <systemitem class="daemon">salt-master.service</systemitem> et synchronisez les modules Salt :
+   </para>
+<screen>
+<prompt>root@master # </prompt>systemctl restart salt-master.service
+<prompt>root@master # </prompt>salt \* saltutil.sync_all
+</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-configure">
+   <title>Configuration des propriétés de grappe</title>
+   <para>
+    Utilisez la commande <command>ceph-salt config</command> pour configurer les propriétés de base de la grappe.
+   </para>
+   <important>
+    <para>
+     Le fichier <filename>/etc/ceph/ceph.conf</filename> est géré par cephadm et les utilisateurs ne doivent <emphasis>pas</emphasis> le modifier. Les paramètres de configuration Ceph doivent être définis à l'aide de la nouvelle commande <command>ceph config</command>. Pour plus d'informations, reportez-vous au <xref linkend="cha-ceph-configuration-db"/>.
+    </para>
+   </important>
+   <sect3 xml:id="deploy-cephadm-configure-shell">
+    <title>Utilisation du shell <systemitem class="resource">ceph-salt</systemitem></title>
+    <para>
+     Si vous exécutez <command>ceph-salt config</command> sans chemin ni sous-commande, vous accédez à un shell <systemitem class="resource">ceph-salt</systemitem> interactif. Le shell est pratique si vous devez configurer plusieurs propriétés dans un seul lot sans devoir saisir la syntaxe complète de la commande.
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config
+<prompt>/&gt;</prompt> ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [no minions]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [no minions]
+  |   o- bootstrap ........................................... [no minion]
+  |   o- cephadm ............................................ [no minions]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path .................................. [ no image path]
+  | o- dashboard ................................................... [...]
+  | | o- force_password_update ................................. [enabled]
+  | | o- password ................................................ [admin]
+  | | o- ssl_certificate ....................................... [not set]
+  | | o- ssl_certificate_key ................................... [not set]
+  | | o- username ................................................ [admin]
+  | o- mon_ip .................................................. [not set]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh ............................................... [no key pair set]
+  | o- private_key .................................. [no private key set]
+  | o- public_key .................................... [no public key set]
+  o- time_server ........................... [enabled, no server host set]
+    o- external_servers .......................................... [empty]
+    o- servers ................................................... [empty]
+    o- subnet .................................................. [not set]
+</screen>
+    <para>
+     Comme vous pouvez le constater dans la sortie de la commande <systemitem class="resource">ls</systemitem> de <command>ceph-salt</command>, la configuration de la grappe est organisée en arborescence. Pour configurer une propriété spécifique de la grappe dans le shell <systemitem class="resource">ceph-salt</systemitem>, deux options s'offrent à vous :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Exécutez la commande à partir de la position actuelle et entrez le chemin absolu de la propriété comme premier argument :
+      </para>
+<screen>
+<prompt>/&gt;</prompt> /cephadm_bootstrap/dashboard ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username .................................................... [admin]
+<prompt>/&gt; /cephadm_bootstrap/dashboard/username set ceph-admin</prompt>
+Value set.
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Accédez au chemin dont vous devez configurer la propriété et exécutez la commande :
+      </para>
+<screen>
+<prompt>/&gt;</prompt> cd /cephadm_bootstrap/dashboard/
+<prompt>/ceph_cluster/minions&gt;</prompt> ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username ................................................[ceph-admin]
+</screen>
+     </listitem>
+    </itemizedlist>
+    <tip>
+     <title>saisie semi-automatique des extraits de configuration</title>
+     <para>
+      Lorsque vous êtes dans un shell <systemitem class="resource">ceph-salt</systemitem>, vous pouvez utiliser la fonction de saisie semi-automatique similaire à celle d'un shell Linux normal (bash). Il complète les chemins de configuration, les sous-commandes ou les noms des minions Salt. Lors de la saisie semi-automatique d'un chemin de configuration, deux options s'offrent à vous :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        Pour laisser le shell terminer un chemin par rapport à votre position actuelle, appuyez deux fois sur la touche TAB.<keycap function="tab"/>
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Pour laisser le shell terminer un chemin absolu, entrez <keycap>/</keycap> et appuyez deux fois sur la touche TAB <keycap function="tab"/>.
+       </para>
+      </listitem>
+     </itemizedlist>
+    </tip>
+    <tip>
+     <title>navigation avec les flèches du clavier</title>
+     <para>
+      Si vous entrez <command>cd</command> à partir du shell <systemitem class="resource">ceph-salt</systemitem> sans aucun chemin, la commande imprime une structure d'arborescence de la configuration de grappe avec la ligne du chemin actuellement actif. Vous pouvez utiliser les flèches Haut et Bas pour parcourir les différentes lignes. Après avoir confirmé avec la touche <keycap function="enter"/>, le chemin de configuration est remplacé par le dernier chemin actif.
+     </para>
+    </tip>
+    <important>
+     <title>convention</title>
+     <para>
+      Pour assurer la cohérence de la documentation, nous utiliserons une syntaxe de commande unique sans accéder au shell <systemitem class="resource">ceph-salt</systemitem>. Par exemple, vous pouvez répertorier l'arborescence de configuration de la grappe à l'aide de la commande suivante :
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config ls</screen>
+    </important>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-minions">
+    <title>Ajout de minions Salt</title>
+    <para>
+     Incluez tout ou partie des minions Salt que vous avez déployés et acceptés à la <xref linkend="deploy-salt"/> dans la configuration de la grappe Ceph. Vous pouvez spécifier les minions Salt à l'aide de leur nom complet ou utiliser une expression globale « * » et « ? » pour inclure plusieurs minions Salt simultanément. Utilisez la sous-commande <command>add</command> sous le chemin <literal>/ceph_cluster/minions</literal>. La commande suivante inclut tous les minions Salt acceptés :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions add '*'</screen>
+    <para>
+     Vérifiez que les minions Salt spécifiés ont été ajoutés :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions ls
+o- minions ................................................. [Minions: 5]
+  o- ses-master.example.com .................................. [no roles]
+  o- ses-min1.example.com .................................... [no roles]
+  o- ses-min2.example.com .................................... [no roles]
+  o- ses-min3.example.com .................................... [no roles]
+  o- ses-min4.example.com .................................... [no roles]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-cephadm">
+    <title>Spécification des minions Salt gérés par cephadm</title>
+    <para>
+     Spécifiez les noeuds qui appartiendront à la grappe Ceph et qui seront gérés par cephadm. Incluez tous les noeuds qui exécuteront les services Ceph ainsi que le noeud Admin :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/cephadm add '*'</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-admin">
+    <title>Spécification du noeud Admin</title>
+    <para>
+     Le noeud Admin est le noeud sur lequel le fichier de configuration <filename>ceph.conf</filename> et le trousseau de clés Ceph admin sont installés. les commandes liées à Ceph sont généralement exécutées sur le noeud Admin.
+    </para>
+    <tip>
+     <title>noeud Admin et Salt Master sur le même noeud</title>
+     <para>
+      Dans un environnement homogène dans lequel tous les hôtes ou la plupart d'entre eux appartiennent à SUSE Enterprise Storage, il est recommandé de placer le noeud Admin sur le même hôte que Salt Master.
+     </para>
+     <para>
+      Dans un environnement hétérogène dans lequel une infrastructure Salt héberge plusieurs grappes, par exemple SUSE Enterprise Storage avec SUSE Manager, ne placez <emphasis>pas</emphasis> le noeud Admin sur le même hôte que Salt Master.
+     </para>
+    </tip>
+    <para>
+     Pour spécifier le noeud Admin, exécutez la commande suivante :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin add ses-master.example.com
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin ls
+o- admin ................................................... [Minions: 1]
+  o- ses-master.example.com ...................... [Other roles: cephadm]
+</screen>
+    <tip>
+     <title>installation de <filename>ceph.conf</filename> et du trousseau de clés admin sur plusieurs noeuds</title>
+     <para>
+      Vous pouvez installer le fichier de configuration Ceph et le trousseau de clés admin sur plusieurs noeuds si votre déploiement l'exige. Pour des raisons de sécurité, évitez de les installer sur tous les noeuds de la grappe.
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-mon">
+    <title>Spécification du premier noeud MON/MGR</title>
+    <para>
+     Vous devez spécifier quel minion Salt de la grappe va démarrer la grappe. Ce minion sera alors le premier à exécuter les services Ceph Monitor et Ceph Manager.
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap set ses-min1.example.com
+Value set.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap ls
+o- bootstrap ..................................... [ses-min1.example.com]
+</screen>
+    <para>
+     En outre, vous devez spécifier l'adresse IP de démarrage du service MON sur le réseau public pour vous assurer que le paramètre <option>public_network</option> est correctement défini, par exemple :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/mon_ip set 192.168.10.20
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-tuned-profiles">
+    <title>Spécification de profils ajustés</title>
+    <para>
+     Vous devez spécifier quels minions de la grappe ont des profils activement ajustés. Pour ce faire, ajoutez ces rôles explicitement à l'aide des commandes suivantes :
+    </para>
+    <note>
+     <para>
+      Un minion ne peut pas cumuler les rôles de <literal>latency</literal> (latence) et <literal>throughput</literal> (débit).
+     </para>
+    </note>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/latency add ses-min1.example.com
+Adding ses-min1.example.com...
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/throughput add ses-min2.example.com
+Adding ses-min2.example.com...
+1 minion added.
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ssh">
+    <title>Génération d'une paire de clés SSH</title>
+    <para>
+     cephadm utilise le protocole SSH pour communiquer avec les noeuds de la grappe. Un compte utilisateur nommé <literal>cephadm</literal> est automatiquement créé et utilisé pour la communication SSH.
+    </para>
+    <para>
+     Vous devez générer la partie privée et la partie publique de la paire de clés SSH :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ssh generate
+Key pair generated.
+<prompt>root@master # </prompt>ceph-salt config /ssh ls
+o- ssh .................................................. [Key Pair set]
+  o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ntp">
+    <title>Configuration du serveur horaire</title>
+    <para>
+     L'heure de tous les noeuds de la grappe doit être synchronisée avec une source horaire fiable. Plusieurs scénarios existent pour aborder la synchronisation horaire :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Si tous les noeuds de la grappe sont déjà configurés pour synchroniser leur heure à l'aide du service NTP de votre choix, désactivez complètement la gestion du serveur horaire :
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server disable
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Si votre site possède déjà une seule source horaire, spécifiez le nom d'hôte de la source horaire :
+      </para>
+<screen>
+ <prompt>root@master # </prompt>ceph-salt config /time_server/servers add <replaceable>time-server.example.com</replaceable>
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Dans le cas contraire, <systemitem class="resource">ceph-salt</systemitem> a la possibilité de configurer l'un des minions Salt pour qu'il fasse office de serveur horaire pour le reste de la grappe. Il est parfois appelé « serveur horaire interne ». Dans ce scénario, <systemitem class="resource">ceph-salt</systemitem> configure le serveur horaire interne (qui doit être l'un des minions Salt) pour synchroniser son heure avec celle d'un serveur horaire externe, tel que <literal>pool.ntp.org</literal> et configure tous les autres minions pour obtenir leur heure à partir du serveur horaire interne. Pour ce faire, procédez comme suit :
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/servers add ses-master.example.com
+<prompt>root@master # </prompt>ceph-salt config /time_server/external_servers add pool.ntp.org
+</screen>
+      <para>
+       L'option <option>/time_server/subnet</option> spécifie le sous-réseau à partir duquel les clients NTP sont autorisés à accéder au serveur NTP. Elle est définie automatiquement lorsque vous spécifiez <option>/time_server/servers</option>. Si vous devez la modifier ou la spécifier manuellement, exécutez :
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/subnet set 10.20.6.0/24
+</screen>
+     </listitem>
+    </itemizedlist>
+    <para>
+     Vérifiez les paramètres du serveur horaire :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server ls
+o- time_server ................................................ [enabled]
+  o- external_servers ............................................... [1]
+  | o- pool.ntp.org ............................................... [...]
+  o- servers ........................................................ [1]
+  | o- ses-master.example.com ..................................... [...]
+  o- subnet .............................................. [10.20.6.0/24]
+</screen>
+    <para>
+     Pour plus d'informations sur la configuration de la synchronisation horaire, reportez-vous à l'adresse <link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-ntp.html#sec-ntp-yast"/>.
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-dashboardlogin">
+    <title>Configuration des informations d'identification de connexion de Ceph Dashboard</title>
+    <para>
+     Ceph Dashboard sera disponible après le déploiement de la grappe de base. Pour y accéder, vous devez définir un nom d'utilisateur et un mot de passe valides, par exemple :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/username set admin
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/password set <replaceable>PWD</replaceable>
+</screen>
+    <tip>
+     <title>mise à jour forcée du mot de passe</title>
+     <para>
+      Par défaut, le premier utilisateur du tableau de bord est obligé de modifier son mot de passe lors de la première connexion au tableau de bord. Pour désactiver cette fonction, exécutez la commande suivante :
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/force_password_update disable</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-imagepath">
+    <title>Configuration du chemin d'accès aux images du conteneur</title>
+    <para>
+     cephadm doit avoir connaissance d'un chemin URI valide vers les images du conteneur qui sera utilisé au cours de l'étape de déploiement. Vérifiez si le chemin par défaut a été défini :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path ls</screen>
+    <para>
+     Si aucun chemin par défaut n'a été défini ou si votre déploiement nécessite un chemin spécifique, ajoutez-le comme suit :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path set registry.suse.com/ses/7/ceph/ceph</screen>
+    <note>
+     <para>
+      Pour la pile de surveillance, d'autres images de conteneur sont nécessaires. Pour un déploiement à vide ou à partir d'un registre local, vous souhaiterez peut-être obtenir ces images à ce stade afin de préparer votre registre local comme il se doit.
+     </para>
+     <para>
+      Notez que <systemitem class="resource">ceph-salt</systemitem> n'utilisera pas ces images de conteneur pour effectuer le déploiement. Il s'agit de préparatifs en vue d'une étape ultérieure lors de laquelle cephadm sera utilisé pour le déploiement ou la migration des composants de surveillance.
+     </para>
+     <para>
+      Pour plus d'informations sur les images utilisées par la pile de surveillance et sur la façon de les personnaliser, consultez la page <xref linkend="monitoring-custom-images"/>.
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-registry">
+    <title>Configuration du registre de conteneurs</title>
+    <para>
+     Vous pouvez éventuellement définir un registre local de conteneurs. Il fera office de miroir pour le registre <literal>registration.suse.com</literal>. N'oubliez pas que vous devez resynchroniser le registre local chaque fois que de nouveaux conteneurs mis à jour sont disponibles à partir du site <systemitem class="systemname"> registration.suse.com</systemitem>.
+
+    </para>
+    <para>
+     La création d'un registre local est utile dans les scénarios suivants :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Vous disposez d'un grand nombre de noeuds de grappe et souhaitez réduire le temps de téléchargement et économiser de la bande passante en créant un miroir local des images de conteneur.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Votre grappe n'a pas accès au registre en ligne (déploiement à vide) et vous avez besoin d'un miroir local pour extraire les images de conteneur.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Si des problèmes de configuration ou de réseau empêchent votre grappe d'accéder aux registres distants par le biais d'un lien sécurisé, vous aurez alors besoin d'un registre local non chiffré.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <important>
+     <para>
+      Pour déployer des correctifs temporaires de programme (PTF) sur un système pris en charge, vous devez déployer un registre local de conteneurs.
+     </para>
+    </important>
+    <para>
+     Pour configurer une URL de registre local avec des informations d'identification d'accès, procédez comme suit :
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Configurez l'URL du registre local :
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/registry set <replaceable>REGISTRY_URL</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       Configurez le nom d'utilisateur et le mot de passe pour accéder au registre local :
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/username set <replaceable>REGISTRY_USERNAME</replaceable></screen>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/password set <replaceable>REGISTRY_PASSWORD</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       Exécutez <command>ceph-salt apply</command> pour mettre à jour Salt Pillar sur tous les minions.
+      </para>
+     </step>
+    </procedure>
+    <tip>
+     <title>cache de registre</title>
+     <para>
+      Pour éviter de resynchroniser le registre local lorsque de nouveaux conteneurs mis à jour apparaissent, vous pouvez configurer un <emphasis>cache de registre</emphasis>.
+
+     </para>
+    </tip>
+    <para>
+     Les méthodes de développement et de distribution des applications natives dans le cloud nécessitent un registre et une instance CI/CD (intégration/distribution continue) pour le développement et la production d'images de conteneur. Vous pouvez utiliser un registre privé dans cette instance.
+
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-inflight-encryption">
+    <title>Activation du chiffrement des données à la volée (msgr2)</title>
+    <para>
+     Le protocole Messenger v2 (MSGR2) est le protocole on-wire de Ceph. Il offre un mode de sécurité qui chiffre toutes les données passant sur le réseau, l'encapsulation des charges utiles d'authentification et l'activation de l'intégration future de nouveaux modes d'authentification (tels que Kerberos).
+    </para>
+    <important>
+     <para>
+      msgr2 n'est actuellement pas pris en charge par les clients Ceph du kernel Linux, tels que le périphérique de bloc RADOS et CephFS.
+     </para>
+    </important>
+    <para>
+     Les daemons Ceph peuvent se lier à plusieurs ports, ce qui permet aux clients Ceph hérités et aux nouveaux clients compatibles v2 de se connecter à la même grappe. Par défaut, les instances MON se lient désormais au nouveau port 3300 assigné par l'IANA (CE4h ou 0xCE4) pour le nouveau protocole v2, tout en se liant également à l'ancien port par défaut 6789 pour le protocole v1 hérité.
+    </para>
+    <para>
+     Le protocole v2 (MSGR2) prend en charge deux modes de connexion :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>crc mode</term>
+      <listitem>
+       <para>
+        Authentification initiale forte lorsque la connexion est établie et contrôle d'intégrité CRC32C.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>secure mode</term>
+      <listitem>
+       <para>
+        Authentification initiale forte lorsque la connexion est établie et un chiffrement complet de tout le trafic post-authentification, y compris une vérification de l'intégrité cryptographique.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Pour la plupart des connexions, il existe des options qui contrôlent les modes utilisés :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_cluster_mode</term>
+      <listitem>
+       <para>
+        Mode de connexion (ou modes autorisés) utilisé(s) pour la communication entre les daemons Ceph au sein de la grappe. Si plusieurs modes sont répertoriés, ceux s'affichant en haut de la liste sont les préférés.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_service_mode</term>
+      <listitem>
+       <para>
+        Liste des modes que les clients sont autorisés à utiliser lors de la connexion à la grappe.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_client_mode</term>
+      <listitem>
+       <para>
+        Liste des modes de connexion, par ordre de préférence, que les clients peuvent ou sont autorisés à utiliser lorsqu'ils communiquent avec une grappe Ceph.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Il existe un ensemble parallèle d'options qui s'appliquent spécifiquement aux moniteurs, ce qui permet aux administrateurs de définir d'autres exigences (généralement plus sécurisées) en matière de communication avec les moniteurs.
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_mon_cluster_mode</term>
+      <listitem>
+       <para>
+        Mode de connexion (ou modes autorisés) à utiliser entre les moniteurs.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_service_mode</term>
+      <listitem>
+       <para>
+        Liste des modes autorisés que les clients ou les autres daemons Ceph sont autorisés à utiliser lors de la connexion aux moniteurs.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_client_mode</term>
+      <listitem>
+       <para>
+        Liste des modes de connexion, par ordre de préférence, que les clients ou les daemons non-moniteurs peuvent utiliser pour se connecter à des moniteurs.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Pour activer le mode de chiffrement MSGR2 pendant le déploiement, vous devez ajouter certaines options de configuration à la configuration de <systemitem class="resource">ceph-salt</systemitem> avant d'exécuter <command>ceph-salt apply</command>.
+    </para>
+    <para>
+     Pour utiliser le mode <literal>secure</literal>, exécutez les commandes suivantes.
+    </para>
+    <para>
+     Ajoutez la section globale à <filename>ceph_conf</filename> dans l'outil de configuration <systemitem class="resource">ceph-salt</systemitem> :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global</screen>
+    <para>
+     Paramétrez les options suivantes :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode "secure crc"
+</screen>
+    <note>
+     <para>
+      Vérifiez que <literal>secure</literal> se trouve devant <literal>crc</literal>.
+     </para>
+    </note>
+    <para>
+     Pour <emphasis>forcer le mode </emphasis> <literal>secure</literal>, exécutez les commandes suivantes :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode secure
+</screen>
+    <tip xml:id="update-inflight-encryption-settings">
+     <title>mise à jour des paramètres</title>
+     <para>
+      Si vous souhaitez modifier l'un des paramètres ci-dessus, définissez les modifications à apporter à la configuration dans la zone de stockage de la configuration du moniteur. Pour ce faire, utilisez la commande <command>ceph config set</command>.
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global <replaceable>CONNECTION_OPTION</replaceable> <replaceable>CONNECTION_MODE</replaceable> [--force]</screen>
+     <para>
+      Par exemple :
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global ms_cluster_mode "secure crc"</screen>
+     <para>
+      Si vous souhaitez vérifier la valeur actuelle, y compris la valeur par défaut, exécutez la commande suivante :
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get <replaceable>CEPH_COMPONENT</replaceable> <replaceable>CONNECTION_OPTION</replaceable></screen>
+     <para>
+      Par exemple, pour obtenir le mode <literal>ms_cluster_mode</literal> pour les OSD, exécutez :
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get osd ms_cluster_mode</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-enable-network">
+    <title>Configuration du réseau de grappes</title>
+    <para>
+     Éventuellement, si vous exécutez un réseau de grappe distinct, vous devrez peut-être définir l'adresse IP réseau de la grappe suivie de la partie masque de sous-réseau après la barre oblique, par exemple <literal>192.168.10.22/24</literal>.
+    </para>
+    <para>
+     Exécutez les commandes suivantes pour activer <literal>cluster_network</literal> :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set cluster_network <replaceable>NETWORK_ADDR</replaceable>
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-verify">
+    <title>Vérification de la configuration de la grappe</title>
+    <para>
+     La configuration de grappe minimale est terminée. Inspectez-la pour voir si elle contient des d'erreurs flagrantes :
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [Minions: 5]
+  | | o- ses-master.example.com .................................. [admin]
+  | | o- ses-min1.example.com ......................... [bootstrap, admin]
+  | | o- ses-min2.example.com ................................. [no roles]
+  | | o- ses-min3.example.com ................................. [no roles]
+  | | o- ses-min4.example.com ................................. [no roles]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [Minions: 2]
+  |   | o- ses-master.example.com ....................... [no other roles]
+  |   | o- ses-min1.example.com ................. [other roles: bootstrap]
+  |   o- bootstrap ................................ [ses-min1.example.com]
+  |   o- cephadm ............................................ [Minions: 5]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path ............... [registry.suse.com/ses/7/ceph/ceph]
+  | o- dashboard ................................................... [...]
+  |   o- force_password_update ................................. [enabled]
+  |   o- password ................................... [randomly generated]
+  |   o- username ................................................ [admin]
+  | o- mon_ip ............................................ [192.168.10.20]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh .................................................. [Key Pair set]
+  | o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  | o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- time_server ............................................... [enabled]
+    o- external_servers .............................................. [1]
+    | o- 0.pt.pool.ntp.org ......................................... [...]
+    o- servers ....................................................... [1]
+    | o- ses-master.example.com .................................... [...]
+    o- subnet ............................................. [10.20.6.0/24]
+</screen>
+    <tip>
+     <title>état de la configuration de la grappe</title>
+     <para>
+      Vous pouvez vérifier si la configuration de la grappe est valide en exécutant la commande suivante :
+     </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt status
+cluster: 5 minions, 0 hosts managed by cephadm
+config: OK
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-export">
+    <title>Exportation des configurations de grappe</title>
+    <para>
+     Une fois que vous avez configuré la grappe de base et que sa configuration est valide, il est recommandé d'exporter sa configuration dans un fichier :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt export &gt; cluster.json</screen>
+    <warning>
+     <para>
+      La sortie de l'exportation <command>ceph-salt export</command> inclut la clé privée SSH. Si les implications au niveau de la sécurité vous inquiètent, n'exécutez pas cette commande sans prendre les précautions appropriées.
+     </para>
+    </warning>
+    <para>
+     Si vous interrompez la configuration de la grappe et que vous devez rétablir un état de sauvegarde, exécutez :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt import cluster.json</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-deploy">
+   <title>Mise à jour des noeuds et de la grappe minimale de démarrage</title>
+   <para>
+    Avant de déployer la grappe, mettez à jour tous les paquetages logiciels sur l'ensemble des noeuds :
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update</screen>
+   <para>
+    Si un noeud signale <literal>Reboot is needed</literal> (Redémarrage requis) au cours de la mise à jour, cela signifie que des paquetages de système d'exploitation importants, tels que le kernel, ont été mis à jour vers une version plus récente. Vous devrez alors redémarrer le noeud pour que les modifications soient prises en compte.
+   </para>
+   <para>
+    Pour redémarrer tous les noeuds requis, ajoutez l'option <option>--reboot</option>.
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update --reboot</screen>
+   <para>
+    Vous pouvez également les redémarrer dans le cadre d'une étape distincte :
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt reboot</screen>
+   <important>
+    <para>
+     Salt Master n'est jamais redémarré par les commandes <command>ceph-salt update --reboot</command> ou <command>ceph-salt reboot</command>. Si Salt Master doit être redémarré, vous devez le redémarrer manuellement.
+    </para>
+   </important>
+   <para>
+    Une fois les noeuds mis à jour, démarrez la grappe minimale :
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply</screen>
+   <note>
+    <para>
+     Une fois démarrée, la grappe dispose d'une instance de Ceph Monitor et d'une instance de Ceph Manager.
+    </para>
+   </note>
+   <para>
+    La commande ci-dessus ouvre une interface utilisateur interactive qui affiche la progression actuelle de chaque minion.
+   </para>
+   <figure>
+    <title>Déploiement d'une grappe minimale</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <tip>
+    <title>mode non interactif</title>
+    <para>
+     Si vous devez appliquer la configuration à partir d'un script, il existe également un mode de déploiement non interactif. Ce mode est aussi utile lors du déploiement de la grappe à partir d'une machine distante, car la mise à jour constante des informations de progression à l'écran sur le réseau risque de vous distraire :
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply --non-interactive</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="deploy-min-cluster-final-steps">
+   <title>Examen des dernières étapes</title>
+   <para>
+    Une fois la commande <command>ceph-salt apply</command> exécutée, vous devez disposer d'une instance de Ceph Monitor et d'une instance de Ceph Manager. Vous devriez pouvoir exécuter la commande <command>ceph status</command> sur n'importe quel minion ayant reçu le rôle <literal>admin</literal> en tant que <literal>root</literal> ou sur l'utilisateur de <literal>cephadm</literal> à l'aide de <literal>sudo</literal>.
+   </para>
+   <para>
+    Pour les étapes suivantes, vous devrez utiliser cephadm pour déployer des instances Ceph Monitor ou Ceph Manager, des OSD, la pile de surveillance et des passerelles supplémentaires.
+   </para>
+   <para>
+    Avant de continuer, passez en revue les paramètres réseau de votre nouvelle grappe. À ce stade, le paramètre <literal>public_network</literal> a été renseigné en fonction de ce qui a été entré pour <literal>/cephadm_bootstrap/mon_ip</literal> dans la configuration <literal>ceph-salt</literal>. Toutefois, ce paramètre était uniquement appliqué à Ceph Monitor. Vous pouvez vérifier ce paramètre à l'aide de la commande suivante :
+   </para>
+<screen><prompt>root@master # </prompt>ceph config get mon public_network</screen>
+   <para>
+    Il s'agit du paramètre minimal pour que Ceph puisse fonctionner, mais nous vous recommandons de définir le paramètre <literal>public_network</literal> sur <literal>global</literal>, ce qui signifie qu'il s'appliquera à tous les types de daemons Ceph, et pas uniquement aux instances MON :
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set global public_network "$(ceph config get mon public_network)"</screen>
+   <note>
+    <para>
+     Cette étape n'est pas obligatoire. Toutefois, si vous n'utilisez pas ce paramètre, les OSD Ceph et les autres daemons (à l'exception de Ceph Monitor) écouteront <emphasis>toutes les adresses</emphasis>.
+    </para>
+    <para>
+     Si vous souhaitez que vos OSD communiquent entre eux au moyen d'un réseau totalement distinct, exécutez la commande suivante :
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global cluster_network "<replaceable>cluster_network_in_cidr_notation</replaceable>"</screen>
+    <para>
+     L'exécution de cette commande garantit que les OSD créés dans votre déploiement utiliseront le réseau de grappe prévu dès le début.
+    </para>
+   </note>
+   <para>
+    Si votre grappe est configurée pour contenir des noeuds denses (plus de 62 OSD par hôte), veillez à assigner suffisamment de ports aux OSD Ceph. La plage par défaut (6800-7300) n'autorise pas plus de 62 OSD par hôte. Pour une grappe contenant des noeuds denses, configurez le paramètre <literal>ms_bind_port_max</literal> sur une valeur appropriée. Chaque OSD consomme huit ports supplémentaires. Par exemple, si un hôte est configuré pour exécuter 96 OSD, 768 ports seront nécessaires. <literal>ms_bind_port_max</literal> doit au moins être défini sur 7568 en exécutant la commande suivante :
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set osd.* ms_bind_port_max 7568</screen>
+   <para>
+    Vous devrez ajuster vos paramètres de pare-feu en conséquence pour que cela fonctionne. Pour plus d'informations, reportez-vous au <xref linkend="storage-bp-net-firewall"/>.
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day2">
+  <title>Déploiement de services et de passerelles</title>
+
+  <para>
+   Après avoir déployé la grappe Ceph de base, déployez les services principaux sur d'autres noeuds de la grappe. Pour que les clients puissent accéder aux données de la grappe, déployez aussi des services supplémentaires.
+  </para>
+
+  <para>
+   Actuellement, nous prenons en charge le déploiement des services Ceph sur la ligne de commande à l'aide de l'orchestrateur Ceph (sous-commandes <command>ceph orch</command>).
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch">
+   <title>Commande <command>ceph orch</command></title>
+   <para>
+    La commande de l'orchestrateur Ceph <command>ceph orch</command>, qui sert d'interface avec le module cephadm, se charge d'établir la liste les composants de la grappe et de déployer les services Ceph sur les nouveaux noeuds de la grappe.
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-orch-status">
+    <title>Affichage de l'état de l'orchestrateur</title>
+    <para>
+     La commande suivante affiche le mode et l'état actuels de l'orchestrateur Ceph.
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch status</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-orch-list">
+    <title>Liste des périphériques, services et daemons</title>
+    <para>
+     Pour obtenir la liste de tous les périphériques de disque, exécutez la commande suivante :
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch device ls
+Hostname   Path      Type  Serial  Size   Health   Ident  Fault  Available
+ses-master /dev/vdb  hdd   0d8a... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdc  hdd   8304... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdd  hdd   7b81... 10.7G  Unknown  N/A    N/A    No
+[...]
+</screen>
+    <tip>
+     <title>services et daemons</title>
+     <para>
+      <emphasis>Service</emphasis> est un terme général désignant un service Ceph d'un type spécifique, par exemple Ceph Manager.
+     </para>
+     <para>
+      <emphasis>Daemon</emphasis> est une instance spécifique d'un service, par exemple un processus <literal>mgr.ses-min1.gdlcik</literal> exécuté sur un noeud <literal>appelé ses-min1</literal>.
+     </para>
+    </tip>
+    <para>
+     Pour obtenir la liste de tous les services connus de cephadm, exécutez :
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls
+NAME  RUNNING  REFRESHED  AGE  PLACEMENT  IMAGE NAME                  IMAGE ID
+mgr       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+mon       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+</screen>
+    <tip>
+     <para>
+      Vous pouvez limiter la liste aux services d'un noeud en particulier avec le paramètre facultatif <option>-–host</option> et aux services d'un type particulier avec le paramètre facultatif 
+<option>‑‑service-type</option> (les types acceptables sont <literal>mon</literal>, <literal>osd</literal>, <literal>mgr</literal>, <literal>mds</literal> et <literal>rgw</literal>).
+     </para>
+    </tip>
+    <para>
+     Pour obtenir la liste de tous les daemons en cours d'exécution déployés par cephadm, exécutez :
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps
+NAME            HOST     STATUS   REFRESHED AGE VERSION    IMAGE ID     CONTAINER ID
+mgr.ses-min1.gd ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd b8104e09814c
+mon.ses-min1    ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd a719e0087369
+</screen>
+    <tip>
+     <para>
+      Pour interroger l'état d'un daemon en particulier, utilisez <option>‑‑daemon_type</option> 
+et <option>‑‑daemon_id</option>. Pour les OSD, l'ID est l'ID numérique de l'OSD. Pour MDS, l'ID est le nom du système de fichiers :
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type osd --daemon_id 0
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type mds --daemon_id my_cephfs
+</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="cephadm-service-and-placement-specs">
+   <title>Spécification de service et de placement</title>
+   <para>
+    La méthode recommandée pour spécifier le déploiement des services Ceph consiste à créer un fichier au format YAML spécifiant les services que vous avez l'intention de déployer.
+   </para>
+   <sect3 xml:id="cephadm-service-spec">
+    <title>Création de spécifications de service</title>
+    <para>
+     Vous pouvez créer un fichier de spécifications distinct pour chaque type de service, par exemple :
+    </para>
+<screen>
+<prompt>root@master # </prompt>cat nfs.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <para>
+     Vous pouvez également spécifier plusieurs (ou tous les) types de service dans un fichier (par exemple, <filename>cluster.yml</filename>) pour décrire les noeuds qui exécuteront des services spécifiques. N'oubliez pas de séparer les différents types de services par trois tirets (<literal>---</literal>) :
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+---
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+---
+[...]
+</screen>
+    <para>
+     Les propriétés susmentionnées ont la signification suivante :
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><literal>service_type</literal></term>
+      <listitem>
+       <para>
+        Type de service. Il peut s'agir d'un service Ceph (<literal>mon</literal>, <literal>mgr</literal>, <literal>mds</literal>, <literal>crash</literal>, <literal>osd</literal> ou <literal>rbd-mirror</literal>), d'une passerelle (<literal>nfs</literal> ou <literal>rgw</literal>) ou d'une partie de la pile de surveillance (<literal>alertmanager</literal>, <literal>grafana</literal>, <literal>node-exporter</literal> ou <literal>prometheus</literal>).
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>service_id</literal></term>
+      <listitem>
+       <para>
+        Nom du service. Les spécifications de type <literal>mon</literal>, <literal>mgr</literal>, <literal>alertmanager</literal>, <literal>grafana</literal>, <literal>node-exporter</literal> et <literal>prometheus</literal> ne nécessitent pas la propriété <literal>service_id</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>placement</literal></term>
+      <listitem>
+       <para>
+        Spécifie les noeuds qui exécuteront le service. Reportez-vous à la <xref linkend="cephadm-placement-specs"/> pour plus de détails.
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>spec</literal></term>
+      <listitem>
+       <para>
+        Spécification supplémentaire pertinente pour le type de service.
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <tip>
+     <title>application de services spécifiques</title>
+     <para>
+      Les services de grappe Ceph ont généralement un certain nombre de propriétés intrinsèques. Pour obtenir des exemples et des détails sur la spécification des différents services, reportez-vous à la <xref linkend="deploy-cephadm-day2-services"/>.
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="cephadm-placement-specs">
+    <title>Création d'une spécification de placement</title>
+    <para>
+     Pour déployer les services Ceph, cephadm doit savoir sur quels noeuds les déployer. Utilisez la propriété <literal>placement</literal> et répertoriez les noms d'hôte courts des noeuds auxquels le service s'applique :
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+[...]
+placement:
+  hosts:
+  - host1
+  - host2
+  - host3
+[...]
+</screen>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs">
+    <title>Application de la spécification de grappe</title>
+    <para>
+     Après avoir créé un fichier <filename>cluster.yml</filename> complet avec les spécifications de tous les services et leur placement, vous pouvez appliquer la grappe en exécutant la commande suivante :
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i cluster.yml</screen>
+    <para>
+     Pour afficher l'état de la grappe, exécutez la commande <command>ceph orch status</command>. Pour plus de détails, reportez-vous à la <xref linkend="deploy-cephadm-day2-orch-status"/>.
+    </para>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs-">
+    <title>Exportation de la spécification d'une grappe en cours d'exécution</title>
+    <para>
+     Bien que vous ayez déployé des services sur la grappe Ceph à l'aide des fichiers de spécifications comme décrit à la <xref linkend="cephadm-service-and-placement-specs"/>, la configuration de la grappe peut être différente de la spécification d'origine lors de son fonctionnement. Il se peut également que vous ayez accidentellement supprimé les fichiers de spécifications.
+    </para>
+    <para>
+     Pour récupérer une spécification complète d'une grappe en cours d'exécution, exécutez :
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls --export
+placement:
+  hosts:
+  - hostname: ses-min1
+    name: ''
+    network: ''
+service_id: my_cephfs
+service_name: mds.my_cephfs
+service_type: mds
+---
+placement:
+  count: 2
+service_name: mgr
+service_type: mgr
+---
+[...]
+</screen>
+    <tip>
+     <para>
+      Vous pouvez ajouter l'option <option>--format</option> pour modifier le format de sortie <literal>yaml</literal> par défaut. Vous pouvez choisir entre <literal>json</literal>, <literal>json-attractive</literal> ou <literal>yaml</literal>. Par exemple :
+     </para>
+<screen>ceph orch ls --export --format json</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-services">
+   <title>Déploiement des services Ceph</title>
+   <para>
+    Une fois la grappe de base en cours d'exécution, vous pouvez déployer des services Ceph sur d'autres noeuds.
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-service-mon">
+    <title>Déploiement d'instances de Monitor et Ceph Manager</title>
+    <para>
+     La grappe Ceph comporte trois ou cinq instances MON déployées sur différents noeuds. Si la grappe contient au moins cinq noeuds, il est recommandé de déployer cinq instances MON. Une bonne pratique consiste à déployer les instances MGR sur les mêmes noeuds que les instances MON.
+    </para>
+    <important>
+     <title>inclusion de l'instance MON de démarrage</title>
+     <para>
+      Lorsque vous déployez des instances MON et MGR, n'oubliez pas d'inclure la première instance MON que vous avez ajoutée lors de la configuration de la grappe de base à la <xref linkend="deploy-cephadm-configure-mon"/>.
+     </para>
+    </important>
+    <para>
+     Pour déployer des instances MON, appliquez la spécification suivante :
+    </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <note>
+     <para>
+      Si vous devez ajouter un autre noeud, ajoutez le nom d'hôte à la même liste YAML. Par exemple :
+     </para>
+<screen>
+service_type: mon
+placement:
+ hosts:
+ - ses-min1
+ - ses-min2
+ - ses-min3
+ - ses-min4
+</screen>
+    </note>
+    <para>
+     De la même manière, pour déployer des instances MGR, appliquez la spécification suivante :
+    </para>
+    <important>
+     <para>
+      Assurez-vous que votre déploiement contient au moins trois instances Ceph Manager dans chaque déploiement.
+     </para>
+    </important>
+<screen>
+service_type: mgr
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <tip>
+     <para>
+      Si les instances MON ou MGR ne se trouvent <emphasis>pas</emphasis> dans le même sous-réseau, vous devez ajouter les adresses de sous-réseau. Par exemple :
+     </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1:10.1.2.0/24
+  - ses-min2:10.1.5.0/24
+  - ses-min3:10.1.10.0/24
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-osd">
+    <title>Déploiement des OSD Ceph</title>
+    <important>
+     <title>lorsque le périphérique de stockage est disponible</title>
+     <para>
+      Un périphérique de stockage est considéré comme <emphasis>disponible</emphasis> si toutes les conditions suivantes sont remplies :
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        Le périphérique n'a pas de partitions.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Le périphérique n'a pas d'état LVM.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Le périphérique n'est pas monté.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Le périphérique ne contient pas de système de fichiers.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Le périphérique ne contient pas d'OSD BlueStore.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        La taille du périphérique est supérieure à 5 Go.
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      Si les conditions ci-dessus ne sont pas remplies, Ceph refuse de provisionner ces OSD.
+     </para>
+    </important>
+    <para>
+     Deux méthodes permettent de déployer des OSD :
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Indiquez à Ceph de consommer tous les périphériques de stockage disponibles et inutilisés :
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd --all-available-devices</screen>
+     </listitem>
+     <listitem>
+      <para>
+       Utilisez DriveGroups (reportez-vous au <xref linkend="drive-groups"/>) pour créer une spécification OSD décrivant les périphériques qui seront déployés sur la base de leurs propriétés, telles que le type de périphérique (SSD ou HDD), les noms de modèle de périphérique, la taille ou les noeuds sur lesquels les périphériques existent. Appliquez ensuite la spécification en exécutant la commande suivante :
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd -i drive_groups.yml</screen>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-mds">
+    <title>Déploiement de serveurs de métadonnées</title>
+    <para>
+     CephFS nécessite un ou plusieurs services de serveur de métadonnées (MDS). Pour créer un CephFS, commencez par créer des serveurs MDS en appliquant la spécification suivante :
+    </para>
+    <note>
+     <para>
+      Assurez-vous d'avoir créé au moins deux réserves, l'une pour les données CephFS et l'autre pour les métadonnées CephFS, avant d'appliquer la spécification suivante.
+     </para>
+    </note>
+<screen>
+service_type: mds
+service_id: <replaceable>CEPHFS_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <para>
+     Une fois que les MDS sont fonctionnels, créez le CephFS :
+    </para>
+<screen>ceph fs new <replaceable>CEPHFS_NAME</replaceable> <replaceable>metadata_pool</replaceable> <replaceable>data_pool</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-ogw">
+    <title>Déploiement d'instances Object Gateway</title>
+    <para>
+     cephadm déploie Object Gateway en tant qu'ensemble de daemons qui gèrent un <emphasis>domaine</emphasis> et une <emphasis>zone</emphasis> spécifique.
+    </para>
+    <para>
+     Vous pouvez soit associer un service Object Gateway à une zone et un domaine préexistants (reportez-vous au <xref linkend="ceph-rgw-fed"/> pour plus de détails) ou vous pouvez spécifier des noms <replaceable>NOM_DOMAINE</replaceable> et <replaceable>NOM_ZONE</replaceable> n'existant pas encore. Ils seront créés automatiquement après avoir appliqué la configuration suivante :
+    </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+</screen>
+    <sect4 xml:id="cephadm-deploy-using-secure-ssl-access">
+     <title>Utilisation d'un accès SSL sécurisé</title>
+     <para>
+      Pour utiliser une connexion SSL sécurisée à l'instance Object Gateway, vous avez besoin d'une paire de certificats SSL et de fichiers de clé valides (reportez-vous au <xref linkend="ceph-rgw-https"/> pour plus de détails). Vous devez activer SSL, spécifier un numéro de port pour les connexions SSL, ainsi que le certificat SSL et les fichiers de clé.
+     </para>
+     <para>
+      Pour activer SSL et spécifier le numéro de port, incluez les éléments suivants dans votre spécification :
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+</screen>
+     <para>
+      Pour spécifier le certificat et la clé SSL, vous pouvez coller leur contenu directement dans le fichier de spécifications YAML. Le signe de barre verticale (<literal>|</literal>) à la fin de la ligne indique à l'analyseur de s'attendre à une valeur contenant une chaîne s'étendant sur plusieurs lignes. Par exemple :
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+  rgw_frontend_ssl_certificate: |
+   -----BEGIN CERTIFICATE-----
+   MIIFmjCCA4KgAwIBAgIJAIZ2n35bmwXTMA0GCSqGSIb3DQEBCwUAMGIxCzAJBgNV
+   BAYTAkFVMQwwCgYDVQQIDANOU1cxHTAbBgNVBAoMFEV4YW1wbGUgUkdXIFNTTCBp
+   [...]
+   -----END CERTIFICATE-----
+   rgw_frontend_ssl_key: |
+   -----BEGIN PRIVATE KEY-----
+   MIIJRAIBADANBgkqhkiG9w0BAQEFAASCCS4wggkqAgEAAoICAQDLtFwg6LLl2j4Z
+   BDV+iL4AO7VZ9KbmWIt37Ml2W6y2YeKX3Qwf+3eBz7TVHR1dm6iPpCpqpQjXUsT9
+   [...]
+   -----END PRIVATE KEY-----
+</screen>
+     <tip>
+      <para>
+       Au lieu de coller le contenu du certificat SSL et des fichiers de clé, vous pouvez omettre les mots-clés <literal>rgw_frontend_ssl_certificate:</literal> et <literal>rgw_frontend_ssl_key:</literal> et les télécharger dans la base de données de configuration :
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.crt \
+ -i <replaceable>SSL_CERT_FILE</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.key \
+ -i <replaceable>SSL_KEY_FILE</replaceable>
+</screen>
+     </tip>
+    </sect4>
+    <sect4 xml:id="cephadm-deploy-with-subcluster">
+     <title>Déploiement avec une sous-grappe</title>
+     <para>
+      Les <emphasis>sous-grappes</emphasis> vous aident à organiser les noeuds de vos grappes afin d'isoler les workloads et de gagner en flexibilité. Si vous effectuez un déploiement avec une sous-grappe, appliquez la configuration suivante :
+     </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>.<replaceable>SUBCLUSTER</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+  subcluster: <replaceable>SUBCLUSTER</replaceable>
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-igw">
+    <title>Déploiement de passerelles iSCSI</title>
+    <para>
+     cephadm déploie une passerelle iSCSI, à savoir un protocole SAN (Storage area network) qui permet aux clients (appelés initiateurs) d'envoyer des commandes SCSI aux périphériques de stockage SCSI (cibles) sur des serveurs distants.
+    </para>
+    <para>
+     Appliquez la configuration suivante pour effectuer le déploiement. Assurez-vous que la liste <literal>trusted_ip_list</literal> contient les adresses IP de tous les noeuds de passerelle iSCSI et Ceph Manager (comme dans l'exemple de sortie ci-dessous).
+    </para>
+    <note>
+     <para>
+      Vérifiez que la réserve a été créée avant d'appliquer la spécification suivante.
+     </para>
+    </note>
+<screen>
+service_type: iscsi
+service_id: <replaceable>EXAMPLE_ISCSI</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  api_user: <replaceable>EXAMPLE_USER</replaceable>
+  api_password: <replaceable>EXAMPLE_PASSWORD</replaceable>
+  trusted_ip_list: "<replaceable>IP_ADDRESS_1</replaceable>,<replaceable>IP_ADDRESS_2</replaceable>"
+</screen>
+    <note>
+     <para>
+      Assurez-vous que les adresses IP répertoriées pour <literal>trusted_ip_list</literal> ne contiennent <emphasis>pas</emphasis> d'espace après la séparation par une virgule.
+     </para>
+    </note>
+    <sect4>
+     <title>Configuration SSL sécurisée</title>
+     <para>
+      Pour utiliser une connexion SSL sécurisée entre Ceph Dashboard et l'API cible iSCSI, vous avez besoin d'une paire de fichiers de clés et de certificats SSL valides. Ceux-ci peuvent être émis par une autorité de certification ou auto-signés (reportez-vous au <xref linkend="self-sign-certificates"/>). Pour activer SSL, ajoutez le paramètre <literal>api_secure: true</literal> à votre fichier de spécifications :
+     </para>
+<screen>
+spec:
+  api_secure: true
+</screen>
+     <para>
+      Pour spécifier le certificat et la clé SSL, vous pouvez coller le contenu directement dans le fichier de spécifications YAML. Le signe de barre verticale (<literal>|</literal>) à la fin de la ligne indique à l'analyseur de s'attendre à une valeur contenant une chaîne s'étendant sur plusieurs lignes. Par exemple :
+     </para>
+<screen>
+spec:
+  pool: EXAMPLE_POOL
+  api_user: EXAMPLE_USER
+  api_password: EXAMPLE_PASSWORD
+  trusted_ip_list: "IP_ADDRESS_1,IP_ADDRESS_2"
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-nfs">
+    <title>Déploiement de NFS Ganesha</title>
+    <para>
+     cephadm déploie NFS Ganesha à l'aide d'une réserve RADOS prédéfinie et d'un espace de nom facultatif. Pour déployer NFS Ganesha, appliquez la spécification suivante :
+    </para>
+    <note>
+     <para>
+      Vous devez disposer d'une réserve RADOS prédéfinie, sinon l'opération <command>ceph orch apply</command> échouera. Pour plus d'informations sur la création d'une, reportez-vous au <xref linkend="ceph-pools-operate-add-pool"/>.
+     </para>
+    </note>
+<screen>
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>EXEMPLE_NFS</replaceable> avec une chaîne arbitraire qui identifie l'exportation NFS.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXEMPLE_RÉSERVE</replaceable> avec le nom de la réserve dans laquelle l'objet de configuration NFS Ganesha RADOS sera stocké.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXEMPLE_ESPACE_DE_NOM</replaceable> (facultatif) avec l'espace de nom NFS Object Gateway souhaité (par exemple, <literal>ganesha</literal>).
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-rbdmirror">
+    <title>Déploiement de <systemitem class="daemon">rbd-mirror</systemitem></title>
+    <para>
+     Le service <systemitem class="daemon">rbd-mirror</systemitem> prend en charge la synchronisation des images de périphériques de bloc RADOS entre deux grappes Ceph (pour plus de détails, reportez-vous au <xref linkend="ceph-rbd-mirror"/>). Pour déployer <systemitem class="daemon">rbd-mirror</systemitem>, utilisez la spécification suivante :
+    </para>
+<screen>
+service_type: rbd-mirror
+service_id: <replaceable>EXAMPLE_RBD_MIRROR</replaceable>
+placement:
+  hosts:
+  - ses-min3
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-monitoring">
+    <title>Déploiement de la pile de surveillance</title>
+    <para>
+     La pile de surveillance se compose de Prometheus, d'exportateurs Prometheus, de Prometheus Alertmanager et de Grafana. Ceph Dashboard utilise ces composants pour stocker et visualiser des mesures détaillées concernant l'utilisation et les performances de la grappe.
+    </para>
+    <tip>
+     <para>
+      Si votre déploiement nécessite des images de conteneur personnalisées ou mises à disposition localement pour les services de pile de surveillance, reportez-vous au <xref linkend="monitoring-custom-images"/>.
+     </para>
+    </tip>
+    <para>
+     Pour déployer la pile de surveillance, procédez comme suit :
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Activez le module <literal>prometheus</literal> dans le daemon Ceph Manager. Cela permet de rendre visibles les mesures Ceph internes afin que Prometheus puisse les lire :
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable prometheus</screen>
+      <note>
+       <para>
+        Assurez-vous que cette commande est exécutée avant le déploiement de Prometheus. Si la commande n'a pas été exécutée avant le déploiement, vous devez redéployer Prometheus pour mettre à jour la configuration de Prometheus :
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch redeploy prometheus</screen>
+      </note>
+     </step>
+     <step>
+      <para>
+       Créez un fichier de spécifications (par exemple, <filename>monitoring.yaml</filename>) dont le contenu ressemble à ce qui suit :
+      </para>
+<screen>
+service_type: prometheus
+placement:
+  hosts:
+  - ses-min2
+---
+service_type: node-exporter
+---
+service_type: alertmanager
+placement:
+  hosts:
+  - ses-min4
+---
+service_type: grafana
+placement:
+  hosts:
+  - ses-min3
+</screen>
+     </step>
+     <step>
+      <para>
+       Appliquez les services de surveillance en exécutant :
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i monitoring.yaml</screen>
+      <para>
+       Le déploiement des services de surveillance peut prendre une à deux minutes.
+      </para>
+     </step>
+    </procedure>
+    <important>
+     <para>
+      Prometheus, Grafana et Ceph Dashboard sont tous automatiquement configurés pour pouvoir communiquer entre eux, ce qui permet une intégration Grafana entièrement fonctionnelle dans Ceph Dashboard lorsque le déploiement a été effectué comme décrit ci-dessus.
+     </para>
+     <para>
+      La seule exception à cette règle est la surveillance avec des images RBD. Pour plus d'informations, reportez-vous au <xref linkend="monitoring-rbd-image"/>.
+     </para>
+    </important>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

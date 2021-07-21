@@ -1,0 +1,829 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deployment_cifs.xml" version="5.0" xml:id="cha-ses-cifs">
+
+ <title>通过 Samba 导出 Ceph 数据</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>是</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  本章介绍如何通过 Samba/CIFS 共享导出 Ceph 集群中存储的数据，以便您可从 Windows* 客户端计算机轻松访问这些数据。另外还介绍了有助于您将 Ceph Samba 网关配置为加入到 Windows* 域中的 Active Directory 以进行用户身份验证和授权的信息。
+ </para>
+ <note>
+  <title>Samba 网关性能</title>
+  <para>
+   由于客户端与存储区之间的额外网络跃点会导致协议开销增加并产生额外的延迟，因此与使用本机 Ceph 客户端相比，通过 Samba 网关访问 CephFS 可能会使应用性能大幅降低。
+  </para>
+ </note>
+ <sect1 xml:id="cephfs-samba">
+  <title>通过 Samba 共享导出 CephFS</title>
+
+  <warning>
+   <title>跨协议访问</title>
+   <para>
+    本机 CephFS 和 NFS 客户端不受通过 Samba 获取的文件锁定限制，反之亦然。如果通过其他方式访问 CephFS 支持的 Samba 共享路径，则依赖跨协议文件锁定的应用可能会出现数据损坏情况。
+   </para>
+  </warning>
+
+  <sect2 xml:id="cephfs-samba-packages">
+   <title>配置和导出 Samba 包</title>
+   <para>
+    要配置和导出 Samba 共享，需要安装以下包： <package>samba-ceph</package> 和
+    <package>samba-winbind</package>。如尚未安装这些包，请运行以下命令进行安装：
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>zypper install samba-ceph samba-winbind
+</screen>
+  </sect2>
+
+  <sect2 xml:id="sec-ses-cifs-example">
+   <title>单个网关示例</title>
+   <para>
+    在导出 Samba 共享的准备过程中，需要选择用于充当 Samba 网关的合适节点。该节点必须能访问 Ceph 客户端网络，同时要有足够的 CPU、内存和网络资源。
+   </para>
+   <para>
+    可以通过 CTDB 和 SUSE Linux Enterprise High Availability Extension 提供故障转移功能。有关 HA 设置的详细信息，请参见<xref linkend="sec-ses-cifs-ha"/>。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      请确保集群中已存在一个正常工作的 CephFS。
+     </para>
+    </step>
+    <step>
+     <para>
+      在 Ceph 管理节点上创建一个特定于 Samba 网关的密钥环，并将其复制到两个 Samba 网关节点：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt><command>ceph</command> auth get-or-create client.samba.gw mon 'allow r' \
+ osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
+<prompt>cephuser@adm &gt; </prompt><command>scp</command> ceph.client.samba.gw.keyring <replaceable>SAMBA_NODE</replaceable>:/etc/ceph/</screen>
+     <para>
+      将 <replaceable>SAMBA_NODE</replaceable> 替换为 Samba 网关节点的名称。
+     </para>
+    </step>
+    <step>
+     <para>
+      在 Samba 网关节点上执行以下步骤。将 Samba 连同 Ceph 集成包一起安装：
+     </para>
+<screen><prompt>cephuser@smb &gt; </prompt>sudo zypper in samba samba-ceph</screen>
+    </step>
+    <step>
+     <para>
+      将 <filename>/etc/samba/smb.conf</filename> 文件的默认内容替换为以下内容：
+     </para>
+<screen>
+[global]
+  netbios name = SAMBA-GW
+  clustering = no
+  idmap config * : backend = tdb2
+  passdb backend = tdbsam
+  # disable print server
+  load printers = no
+  smbd: backgroundqueue = no
+
+[<replaceable>SHARE_NAME</replaceable>]
+  path = <replaceable>CEPHFS_MOUNT</replaceable>
+  read only = no
+  oplocks = no
+  kernel share modes = no
+ </screen>
+     <para>
+      在启动具有内核 CephFS 共享配置的 Samba 之前，必须先装入上面的 <replaceable>CEPHFS_MOUNT</replaceable> 路径。请参见<xref linkend="ceph-cephfs-cephfs-fstab"/>。
+     </para>
+     <para>
+      上面的共享配置使用 Linux 内核 CephFS 客户端，这是出于性能原因建议使用的客户端。作为替代方案，也可以使用 Samba <systemitem>vfs_ceph</systemitem> 模块与 Ceph 集群通讯。以下说明仅适用于旧版，不建议用于新的 Samba 部署：
+     </para>
+<screen>
+[<replaceable>SHARE_NAME</replaceable>]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+  kernel share modes = no
+</screen>
+     <tip>
+      <title>Oplocks 和共享模式</title>
+      <para>
+       <option>oplocks</option>（也称为 SMB2+ 租用）可通过加速客户端缓存来提升性能，不过如果将其他 CephFS 客户端（例如内核 <literal>mount.ceph</literal>、FUSE 或 NFS Ganesha）与 Samba 一起部署，该机制目前并不安全。
+      </para>
+      <para>
+       如果所有 CephFS 文件系统路径访问都专由 Samba 处理，则可安全启用 <option>oplocks</option> 参数。
+      </para>
+      <para>
+       目前，在使用 CephFS vfs 扩展模块运行的共享中，需要禁用 <option>kernel share modes</option>，文件处理工作才能正常进行。
+      </para>
+     </tip>
+     <important>
+      <title>允许访问</title>
+      <para>
+       Samba 可将 SMB 用户和组映射到本地帐户。可以通过以下命令为本地用户指定 Samba 共享访问的密码：
+      </para>
+<screen>
+<prompt role="root">root # </prompt>smbpasswd -a <replaceable>USERNAME</replaceable>
+</screen>
+      <para>
+       对于成功的 I/O，共享路径的访问控制列表 (ACL) 需要允许访问通过 Samba 连接的用户。您可以通过 CephFS 内核客户端暂时装入，并对共享路径使用 <command>chmod</command>、<command>chown</command> 或 <command>setfacl</command> 实用程序来修改 ACL。例如，要允许所有用户进行访问，请运行以下命令：
+      </para>
+<screen>
+<prompt role="root">root # </prompt>chmod 777 <replaceable>MOUNTED_SHARE_PATH</replaceable>
+</screen>
+     </important>
+    </step>
+   </procedure>
+   <sect3 xml:id="samba-service-restart">
+    <title>启动 Samba 服务</title>
+    <para>
+     使用以下命令可启动或重启动独立的 Samba 服务：
+    </para>
+<screen>
+<prompt role="root">root # </prompt>systemctl restart smb.service
+<prompt role="root">root # </prompt>systemctl restart nmb.service
+<prompt role="root">root # </prompt>systemctl restart winbind.service
+</screen>
+    <para>
+     要确保会在引导时启动 Samba 服务，请通过以下命令将其启用：
+    </para>
+<screen>
+<prompt role="root">root # </prompt>systemctl enable smb.service
+<prompt role="root">root # </prompt>systemctl enable nmb.service
+<prompt role="root">root # </prompt>systemctl enable winbind.service
+</screen>
+    <tip>
+     <title>可选的 <systemitem class="daemon">nmb</systemitem> 和 <systemitem class="daemon">winbind</systemitem> 服务</title>
+     <para>
+      如果不需要浏览网络共享，则无需启用和启动 <systemitem class="daemon">nmb</systemitem> 服务。
+     </para>
+     <para>
+      仅当配置为 Active Directory 域成员时才需要 <systemitem class="daemon">winbind</systemitem> 服务。请参见<xref linkend="cephfs-ad"/>。
+     </para>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="sec-ses-cifs-ha">
+   <title>配置高可用性</title>
+   <important>
+    <title>不支持透明故障转移</title>
+    <para>
+     尽管多节点 Samba + CTDB 部署比单节点部署的高可用性更佳（请参见<xref linkend="cha-ses-cifs"/>），但它并不支持客户端透明故障转移。应用可能会在 Samba 网关节点发生故障时出现短暂的中断。
+    </para>
+   </important>
+   <para>
+    本节提供一个示例来说明如何设置 Samba 服务器的双节点高可用性配置。该设置需要 SUSE Linux Enterprise High Availability Extension。两个节点分别名为 <systemitem class="domainname">earth</systemitem> (<systemitem class="ipaddress">192.168.1.1</systemitem>) 和 <systemitem class="domainname">mars</systemitem> (<systemitem class="ipaddress">192.168.1.2</systemitem>)。
+   </para>
+   <para>
+    有关 SUSE Linux Enterprise High Availability Extension 的详细信息，请参见 <link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/"/>。
+   </para>
+   <para>
+    此外，使用两个浮动虚拟 IP 地址可让客户端连接到服务，不管该服务在哪个物理节点上运行均如此。<systemitem class="ipaddress">192.168.1.10</systemitem> 用于通过 Hawk2 进行集群管理，<systemitem class="ipaddress">192.168.2.1</systemitem> 专门用于 CIFS 导出。这样，以后便可更轻松地应用安全限制。
+   </para>
+   <para>
+    以下过程介绍示例安装。<link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/single-html/SLE-HA-install-quick/"/> 上提供了更多详细信息。
+   </para>
+   <procedure xml:id="proc-sec-ses-cifs-ha">
+    <step>
+     <para>
+      在管理节点上创建一个特定于 Samba 网关的密钥环，并将其复制到上述两个节点上：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt><command>ceph</command> auth get-or-create client.samba.gw mon 'allow r' \
+    osd 'allow *' mds 'allow *' -o ceph.client.samba.gw.keyring
+<prompt>cephuser@adm &gt; </prompt><command>scp</command> ceph.client.samba.gw.keyring <systemitem class="domainname">earth</systemitem>:/etc/ceph/
+<prompt>cephuser@adm &gt; </prompt><command>scp</command> ceph.client.samba.gw.keyring <systemitem class="domainname">mars</systemitem>:/etc/ceph/</screen>
+    </step>
+    <step>
+     <para>
+      SLE-HA 设置需要一个隔离设备，以避免在活动集群节点变为未同步时出现<emphasis>节点分裂</emphasis>情况。为此，您可以将 Ceph RBD 映像与 Stonith 块设备 (SBD) 搭配使用。有关更多详细信息，请参见 <link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/single-html/SLE-HA-guide/#sec-ha-storage-protect-fencing-setup"/>。
+     </para>
+     <para>
+      如果该映像尚不存在，则创建一个名为 <literal>rbd</literal> 的 RBD 存储池（参见<xref linkend="ceph-pools-operate-add-pool"/>），并将其与 <literal>rbd</literal> 相关联（参见<xref linkend="ceph-pools-associate"/>）。然后创建一个名为 <literal>sbd01</literal> 的相关 RBD 映像：
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool create rbd
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool application enable rbd rbd
+<prompt>cephuser@adm &gt; </prompt>rbd -p rbd create sbd01 --size 64M --image-shared
+</screen>
+    </step>
+    <step>
+     <para>
+      准备好 <systemitem class="domainname">earth</systemitem> 和 <systemitem class="domainname">mars</systemitem>，以托管 Samba 服务：
+     </para>
+     <substeps>
+      <step>
+       <para>
+        在继续下一步之前，请确保已安装以下包：
+        <package>ctdb</package>、 <package>tdb-tools</package>和
+        <package>samba</package>。
+       </para>
+<screen><prompt role="root">root # </prompt><command>zypper</command> in ctdb tdb-tools samba samba-ceph</screen>
+      </step>
+      <step>
+       <para>
+        确保已停止并禁用 Samba 和 CTDB 服务：
+       </para>
+<screen><prompt role="root">root # </prompt>systemctl disable ctdb
+<prompt role="root">root # </prompt>systemctl disable smb
+<prompt role="root">root # </prompt>systemctl disable nmb
+<prompt role="root">root # </prompt>systemctl disable winbind
+<prompt role="root">root # </prompt>systemctl stop ctdb
+<prompt role="root">root # </prompt>systemctl stop smb
+<prompt role="root">root # </prompt>systemctl stop nmb
+<prompt role="root">root # </prompt>systemctl stop winbind</screen>
+      </step>
+      <step>
+       <para>
+        在所有节点上打开防火墙的端口 <literal>4379</literal>。这是为了使 CTDB 能够与其他集群节点通讯。
+       </para>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      在 <systemitem class="domainname">earth</systemitem> 上创建 Samba 的配置文件。这些文件稍后将自动同步到 <systemitem class="domainname">mars</systemitem>。
+     </para>
+     <substeps>
+      <step>
+       <para>
+        在 <filename>/etc/ctdb/nodes</filename> 文件中插入 Samba 网关节点的专用 IP 地址列表。有关更多详细信息，请参见 ctdb 手册页 (<command>man 7 ctdb</command>)。
+       </para>
+<screen>192.168.1.1
+192.168.1.2</screen>
+      </step>
+      <step>
+       <para>
+        配置 Samba。在 <filename>/etc/samba/smb.conf</filename> 的 <literal>[global]</literal> 部分中添加以下行。使用所选的主机名取代 <replaceable>CTDB-SERVER</replaceable>（集群中的所有节点将显示为一个使用此名称的大节点，以方便操作）。另外，添加一个共享定义，以 <replaceable>SHARE_NAME</replaceable> 为例：
+       </para>
+<screen>
+[global]
+  netbios name = SAMBA-HA-GW
+  clustering = yes
+  idmap config * : backend = tdb2
+  passdb backend = tdbsam
+  ctdbd socket = /var/lib/ctdb/ctdb.socket
+  # disable print server
+  load printers = no
+  smbd: backgroundqueue = no
+
+[SHARE_NAME]
+  path = /
+  vfs objects = ceph
+  ceph: config_file = /etc/ceph/ceph.conf
+  ceph: user_id = samba.gw
+  read only = no
+  oplocks = no
+  kernel share modes = no
+</screen>
+       <para>
+        请注意，<filename>/etc/ctdb/nodes</filename> 和 <filename>/etc/samba/smb.conf</filename> 文件需要在所有 Samba 网关节点上都保持一致。
+       </para>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      安装并引导 SUSE Linux Enterprise High Availability 集群。
+     </para>
+     <substeps>
+      <step>
+       <para>
+        在 <systemitem class="domainname">earth</systemitem> 和 <systemitem class="domainname">mars</systemitem> 上注册 SUSE Linux Enterprise High Availability Extension：
+       </para>
+<screen><prompt>root@earth # </prompt><command>SUSEConnect</command> -r <replaceable>ACTIVATION_CODE</replaceable> -e <replaceable>E_MAIL</replaceable></screen>
+<screen><prompt>root@mars # </prompt><command>SUSEConnect</command> -r <replaceable>ACTIVATION_CODE</replaceable> -e <replaceable>E_MAIL</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        安装 <package>ha-cluster-bootstrap</package> ：
+       </para>
+<screen><prompt>root@earth # </prompt><command>zypper</command> in ha-cluster-bootstrap</screen>
+<screen><prompt>root@mars # </prompt><command>zypper</command> in ha-cluster-bootstrap</screen>
+      </step>
+      <step>
+       <para>
+        通过 <systemitem class="daemon">rbdmap.service</systemitem> 在两个 Samba 网关上映射 RBD 映像 <literal>sbd01</literal>。
+       </para>
+       <para>
+        编辑 <filename>/etc/ceph/rbdmap</filename> 并添加 SBD 映像的条目：
+       </para>
+<screen>rbd/sbd01 id=samba.gw,keyring=/etc/ceph/ceph.client.samba.gw.keyring</screen>
+       <para>
+        启用并启动 <systemitem class="daemon">rbdmap.service</systemitem>：
+       </para>
+<screen>
+<prompt>root@earth # </prompt>systemctl enable rbdmap.service &amp;&amp; systemctl start rbdmap.service
+<prompt>root@mars # </prompt>systemctl enable rbdmap.service &amp;&amp; systemctl start rbdmap.service
+</screen>
+       <para>
+        <filename>/dev/rbd/rbd/sbd01</filename> 设备应在两个 Samba 网关上都可用。
+       </para>
+      </step>
+      <step>
+       <para>
+        初始化 <systemitem class="domainname">earth</systemitem> 上的集群并让 <systemitem class="domainname">mars</systemitem> 加入它。
+       </para>
+<screen><prompt>root@earth # </prompt><command>ha-cluster-init</command></screen>
+<screen><prompt>root@mars # </prompt><command>ha-cluster-join</command> -c earth</screen>
+       <important>
+        <para>
+         在初始化和加入集群的过程中，会以交互方式询问您是否使用 SBD。点击 <option>y</option> 进行确认，然后将 <filename>/dev/rbd/rbd/sbd01</filename> 指定为存储设备的路径。
+        </para>
+       </important>
+      </step>
+     </substeps>
+    </step>
+    <step>
+     <para>
+      检查集群的状态。您应该会看到两个节点都已添加到集群中：
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> status
+2 nodes configured
+1 resource configured
+
+Online: [ earth mars ]
+
+Full list of resources:
+
+ admin-ip       (ocf::heartbeat:IPaddr2):       Started earth</screen>
+    </step>
+    <step>
+     <para>
+      在 <systemitem class="domainname">earth</systemitem> 上执行以下命令，以配置 CTDB 资源：
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> configure
+<prompt>crm(live)configure# </prompt><command>primitive</command> ctdb ocf:heartbeat:CTDB params \
+    ctdb_manages_winbind="false" \
+    ctdb_manages_samba="false" \
+    ctdb_recovery_lock="!/usr/lib64/ctdb/ctdb_mutex_ceph_rados_helper
+        ceph client.samba.gw cephfs_metadata ctdb-mutex"
+    ctdb_socket="/var/lib/ctdb/ctdb.socket" \
+        op monitor interval="10" timeout="20" \
+        op start interval="0" timeout="200" \
+        op stop interval="0" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> smb systemd:smb \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> nmb systemd:nmb \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>primitive</command> winbind systemd:winbind \
+    op start timeout="100" interval="0" \
+    op stop timeout="100" interval="0" \
+    op monitor interval="60" timeout="100"
+<prompt>crm(live)configure# </prompt><command>group</command> g-ctdb ctdb winbind nmb smb
+<prompt>crm(live)configure# </prompt><command>clone</command> cl-ctdb g-ctdb meta interleave="true"
+<prompt>crm(live)configure# </prompt><command>commit</command></screen>
+     <tip>
+      <title>可选的 <systemitem class="daemon">nmb</systemitem> 和 <systemitem class="daemon">winbind</systemitem> 基元</title>
+      <para>
+       如果不需要浏览网络共享，则无需添加 <systemitem class="daemon">nmb</systemitem> 基元。
+      </para>
+      <para>
+       仅当配置为 Active Directory 域成员时才需要 <systemitem class="daemon">winbind</systemitem> 基元。请参见<xref linkend="cephfs-ad"/>。
+      </para>
+     </tip>
+     <para>
+      配置选项 <literal>ctdb_recovery_lock</literal> 中的二进制文件 <command>/usr/lib64/ctdb/ctdb_mutex_ceph_rados_helper</command> 中按如下顺序包含以下参数：<replaceable>CLUSTER_NAME</replaceable>、<replaceable>CEPHX_USER</replaceable>、<replaceable>RADOS_POOL</replaceable> 和 <replaceable>RADOS_OBJECT</replaceable>。
+     </para>
+     <para>
+      可追加一个额外的锁定超时参数来覆盖所用的默认值（10 秒）。使用更高的值将会增加 CTDB 恢复主节点故障转移时间，然而使用更低的值可能会导致不正确地将恢复主节点检测为停用状态，以致触发摆动故障转移。
+     </para>
+    </step>
+    <step>
+     <para>
+      添加集群 IP 地址：
+     </para>
+<screen><prompt>crm(live)configure# </prompt><command>primitive</command> ip ocf:heartbeat:IPaddr2
+    params ip=192.168.2.1 \
+    unique_clone_address="true" \
+    op monitor interval="60" \
+    meta resource-stickiness="0"
+<prompt>crm(live)configure# </prompt><command>clone</command> cl-ip ip \
+    meta interleave="true" clone-node-max="2" globally-unique="true"
+<prompt>crm(live)configure# </prompt><command>colocation</command> col-with-ctdb 0: cl-ip cl-ctdb
+<prompt>crm(live)configure# </prompt><command>order</command> o-with-ctdb 0: cl-ip cl-ctdb
+<prompt>crm(live)configure# </prompt><command>commit</command></screen>
+     <para>
+      如果 <literal>unique_clone_address</literal> 设置为 <literal>true</literal>，IPaddr2 资源代理将向指定的地址添加一个克隆 ID，从而导致出现三个不同的 IP 地址。这些地址通常是不需要的，但有助于实现负载平衡。有关此主题的更多信息，请参见 <link xlink:href="https://documentation.suse.com/sle-ha/15-SP1/single-html/SLE-HA-guide/#cha-ha-lb"/>。
+     </para>
+    </step>
+    <step>
+     <para>
+      检查结果：
+     </para>
+<screen><prompt>root@earth # </prompt><command>crm</command> status
+Clone Set: base-clone [dlm]
+     Started: [ factory-1 ]
+     Stopped: [ factory-0 ]
+ Clone Set: cl-ctdb [g-ctdb]
+     Started: [ factory-1 ]
+     Started: [ factory-0 ]
+ Clone Set: cl-ip [ip] (unique)
+     ip:0       (ocf:heartbeat:IPaddr2):       Started factory-0
+     ip:1       (ocf:heartbeat:IPaddr2):       Started factory-1</screen>
+    </step>
+    <step>
+     <para>
+      从客户端计算机进行测试。在 Linux 客户端上运行以下命令，以检查能否从系统复制文件以及将文件复制到系统：
+     </para>
+<screen><prompt role="root">root # </prompt><command>smbclient</command> <option>//192.168.2.1/myshare</option></screen>
+    </step>
+   </procedure>
+   <sect3 xml:id="samba-ha-service-restart">
+    <title>重启动 HA Samba 资源</title>
+    <para>
+     发生任何 Samba 或 CTDB 配置更改后，可能需要重启动 HA 资源才能使更改生效。这可通过以下命令实现：
+    </para>
+<screen><prompt role="root">root # </prompt><command>crm</command> resource restart cl-ctdb</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cephfs-ad">
+  <title>加入 Samba 网关和 Active Directory</title>
+
+  <para>
+   您可以将 Ceph Samba 网关配置为支持 Active Directory (AD) 的 Samba 域的成员。作为 Samba 域成员，您可以针对来自导出 CephFS 的文件和目录在本地访问列表 (ACL) 中使用域用户和组。
+  </para>
+
+  <sect2 xml:id="cephfs-ad-preparation">
+   <title>准备 Samba 安装</title>
+   <para>
+    本节介绍在配置 Samba 自身之前，您需要执行的一些准备步骤。首先，您需要准备一个干净的环境，这样有助于防止混淆，并可确认以前所安装的 Samba 系统中的文件没有与新安装的域成员混用。
+   </para>
+   <tip>
+    <title>同步时钟</title>
+    <para>
+     所有 Samba 网关节点的时钟都需要与 Active Directory 域控制器保持同步。时钟偏差可能会导致身份验证失败。
+    </para>
+   </tip>
+   <para>
+    确认没有正在运行的 Samba 或名称缓存进程：
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>ps ax | egrep "samba|smbd|nmbd|winbindd|nscd"
+</screen>
+   <para>
+    如果输出列出了任何 <literal>samba</literal>、<literal>smbd</literal>、<literal>nmbd</literal>、<literal>winbindd</literal> 或 <literal>nscd</literal> 进程，请将其停止。
+   </para>
+   <para>
+    如果您之前在此主机上运行过 Samba 安装，请删除 <filename>/etc/samba/smb.conf</filename> 文件。另外，请删除所有 Samba 数据库文件（例如 <filename>*.tdb</filename> 和 <filename>*.ldb</filename> 文件）。要列出包含 Samba 数据库的目录，请运行以下命令：
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>smbd -b | egrep "LOCKDIR|STATEDIR|CACHEDIR|PRIVATE_DIR"
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-dns">
+   <title>确认 DNS</title>
+   <para>
+    Active Directory (AD) 使用 DNS 来查找域控制器 (DC) 和服务（例如 Kerberos）。因此，AD 域成员和服务器需要能够解析 AD DNS 区域。
+   </para>
+   <para>
+    确认已正确配置 DNS 且正向和反向查找均可正确解析，例如：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>nslookup DC1.domain.example.com
+Server:         10.99.0.1
+Address:        10.99.0.1#53
+
+Name:   DC1.domain.example.com
+Address: 10.99.0.1
+</screen>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>10.99.0.1
+Server:        10.99.0.1
+Address:	10.99.0.1#53
+
+1.0.99.10.in-addr.arpa	name = DC1.domain.example.com.
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-srv">
+   <title>解析 SRV 记录</title>
+   <para>
+    AD 使用 SRV 记录查找服务（例如 Kerberos 和 LDAP）。要确认能否正确解析 SRV 记录，请使用 <command>nslookup</command> 交互外壳，例如：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>nslookup
+Default Server:  10.99.0.1
+Address:  10.99.0.1
+
+&gt; set type=SRV
+&gt; _ldap._tcp.domain.example.com.
+Server:  UnKnown
+Address:  10.99.0.1
+
+_ldap._tcp.domain.example.com   SRV service location:
+          priority       = 0
+          weight         = 100
+          port           = 389
+          svr hostname   = dc1.domain.example.com
+domain.example.com      nameserver = dc1.domain.example.com
+dc1.domain.example.com  internet address = 10.99.0.1
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-kerberos">
+   <title>配置 Kerberos</title>
+   <para>
+    Samba 支持 Heimdal 和 MIT Kerberos 后端。要对域成员配置 Kerberos，请在您的 <filename>/etc/krb5.conf</filename> 文件中进行以下设置：
+   </para>
+<screen>
+[libdefaults]
+	default_realm = DOMAIN.EXAMPLE.COM
+	dns_lookup_realm = false
+	dns_lookup_kdc = true
+</screen>
+   <para>
+    上面的示例为 DOMAIN.EXAMPLE.COM 领域配置了 Kerberos。我们不建议在 <filename>/etc/krb5.conf</filename> 文件中设置任何进一步的参数。如果您的 <filename>/etc/krb5.conf</filename> 中包含 <literal>include</literal> 行，则您<emphasis role="bold">必须</emphasis>删除此行，否则该文件将无法工作。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-local-resolution">
+   <title>解析本地主机名</title>
+   <para>
+    当您将主机加入域中时，Samba 会尝试在 AD DNS 区域中注册其主机名。为此，<command>net</command> 实用程序需要能够使用 DNS 或 <filename>/etc/hosts</filename> 文件中的正确条目来解析主机名。
+   </para>
+   <para>
+    要确认您的主机名解析正确，请使用 <command>getent hosts</command> 命令：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>getent hosts example-host
+10.99.0.5      example-host.domain.example.com    example-host
+</screen>
+   <para>
+    主机名和 FQDN 不得解析为 127.0.0.1 IP 地址或与域成员的 LAN 接口上所用 IP 地址不同的任何 IP 地址。如果未显示输出或主机解析为错误的 IP 地址，而您未在使用 DHCP，请在 <filename>/etc/hosts</filename> 文件中设置正确的条目：
+   </para>
+<screen>
+127.0.0.1      localhost
+10.99.0.5      example-host.samdom.example.com    example-host
+</screen>
+   <tip>
+    <title>DHCP 和 <filename>/etc/hosts</filename></title>
+    <para>
+     如果您在使用 DHCP，请检查 <filename>/etc/hosts</filename> 是否仅包含“127.0.0.1”行。如果仍然有问题，请联系 DHCP 服务器的管理员。
+    </para>
+    <para>
+     如果您需要添加计算机主机名的别名，请将别名添加到以计算机 IP 地址开头的行的末尾，切勿添加到“127.0.0.1”行。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-smb-conf">
+   <title>配置 Samba</title>
+   <para>
+    本节说明有关您需要在 Samba 配置中包含的特定配置选项的信息。
+   </para>
+   <para>
+    Active Directory 域成员资格主要通过在 <filename>/etc/samba/smb.conf</filename> 的 <literal>[global]</literal> 部分中设置 <literal>security = ADS</literal> 以及相应的 Kerberos 领域和 ID 映射参数进行配置。
+   </para>
+<screen>
+[global]
+  security = ADS
+  workgroup = DOMAIN
+  realm = DOMAIN.EXAMPLE.COM
+  ...
+</screen>
+   <sect3 xml:id="smb-backend-id-mapping-winbindd">
+    <title>选择 <systemitem>winbindd</systemitem> 中用于 ID 映射的后端</title>
+    <para>
+     如果您需要让您的用户使用不同的登录外壳和/或 Unix 主目录路径，或者让他们在任何地方都使用相同的 ID，您需要使用 winbind“ad”后端并将 RFC2307 属性添加到 AD 中。
+    </para>
+    <important>
+     <title>RFC2307 属性和 ID 号</title>
+     <para>
+      创建用户或组时，系统不会自动添加 RFC2307 属性。
+     </para>
+     <para>
+      DC 上找到的 ID 号（3000000 范围内的编号）<emphasis>不是</emphasis> RFC2307 属性，将不会在 Unix 域成员上使用。如果您需要在任何地方都使用相同的 ID 号，请将 <literal>uidNumber</literal> 和 <literal>gidNumber</literal> 属性添加到 AD 中，并在 Unix 域成员上使用 winbind“ad”后端。如果您决定将 <literal>uidNumber</literal> 和 <literal>gidNumber</literal> 属性添加到 AD 中，请不要使用 3000000 范围内的编号。
+     </para>
+    </important>
+    <para>
+     如果您的用户仅将 Samba AD DC 用于身份验证目的，而不会在其上存储数据或登录到其中，则您可使用 winbind“rid”后端。如此，系统会依据 Windows* RID 来计算用户和组 ID。如果您在每个 Unix 域成员上的 <filename>smb.conf</filename> 中都使用相同的 <literal>[global]</literal> 段落，您将会获得相同的 ID。如果您使用“rid”后端，则不需要向 AD 添加任何内容，系统将会忽略 RFC2307 属性。使用“rid”后端时，请在 <filename>smb.conf</filename> 中设置 <option>template shell</option> 和 <option>template homedir</option> 参数。它们是全局设置，会为所有用户设置相同的登录外壳和 Unix 主目录路径（RFC2307 属性则不同，可用来分别设置不同的 Unix 主目录路径和外壳）。
+    </para>
+    <para>
+     如果您需要让您的用户和组在任何地方都使用相同的 ID，但只需要为他们设置相同的登录外壳和相同的 Unix 主目录路径，还可使用另一种方法来设置 Samba。您可以通过使用 winbind“ad”后端并在 <filename>smb.conf</filename> 中使用模板行来实现此目的。使用此方法时，您仅需将 <literal>uidNumber</literal> 和 <literal>gidNumber</literal> 属性添加到 AD 中。
+    </para>
+    <tip>
+     <title>有关 ID 映射后端的更多信息</title>
+     <para>
+      有关可用 ID 映射后端的详细信息，请参见下列相关手册页：<command>man 8 idmap_ad</command>、<command>man 8 idmap_rid</command> 和 <command>man 8 idmap_autorid</command>。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="smb-setting-user-group-id-ranges">
+    <title>设置用户和组 ID 范围</title>
+    <para>
+     决定好使用哪个 winbind 后端后，您需要在 <filename>smb.conf</filename> 中设置 <option>idmap config</option> 选项来指定要使用的范围。默认情况下，Unix 域成员上预留有多个用户和组 ID 块：
+    </para>
+    <table>
+     <title>默认用户和组 ID 块</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+     <tgroup cols="2">
+      <thead>
+       <row>
+        <entry>ID</entry>
+        <entry>范围</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>0-999</entry>
+        <entry>本地系统用户和组。</entry>
+       </row>
+       <row>
+        <entry>从 1000 开始</entry>
+        <entry>本地 Unix 用户和组。</entry>
+       </row>
+       <row>
+        <entry>从 10000 开始</entry>
+        <entry>DOMAIN 用户和组。</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+    <para>
+     根据上述范围，您不应将“*”或“DOMAIN”范围设置为 999 以内，因为它们会与本地系统用户和组发生冲突。您还应为任何本地 Unix 用户和组留出余地，因此将 <option>idmap config</option> 范围设置为从 3000 开始是不错的折衷方法。
+    </para>
+    <para>
+     您需要确定“DOMAIN”可能会增长到多大，并决定是否打算建立任何受信任的域。然后，便可按如下所示来设置 <option>idmap config</option> 范围：
+    </para>
+    <table>
+     <title>ID 范围</title>
+<?dbhtml table-width="50%" ?>
+
+
+<?dbfo table-width="50%" ?>
+
+
+     <tgroup cols="2">
+      <thead>
+       <row>
+        <entry>域</entry>
+        <entry>范围</entry>
+       </row>
+      </thead>
+      <tbody>
+       <row>
+        <entry>*</entry>
+        <entry>3000-7999</entry>
+       </row>
+       <row>
+        <entry>DOMAIN</entry>
+        <entry>10000-999999</entry>
+       </row>
+       <row>
+        <entry>TRUSTED</entry>
+        <entry>1000000-9999999</entry>
+       </row>
+      </tbody>
+     </tgroup>
+    </table>
+   </sect3>
+   <sect3 xml:id="smb-mapping-domain-admin-account-local">
+    <title>将域管理员帐户映射到本地 <systemitem class="username">root</systemitem> 用户</title>
+    <para>
+     Samba 可让您将域帐户映射到本地帐户。通过此功能，您可以用不同于客户端上请求执行操作的帐户的用户身份在域成员的文件系统上执行文件操作。
+    </para>
+    <tip>
+     <title>映射域管理员（可选）</title>
+     <para>
+      将域管理员映射到本地 <systemitem class="username">root</systemitem> 帐户属于可选操作。请仅在域管理员需要能够使用 <systemitem class="username">root</systemitem> 权限在域成员上执行文件操作时配置该映射。请注意，将 Administrator 映射到 <systemitem class="username">root</systemitem> 帐户后，其便不能以“Administrator”身份登录 Unix 域成员。
+     </para>
+    </tip>
+    <para>
+     要将域管理员映射到本地 <systemitem class="username">root</systemitem> 帐户，请执行以下步骤：
+    </para>
+    <procedure>
+     <step>
+      <para>
+       将以下参数添加到 <filename>smb.conf</filename> 文件的 <literal>[global]</literal> 段落：
+      </para>
+<screen>
+username map = /etc/samba/user.map
+</screen>
+     </step>
+     <step>
+      <para>
+       创建包含以下内容的 <filename>/etc/samba/user.map</filename> 文件：
+      </para>
+<screen>
+!root = <replaceable>DOMAIN</replaceable>\Administrator
+</screen>
+     </step>
+    </procedure>
+    <important>
+     <para>
+      使用“ad”ID 映射后端时，请不要为域管理员帐户设置 <option>uidNumber</option> 属性。如果为域管理员帐户设置了该属性，其值会覆盖 <systemitem class="username">root</systemitem> 用户的本地 UID“0”，因而会导致映射失败。
+     </para>
+    </important>
+    <para>
+     有关详细信息，请参见 <filename>smb.conf</filename> 手册页 (<command>man 5 smb.conf</command>) 中的 <option>username map</option> 参数。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-joining">
+   <title>加入 Active Directory 域</title>
+   <para>
+    要将主机加入 Active Directory，请运行以下命令：
+   </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>net ads join -U administrator
+Enter administrator's password: <replaceable>PASSWORD</replaceable>
+Using short domain name -- <replaceable>DOMAIN</replaceable>
+Joined <replaceable>EXAMPLE-HOST</replaceable> to dns domain <replaceable>'DOMAIN</replaceable>.example.com'
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-nss">
+   <title>配置名称服务开关</title>
+   <para>
+    要使域用户和组可供本地系统使用，您需要启用名称服务开关 (NSS) 库。在 <filename>/etc/nsswitch.conf</filename> 文件中，将 <option>winbind</option> 条目追加到以下数据库：
+   </para>
+<screen>
+passwd: files winbind
+group:  files winbind
+</screen>
+   <important>
+    <title>需考虑的要点</title>
+    <itemizedlist>
+     <listitem>
+      <para>
+       将 <option>files</option> 条目指定为这两个数据库的第一个源。这可让 NSS 在查询 <systemitem class="daemon">winbind</systemitem> 服务之前，先从 <filename>/etc/passwd</filename> 和 <filename>/etc/group</filename> 文件中查找域用户和组。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       不要将 <option>winbind</option> 条目添加到 NSS <literal>shadow</literal> 数据库中。这样做可能会导致 <command>wbinfo</command> 实用程序失败。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       不要在本地 <filename>/etc/passwd</filename> 文件中使用与域中相同的用户名。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </important>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-services">
+   <title>启动服务</title>
+   <para>
+    在配置更改后，根据<xref linkend="samba-service-restart"/>或<xref linkend="samba-ha-service-restart"/>中所述重启动 Samba 服务。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephfs-ad-testing">
+   <title>测试 <systemitem class="daemon">winbindd</systemitem> 连接性</title>
+   <sect3 xml:id="cephfs-ad-send-ping">
+    <title>发送 <systemitem class="daemon">winbindd</systemitem> ping</title>
+    <para>
+     要验证 <systemitem class="daemon">winbindd</systemitem> 服务能否连接到 AD 域控制器 (DC) 或主域控制器 (PDC)，请输入以下命令：
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>wbinfo --ping-dc
+checking the NETLOGON for domain[<replaceable>DOMAIN</replaceable>] dc connection to "DC.DOMAIN.EXAMPLE.COM" succeeded
+</screen>
+    <para>
+     如果前一条命令失败，请确认 <systemitem class="daemon">winbindd</systemitem> 服务正在运行且 <filename>smb.conf</filename> 文件设置正确。
+    </para>
+   </sect3>
+   <sect3 xml:id="smb-domain-users-groups-cephfs">
+    <title>查找域用户和组</title>
+    <para>
+     您可以使用 <systemitem>libnss_winbind</systemitem> 库查找域用户和组。例如，要查找域用户“DOMAIN\demo01”，请运行以下命令：
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>getent passwd DOMAIN\\demo01
+DOMAIN\demo01:*:10000:10000:demo01:/home/demo01:/bin/bash
+</screen>
+    <para>
+     要查找域组“Domain Users”，请运行以下命令：
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>getent group "DOMAIN\\Domain Users"
+DOMAIN\domain users:x:10000:
+</screen>
+   </sect3>
+   <sect3 xml:id="smb-assign-file-perms-domain-users-groups">
+    <title>为域用户和组指定文件权限</title>
+    <para>
+     借助名称服务开关 (NSS) 库，您可以在命令中使用域用户帐户和组。例如，要将文件的所有者设置为“demo01”域用户，并将组设置为“Domain Users”域组，请输入以下命令：
+    </para>
+<screen>
+<prompt>cephuser@smb &gt; </prompt>chown "DOMAIN\\demo01:DOMAIN\\domain users" file.txt
+</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>

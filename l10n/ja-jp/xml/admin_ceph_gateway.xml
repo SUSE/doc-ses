@@ -1,0 +1,2708 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="admin_ceph_gateway.xml" version="5.0" xml:id="cha-ceph-gw">
+
+ <title>Ceph Object Gateway</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  この章では、サービスの状態の確認、アカウントの管理、マルチサイトゲートウェイ、LDAP認証など、Object Gatewayに関連する管理タスクについて詳しく説明します。
+ </para>
+ <sect1 xml:id="sec-ceph-rgw-limits">
+  <title>Object Gatewayの制約と命名の制限</title>
+
+  <para>
+   次に、Object Gatewayの重要な制限のリストを示します。
+  </para>
+
+  <sect2 xml:id="ogw-limits-bucket">
+   <title>バケットの制限</title>
+   <para>
+    S3 API経由でObject Gatewayに接続する場合、バケット名はDNSに準拠した名前(ダッシュ文字「-」は使用可能)に制限されます。Swift API経由でObject Gatewayに接続する場合は、UTF-8でサポートされている文字(スラッシュ文字「/」を除く)を自由に組み合わせて使用できます。バケット名の最大長は255文字です。バケット名は固有でなければなりません。
+   </para>
+   <tip>
+    <title>DNSに準拠したバケット名</title>
+    <para>
+     Swift API経由ではUTF-8ベースのバケット名を使用できますが、同じバケットにS3 API経由でアクセスする際に問題が起きないよう、バケットにはS3の命名制限に従った名前を付けることをお勧めします。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ogw-limits-object">
+   <title>保存オブジェクトの制限</title>
+   <variablelist>
+    <varlistentry>
+     <term>ユーザあたりのオブジェクトの最大数</term>
+     <listitem>
+      <para>
+       デフォルトでは制限はありません(最大2^63に制限)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>バケットあたりのオブジェクトの最大数</term>
+     <listitem>
+      <para>
+       デフォルトでは制限はありません(最大2^63に制限)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>アップロード/保存するオブジェクトの最大サイズ</term>
+     <listitem>
+      <para>
+       1回のアップロードは5GBに制限されます。これより大きいオブジェクトサイズにはマルチパートを使用してください。マルチパートチャンクの最大数は10000です。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ogw-limits-http">
+   <title>HTTPヘッダの制限</title>
+   <para>
+    HTTPヘッダと要求の制限は、使用するWebフロントエンドによって異なります。デフォルトのBeastでは、HTTPヘッダのサイズは16kBに制限されています。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ogw-deploy">
+  <title>Object Gatewayの展開</title>
+
+  <para>
+   Ceph Object Gatewayの展開方法は、その他のCephサービスの展開手順と同じ、つまりcephadmを使用します。詳細については、<xref linkend="cephadm-service-and-placement-specs"/>、また、具体的には<xref linkend="deploy-cephadm-day2-service-ogw"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="ceph-rgw-operating">
+  <title>Object Gatewayサービスの操作</title>
+
+  <para>
+   その他のCephサービスと同じようにObject Gatewayを操作できます。その場合、まず、<command>ceph orch ps</command>コマンドを使用してサービス名を特定し、次のコマンドを実行してサービスを操作します。次に例を示します。
+  </para>
+
+<screen>ceph orch daemon restart <replaceable>OGW_SERVICE_NAME</replaceable></screen>
+
+  <para>
+   Cephサービスの操作の詳細については、<xref linkend="cha-ceph-operating"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="ogw-config-parameters">
+  <title>設定オプション</title>
+
+  <para>
+   Object Gatewayの設定オプションのリストについては、<xref linkend="config-ogw"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="ceph-rgw-access">
+  <title>Object Gatewayのアクセスの管理</title>
+
+  <para>
+   S3またはSwiftと互換性のあるインタフェースを使用してObject Gatewayと通信できます。S3インタフェースは、Amazon S3 RESTful APIの大規模なサブセットと互換性があります。Swiftインタフェースは、OpenStack Swift APIの大規模なサブセットと互換性があります。
+  </para>
+
+  <para>
+   どちらのインタフェースも、ユーザの秘密鍵を使用してゲートウェイと通信するには、特定のユーザを作成し、関連するクライアントソフトウェアをインストールする必要があります。
+  </para>
+
+  <sect2 xml:id="accessing-ragos-gateway">
+   <title>Object Gatewayへのアクセス</title>
+   <sect3 xml:id="ogw-s3-interface-access">
+    <title>S3インタフェースへのアクセス</title>
+    <para>
+     S3インタフェースにアクセスするには、RESTクライアントが必要です。<command>S3cmd</command>はコマンドラインのS3クライアントです。これは、<link xlink:href="https://build.opensuse.org/package/show/Cloud:Tools/s3cmd">OpenSUSEビルドサービス</link>にあります。このリポジトリには、SUSE Linux EnterpriseベースおよびopenSUSEベースの両方の配布パッケージ用のバージョンがあります。
+    </para>
+    <para>
+     S3インタフェースへのアクセスをテストする場合、簡単なPythonスクリプトを作成することもできます。このスクリプトは、Object Gatewayに接続して新しいバケットを作成し、すべてのバケットを一覧にします。<option>aws_access_key_id</option>および<option>aws_secret_access_key</option>の値は、<xref linkend="adding-s3-swift-users"/>の<command>radosgw_admin</command>コマンドによって返される<option>access_key</option>および<option>secret_key</option>の値から取得されます。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       <systemitem>python-boto</systemitem>パッケージをインストールします。
+      </para>
+<screen><prompt role="root">root # </prompt>zypper in python-boto</screen>
+     </step>
+     <step>
+      <para>
+       次の内容で、<filename>s3test.py</filename>という名前の新しいPythonスクリプトを作成します。<remark role="fixme">Provide script in RPM? Is it really necessary to create pool? This script is not necessary at all, remove it from documentation?</remark>
+      </para>
+<screen>import boto
+import boto.s3.connection
+access_key = '11BS02LGFB6AL6H1ADMW'
+secret_key = 'vzCEkuryfn060dfee4fgQPqFrncKEIkh3ZcdOANY'
+conn = boto.connect_s3(
+aws_access_key_id = access_key,
+aws_secret_access_key = secret_key,
+host = '<replaceable>HOSTNAME</replaceable>',
+is_secure=False,
+calling_format = boto.s3.connection.OrdinaryCallingFormat(),
+)
+bucket = conn.create_bucket('my-new-bucket')
+for bucket in conn.get_all_buckets():
+  print "<replaceable>NAME</replaceable>\t<replaceable>CREATED</replaceable>".format(
+  name = bucket.name,
+  created = bucket.creation_date,
+  )</screen>
+      <para>
+       <literal><replaceable>HOSTNAME</replaceable></literal>は、Object Gatewayサービスを設定したホストのホスト名に置き換えてください。たとえば、<literal>gateway_host</literal>です。
+      </para>
+     </step>
+     <step>
+      <para>
+       スクリプトを実行します。
+      </para>
+<screen>python s3test.py</screen>
+      <para>
+       次のような内容が出力されます。
+      </para>
+<screen>my-new-bucket 2015-07-22T15:37:42.000Z</screen>
+     </step>
+    </procedure>
+   </sect3>
+   <sect3 xml:id="swift-interface-access">
+    <title>Swiftインタフェースへのアクセス</title>
+    <para>
+     SwiftインタフェースでObject Gatewayにアクセスするには、<command>swift</command>コマンドラインクライアントが必要です。コマンドラインオプションについては、マニュアルページ<command>man 1 swift</command>を参照してください。
+    </para>
+    <para>
+     このパッケージは、SP3以降のSUSE Linux Enterprise 12およびSUSE Linux Enterprise 15の「パブリッククラウド」モジュールに含まれています。パッケージをインストールする前に、このモジュールを有効にしてソフトウェアリポジトリを更新する必要があります。
+    </para>
+<screen><prompt role="root">root # </prompt>SUSEConnect -p sle-module-public-cloud/12/<replaceable>SYSTEM-ARCH</replaceable>
+sudo zypper refresh</screen>
+    <para>
+     または
+    </para>
+<screen><prompt role="root">root # </prompt>SUSEConnect -p sle-module-public-cloud/15/<replaceable>SYSTEM-ARCH</replaceable>
+<prompt role="root">root # </prompt>zypper refresh</screen>
+    <para>
+     <command>swift</command>コマンドをインストールするには、次のコマンドを実行します。
+    </para>
+<screen><prompt role="root">root # </prompt>zypper in python-swiftclient</screen>
+    <para>
+     Swiftにアクセスするには、次の構文を使用します。
+    </para>
+<screen><prompt>tux &gt; </prompt>swift -A http://<replaceable>IP_ADDRESS</replaceable>/auth/1.0 \
+-U example_user:swift -K '<replaceable>SWIFT_SECRET_KEY</replaceable>' list</screen>
+    <para>
+     <replaceable>IP_ADDRESS</replaceable>は、ゲートウェイサーバのIPアドレスに置き換えてください。<replaceable>SWIFT_SECRET_KEY</replaceable>は、<xref linkend="adding-s3-swift-users"/>で<systemitem>swift</systemitem>ユーザを対象に実行した<command>radosgw-admin key create</command>コマンドの出力の値に置き換えてください。
+    </para>
+    <para>
+     例:
+    </para>
+<screen><prompt>tux &gt; </prompt>swift -A http://gateway.example.com/auth/1.0 -U example_user:swift \
+-K 'r5wWIxjOCeEO7DixD1FjTLmNYIViaC6JVhi3013h' list</screen>
+    <para>
+     出力は次のとおりです。
+    </para>
+<screen>my-new-bucket</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="s3-swift-accounts-managment">
+   <title>S3およびSwiftアカウントの管理</title>
+   <sect3 xml:id="adding-s3-swift-users">
+    <title>S3およびSwiftユーザの追加</title>
+    <para>
+     エンドユーザがゲートウェイを操作できるようにするには、ユーザ、アクセスキー、および秘密を作成する必要があります。ユーザには、「ユーザ」<emphasis/>と「サブユーザ」<emphasis/>の2種類があります。「ユーザ」<emphasis/>はS3インタフェースを操作する場合に使用し、「サブユーザ」<emphasis/>はSwiftインタフェースのユーザです。各サブユーザは特定のユーザに関連付けられます。
+    </para>
+    <para>
+     Swiftユーザを作成するには、次の手順に従います。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Swiftユーザ(ここでの用語では「サブユーザ」<emphasis/>)を作成するために、まず関連付けられた「ユーザ」<emphasis/>を作成する必要があります。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user create --uid=<replaceable>USERNAME</replaceable> \
+ --display-name="<replaceable>DISPLAY-NAME</replaceable>" --email=<replaceable>EMAIL</replaceable></screen>
+      <para>
+       例:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user create \
+   --uid=example_user \
+   --display-name="Example User" \
+   --email=penguin@example.com</screen>
+     </step>
+     <step>
+      <para>
+       このユーザのサブユーザ(Swiftインタフェース)を作成するために、ユーザID (--uid=<replaceable>USERNAME</replaceable>)、サブユーザID、およびサブユーザのアクセスレベルを指定する必要があります。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin subuser create --uid=<replaceable>UID</replaceable> \
+ --subuser=<replaceable>UID</replaceable> \
+ --access=[ <replaceable>read | write | readwrite | full</replaceable> ]</screen>
+      <para>
+       例:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin subuser create --uid=example_user \
+ --subuser=example_user:swift --access=full</screen>
+     </step>
+     <step>
+      <para>
+       ユーザの秘密鍵を生成します。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin key create \
+   --gen-secret \
+   --subuser=example_user:swift \
+   --key-type=swift</screen>
+     </step>
+     <step>
+      <para>
+       どちらのコマンドでも、ユーザの状態を示すJSON形式のデータが出力されます。次の行に注意し、<literal>secret_key</literal>の値を覚えます。
+      </para>
+<screen>"swift_keys": [
+   { "user": "example_user:swift",
+     "secret_key": "r5wWIxjOCeEO7DixD1FjTLmNYIViaC6JVhi3013h"}],</screen>
+     </step>
+    </procedure>
+    <para/>
+    <para>
+     S3インタフェースを介してObject Gatewayにアクセスする場合、次のコマンドを実行してS3ユーザを作成する必要があります。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user create --uid=<replaceable>USERNAME</replaceable> \
+ --display-name="<replaceable>DISPLAY-NAME</replaceable>" --email=<replaceable>EMAIL</replaceable></screen>
+    <para>
+     例:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user create \
+   --uid=example_user \
+   --display-name="Example User" \
+   --email=penguin@example.com</screen>
+    <para>
+     このコマンドは、ユーザのアクセスキーと秘密鍵も生成します。<literal>access_key</literal>および<literal>secret_key</literal>のキーワードの出力とそれらの値を確認します。
+    </para>
+<screen>[...]
+ "keys": [
+       { "user": "example_user",
+         "access_key": "11BS02LGFB6AL6H1ADMW",
+         "secret_key": "vzCEkuryfn060dfee4fgQPqFrncKEIkh3ZcdOANY"}],
+ [...]</screen>
+   </sect3>
+   <sect3 xml:id="removing-s3-swift-users">
+    <title>S3およびSwiftユーザの削除</title>
+    <para>
+     ユーザを削除する手順は、S3ユーザでもSwiftユーザでも同様です。ただし、Swiftユーザの場合、そのサブユーザを含むユーザを削除する必要があります。
+    </para>
+    <para>
+     S3またはSwiftユーザ(その全サブユーザを含む)を削除するには、次のコマンドで<option>user rm</option>とユーザIDを指定します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user rm --uid=example_user</screen>
+    <para>
+     サブユーザを削除するには、<option>subuser rm</option>とサブユーザIDを指定します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin subuser rm --uid=example_user:swift</screen>
+    <para>
+     次のオプションを利用できます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>--purge-data</term>
+      <listitem>
+       <para>
+        ユーザIDに関連付けられたすべてのデータをパージします。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>--purge-keys</term>
+      <listitem>
+       <para>
+        ユーザIDに関連付けられたすべてのキーをパージします。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <tip>
+     <title>サブユーザの削除</title>
+     <para>
+      サブユーザを削除すると、Swiftインタフェースへのアクセスも削除されます。そのユーザはシステムに残ります。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="changing-s3-swift-users-password">
+    <title>S3およびSwiftユーザのアクセスキーと秘密鍵の変更</title>
+    <para>
+     <literal>access_key</literal>および<literal>secret_key</literal>のパラメータは、ゲートウェイにアクセスする際にObject Gatewayユーザを識別します。既存のユーザのキーを削除すると、古いキーは上書きされます。そのため、これは新しいユーザを作成することと同じです。
+    </para>
+    <para>
+     S3ユーザの場合、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin key create --uid=<replaceable>EXAMPLE_USER</replaceable> --key-type=s3 --gen-access-key --gen-secret</screen>
+    <para>
+     Swiftユーザの場合、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin key create --subuser=<replaceable>EXAMPLE_USER</replaceable>:swift --key-type=swift --gen-secret</screen>
+    <variablelist>
+     <varlistentry>
+      <term><option>--key-type=<replaceable>TYPE</replaceable></option></term>
+      <listitem>
+       <para>
+        キーのタイプを指定します。<literal>swift</literal>または<literal>s3</literal>です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>--gen-access-key</option></term>
+      <listitem>
+       <para>
+        ランダムなアクセスキーを生成します(デフォルトではS3ユーザ用)。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>--gen-secret</option></term>
+      <listitem>
+       <para>
+        ランダムな秘密鍵を生成します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>--secret=<replaceable>KEY</replaceable></option></term>
+      <listitem>
+       <para>
+        秘密鍵を指定します。たとえば、手動で生成した秘密鍵を指定します。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="user-quota-managment">
+    <title>ユーザクォータの管理の有効化</title>
+    <para>
+     Ceph Object Gatewayでは、ユーザと、ユーザが所有するバケットにクォータを設定できます。バケット内のオブジェクトの最大数や、最大ストレージサイズ(メガバイト単位)などのクォータがあります。
+    </para>
+    <para>
+     ユーザクォータを有効にする前に、まずそのパラメータを設定する必要があります。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin quota set --quota-scope=user --uid=<replaceable>EXAMPLE_USER</replaceable> \
+ --max-objects=1024 --max-size=1024</screen>
+    <variablelist>
+     <varlistentry>
+      <term><option>--max-objects</option></term>
+      <listitem>
+       <para>
+        オブジェクトの最大数を指定します。負の値を指定すると、クォータの確認が無効になります。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>--max-size</option></term>
+      <listitem>
+       <para>
+        最大バイト数を指定します。負の値を指定すると、クォータの確認が無効になります。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>--quota-scope</option></term>
+      <listitem>
+       <para>
+        クォータのスコープを設定します。オプションは<literal>bucket</literal>および<literal>user</literal>です。バケットクォータは、ユーザが所有するバケットに適用されます。ユーザクォータはユーザに適用されます。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     ユーザクォータを選択したら、そのクォータを有効にできます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin quota enable --quota-scope=user --uid=<replaceable>EXAMPLE_USER</replaceable></screen>
+    <para>
+     クォータを無効にするには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin quota disable --quota-scope=user --uid=<replaceable>EXAMPLE_USER</replaceable></screen>
+    <para>
+     クォータの設定を一覧にするには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user info --uid=<replaceable>EXAMPLE_USER</replaceable></screen>
+    <para>
+     クォータの統計を更新するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user stats --uid=<replaceable>EXAMPLE_USER</replaceable> --sync-stats</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ogw-http-frontends">
+  <title>HTTPフロントエンド</title>
+
+  <para>
+   Ceph Object Gatewayは、2つの埋め込みHTTPフロントエンド(<emphasis/>「Beast」と<emphasis/>「Civetweb」)をサポートしています。
+  </para>
+
+  <para>
+   Beastフロントエンドは、HTTPの解析のためにBoost.Beastライブラリを使用し、非同期ネットワークI/OのためにBoost.Asioライブラリを使用します。
+  </para>
+
+  <para>
+   Civetwebフロントエンドは、MongooseのフォークであるCivetweb HTTPライブラリを使用します。
+  </para>
+
+  <para>
+   これらは<option>rgw_frontends</option>オプションを使用して設定できます。設定オプションのリストについては、<xref linkend="config-ogw"/>を参照してください。
+  </para>
+ </sect1>
+ <sect1 xml:id="ceph-rgw-https">
+  <title>Object GatewayでのHTTPS/SSLの有効化</title>
+
+  <para>
+   Object Gatewayを有効にしてSSLで安全に通信するには、CAによって発行された証明書を持っているか、自己署名証明書を作成する必要があります。
+  </para>
+
+  <sect2 xml:id="ogw-selfcert">
+   <title>自己署名証明書の作成</title>
+   <tip>
+    <para>
+     CAによって署名された有効な証明書をすでに持っている場合、このセクションはスキップしてください。
+    </para>
+   </tip>
+   <para>
+    次の手順では、Salt Master上で自己署名SSL証明書を生成する方法について説明します。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Object Gatewayを追加のサブジェクトIDで認識する必要がある場合は、それらを<filename>/etc/ssl/openssl.cnf</filename>ファイルの<literal>[v3_req]</literal>セクションの<option>subjectAltName</option>オプションに追加します。
+     </para>
+<screen>
+[...]
+[ v3_req ]
+subjectAltName = DNS:server1.example.com DNS:server2.example.com
+[...]
+</screen>
+     <tip>
+      <title><option>subjectAltName</option>のIPアドレス</title>
+      <para>
+       <option>subjectAltName</option>オプションのドメイン名の代わりにIPアドレスを使用するには、上の例に示されている行を以下で置き換えてください。
+      </para>
+<screen>
+subjectAltName = IP:10.0.0.10 IP:10.0.0.11
+</screen>
+     </tip>
+    </step>
+    <step>
+     <para>
+      <command>openssl</command>を使用して、キーと証明書を作成します。証明書に含める必要があるデータをすべて入力します。FQDNを一般名として入力することをお勧めします。証明書に署名する前に、「Requested Extensions」に「X509v3 Subject Alternative Name:」が含まれていること、および生成された証明書に「X509v3 Subject Alternative Name:」が設定されていることを確認します。
+     </para>
+<screen>
+<prompt>root@master # </prompt>openssl req -x509 -nodes -days 1095 \
+ -newkey rsa:4096 -keyout rgw.key
+ -out rgw.pem
+</screen>
+    </step>
+    <step>
+     <para>
+      キーを証明書ファイルに追加します。
+     </para>
+<screen>
+<prompt>root@master # </prompt>cat rgw.key &gt;&gt; rgw.pem
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="ogw-sssl-config">
+   <title>SSLを使用するようにObject Gatewayを設定する</title>
+   <para>
+    SSL証明書を使用するようにObject Gatewayを設定するには、<option>rgw_frontends</option>オプションを使用します。例:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set <replaceable>WHO</replaceable> rgw_frontends \
+ beast ssl_port=443 ssl_certificate=config://<replaceable>CERT</replaceable> ssl_key=config://<replaceable>KEY</replaceable>
+</screen>
+   <para>
+    <replaceable>CERT</replaceable>と<replaceable>KEY</replaceable>の設定キーを指定しない場合、Object Gatewayサービスは、次の設定キーの下にあるSSL証明書およびキーを探します。
+   </para>
+<screen>
+rgw/cert/<replaceable>RGW_REALM</replaceable>/<replaceable>RGW_ZONE</replaceable>.key
+rgw/cert/<replaceable>RGW_REALM</replaceable>/<replaceable>RGW_ZONE</replaceable>.crt
+</screen>
+   <para>
+    デフォルトのSSLキーおよび証明書の場所を上書きする場合、次のコマンドを使用してそれらを設定データベースにインポートします。
+   </para>
+<screen>ceph config-key set <replaceable>CUSTOM_CONFIG_KEY</replaceable> -i <replaceable>PATH_TO_CERT_FILE</replaceable></screen>
+   <para>
+    <literal>config://</literal>ディレクティブを使用してカスタム設定キーを使用します。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-rgw-sync">
+  <title>同期モジュール</title>
+
+  <para>
+   Object Gatewayは、マルチサイトサービスとして展開されます。また、データおよびメタデータをゾーン間でミラーリングできます。「同期モジュール」<emphasis/>は、データとメタデータを別の外部層へ転送できるようにするマルチサイトフレームワーク上に構築されています。同期モジュールにより、データの変更が発生した場合に一連のアクションを実行できます(たとえば、バケットやユーザの作成などのメタデータの操作)。Object Gatewayでのマルチサイトの変更は最終的にリモートサイトで一貫性が保たれるので、変更は非同期で伝搬されます。これは、外部のクラウドクラスタへのObject Storageのバックアップ、テープドライブを使用するカスタムバックアップソリューション、ElasticSearchでのメタデータのインデックス作成といった使用事例に対応しています。
+  </para>
+
+  <sect2 xml:id="ogw-sync-general-config">
+   <title>同期モジュールの設定</title>
+   <para>
+    すべての同期モジュールは同様の方法で設定します。新しいゾーンを作成し(詳細については<xref linkend="ceph-rgw-fed"/>を参照)、その<option>--tier_type</option>オプションを設定する必要があります。たとえば、クラウド同期モジュールの場合は、<option>--tier-type=cloud</option>に設定します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone create --rgw-zonegroup=<replaceable>ZONE-GROUP-NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE-NAME</replaceable> \
+ --endpoints=http://endpoint1.example.com,http://endpoint2.example.com, [...] \
+ --tier-type=cloud
+</screen>
+   <para>
+    次のコマンドを使用して特定の層を設定できます。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zonegroup=<replaceable>ZONE-GROUP-NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE-NAME</replaceable> \
+ --tier-config=<replaceable>KEY1</replaceable>=<replaceable>VALUE1</replaceable>,<replaceable>KEY2</replaceable>=<replaceable>VALUE2</replaceable>
+</screen>
+   <para>
+    設定の<replaceable>KEY</replaceable>には更新する設定変数を指定し、<replaceable>VALUE</replaceable>にその新しい値を指定します。ネストされた値にはピリオドを使用してアクセスできます。例:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zonegroup=<replaceable>ZONE-GROUP-NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE-NAME</replaceable> \
+ --tier-config=connection.access_key=<replaceable>KEY</replaceable>,connection.secret=<replaceable>SECRET</replaceable>
+</screen>
+   <para>
+    参照されているエントリに角括弧「[]」を追加して、配列エントリにアクセスできます。角括弧「[]」を使用して、新しい配列エントリを追加できます。インデックス値の-1は、配列の最後のエントリを参照します。新しいエントリを作成し、同じコマンドで再びそれを参照することはできません。たとえば、<replaceable>PREFIX</replaceable>で始まるバケットの新しいプロファイルを作成するコマンドは次のとおりです。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zonegroup=<replaceable>ZONE-GROUP-NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE-NAME</replaceable> \
+ --tier-config=profiles[].source_bucket=<replaceable>PREFIX</replaceable>'*'
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zonegroup=<replaceable>ZONE-GROUP-NAME</replaceable> \
+ --rgw-zone=<replaceable>ZONE-NAME</replaceable> \
+ --tier-config=profiles[-1].connection_id=<replaceable>CONNECTION_ID</replaceable>,profiles[-1].acls_id=<replaceable>ACLS_ID</replaceable>
+</screen>
+   <tip>
+    <title>設定エントリの追加と削除</title>
+    <para>
+     <option>--tier-config-add=<replaceable>KEY</replaceable>=<replaceable>VALUE</replaceable></option>パラメータを使用して、新しい層の設定エントリを追加できます。
+    </para>
+    <para>
+     <option>--tier-config-rm=<replaceable>KEY</replaceable></option>を使用して、既存のエントリを削除できます。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-sync-zones">
+   <title>ゾーンの同期</title>
+   <para>
+    同期モジュール設定はゾーンにローカルです。同期モジュールは、ゾーンがデータをエクスポートするのか、それとも別のゾーンで変更されたデータを使用できるだけかを判断します。Luminousの時点でサポートされている同期プラグインは、<literal>ElasticSearch</literal>、<literal>rgw</literal> (ゾーン間でデータを同期するデフォルトの同期プラグイン)、および<literal>log</literal> (リモートゾーンで実行されるメタデータ操作を記録する単純な同期プラグイン)です。以降のセクションでは、<literal>ElasticSearch</literal>同期モジュールを使用するゾーンを例にして説明します。他の同期プラグインでも設定のプロセスは同様です。
+   </para>
+   <note>
+    <title>デフォルトの同期プラグイン</title>
+    <para>
+     <literal>rgw</literal>はデフォルトの同期プラグインで、明示的な設定は必要はありません。
+    </para>
+   </note>
+   <sect3 xml:id="ceph-rgw-sync-zones-req">
+    <title>要件と前提</title>
+    <para>
+     <xref linkend="ceph-rgw-fed"/>で説明されているような、2つのゾーン<literal>us-east</literal>と<literal>us-west</literal>で構成される単純なマルチサイト設定を前提にしましょう。ここでは、他のサイトからのメタデータのみを処理するゾーンである3つ目のゾーン<literal>us-east-es</literal>を追加します。このゾーンは、<literal>us-east</literal>と同じCephクラスタにあっても、別のクラスタにあっても構いません。このゾーンは他のゾーンからのメタデータのみを使用し、このゾーンのObject Gatewayはエンドユーザの要求を直接実行することはありません。
+    </para>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-sync-zones-configure">
+    <title>ゾーンの設定</title>
+    <procedure>
+     <step>
+      <para>
+       <xref linkend="ceph-rgw-fed"/>で説明されているものと同様の3つ目のゾーンを作成します。次に例を示します。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt><command>radosgw-admin</command> zone create --rgw-zonegroup=us --rgw-zone=us-east-es \
+--access-key=<replaceable>SYSTEM-KEY</replaceable> --secret=<replaceable>SECRET</replaceable> --endpoints=http://rgw-es:80
+      </screen>
+     </step>
+     <step>
+      <para>
+       次のコマンドを使用して、このゾーンに対して同期モジュールを設定できます。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt><command>radosgw-admin</command> zone modify --rgw-zone=<replaceable>ZONE-NAME</replaceable> --tier-type=<replaceable>TIER-TYPE</replaceable> \
+--tier-config={set of key=value pairs}
+      </screen>
+     </step>
+     <step>
+      <para>
+       たとえば、<literal>ElasticSearch</literal>同期モジュールでは、次のコマンドを実行します。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt><command>radosgw-admin</command> zone modify --rgw-zone=<replaceable>ZONE-NAME</replaceable> --tier-type=elasticsearch \
+--tier-config=endpoint=http://localhost:9200,num_shards=10,num_replicas=1
+      </screen>
+      <para>
+       サポートされているさまざまなtier-configオプションについては、<xref linkend="ceph-rgw-sync-elastic"/>を参照してください。
+      </para>
+     </step>
+     <step>
+      <para>
+       最後にピリオドを更新します。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt><command>radosgw-admin</command> period update --commit
+      </screen>
+     </step>
+     <step>
+      <para>
+       続いて、ゾーンでObject Gatewayを起動します。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch start rgw.<replaceable>REALM-NAME</replaceable>.<replaceable>ZONE-NAME</replaceable>
+      </screen>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-sync-elastic">
+   <title>ElasticSearch同期モジュール</title>
+   <para>
+    この同期モジュールは、他のゾーンからElasticSearchにメタデータを書き込みます。Luminousの時点では、これは、現在ElasticSearchに保存しているJSON形式のデータフィールドです。
+   </para>
+<screen>
+{
+  "_index" : "rgw-gold-ee5863d6",
+  "_type" : "object",
+  "_id" : "34137443-8592-48d9-8ca7-160255d52ade.34137.1:object1:null",
+  "_score" : 1.0,
+  "_source" : {
+    "bucket" : "testbucket123",
+    "name" : "object1",
+    "instance" : "null",
+    "versioned_epoch" : 0,
+    "owner" : {
+      "id" : "user1",
+      "display_name" : "user1"
+    },
+    "permissions" : [
+      "user1"
+    ],
+    "meta" : {
+      "size" : 712354,
+      "mtime" : "2017-05-04T12:54:16.462Z",
+      "etag" : "7ac66c0f148de9519b8bd264312c4d64"
+    }
+  }
+}
+   </screen>
+   <sect3 xml:id="ceph-rgw-sync-elastic-config">
+    <title>ElasticSearchの層タイプの設定パラメータ</title>
+    <variablelist>
+     <varlistentry>
+      <term>endpoint</term>
+      <listitem>
+       <para>
+        アクセスするElasticSearchサーバエンドポイントを指定します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>num_shards</term>
+      <listitem>
+       <para>
+        (整数)<emphasis/>データ同期初期化時にElasticSearchに設定するシャードの数。初期化後は変更できないことに注意してください。ここで変更を行った場合、ElasticSearchのインデックスの再構築と、データ同期プロセスの再初期化が必要になります。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>num_replicas</term>
+      <listitem>
+       <para>
+        (整数)<emphasis/>データ同期初期化時にElasticSearchに設定するレプリカの数。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>explicit_custom_meta</term>
+      <listitem>
+       <para>
+        (true | false)<emphasis/>すべてのユーザカスタムメタデータのインデックスを作成するか、それともカスタムメタデータエントリのインデックスを作成する対象をユーザが(バケットレベルで)設定する必要があるかを指定します。デフォルトではfalseになっています。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>index_buckets_list</term>
+      <listitem>
+       <para>
+        (文字列のコンマ区切りリスト)<emphasis/>空の場合、すべてのバケットのインデックスが作成されます。空でない場合、ここで指定したバケットのインデックスのみが作成されます。バケットのプレフィックス(「foo*」など)またはサフィックス(「*bar」など)を指定できます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>approved_owners_list</term>
+      <listitem>
+       <para>
+        (文字列のコンマ区切りリスト)<emphasis/>空の場合、すべての所有者のバケットのインデックスが作成されます(他の制約に依存)。空でない場合、指定した所有者が所有するバケットのインデックスのみが作成されます。サフィックスとプレフィックスを指定することもできます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>override_index_path</term>
+      <listitem>
+       <para>
+        (文字列)<emphasis/>空でない場合、この文字列がElasticSearchのインデックスパスとして使用されます。空の場合、インデックスパスは同期初期化時に決定されて生成されます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ユーザ名</term>
+      <listitem>
+       <para>
+        認証が必要な場合にElasticSearchのユーザ名を指定します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>password</term>
+      <listitem>
+       <para>
+        認証が必要な場合にElasticSearchのパスワードを指定します。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-sync-elastic-query">
+    <title>メタデータクエリ</title>
+    <para>
+     ElasticSearchクラスタにオブジェクトメタデータが保存されるようになったので、ElasticSearchエンドポイントを一般に公開しないようにし、エンドポイントにはクラスタ管理者のみがアクセスできるようにすることが重要です。ユーザが自身のメタデータのみを問い合わせ、他のユーザのメタデータは問い合わせないようにする必要があるため、メタデータクエリをエンドユーザそのものに公開すると、問題が発生します。このためには、ElasticSearchクラスタでもRGWと同様の方法でユーザを認証する必要がありますが、これが問題になります。
+    </para>
+    <para>
+     Luminousから、メタデータマスタゾーンのRGWでエンドユーザの要求を実行できるようになりました。これにより、ElasticSearchエンドポイントを一般に公開しないようにできると同時に、RGWそのものがエンドユーザの要求を認証できるので、認証と権限付与の問題も解決します。このために、RGWでは、バケットAPIにElasticSearchの要求を実行できる新しいクエリが導入されています。これらの要求はすべてメタデータマスタゾーンに送信する必要があります。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ElasticSearchクエリの取得</term>
+      <listitem>
+<screen>
+GET /<replaceable>BUCKET</replaceable>?query=<replaceable>QUERY-EXPR</replaceable>
+       </screen>
+       <para>
+        要求パラメータ:
+       </para>
+       <itemizedlist>
+        <listitem>
+         <para>
+          max-keys: 返されるエントリの最大数
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          marker: ページ分割マーカ
+         </para>
+        </listitem>
+       </itemizedlist>
+<screen>
+expression := [(]&lt;arg&gt; &lt;op&gt; &lt;value&gt; [)][&lt;and|or&gt; ...]
+       </screen>
+       <para>
+        演算子は、&lt;、&lt;=、==、&gt;=、&gt;の1つです。
+       </para>
+       <para>
+        例:
+       </para>
+<screen>
+GET /?query=name==foo
+       </screen>
+       <para>
+        ユーザが読み込み許可を持つ、「foo」という名前のインデックス作成済みキーをすべて返します。出力は、S3のバケット一覧の応答に似たXML形式のキーのリストになります。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>カスタムメタデータフィールドの設定</term>
+      <listitem>
+       <para>
+        インデックスの作成が必要なカスタムメタデータエントリ(指定したバケットの下層)と、これらのキーのタイプを定義します。カスタムメタデータのインデックス作成が明示的に設定されている場合、rgwによって指定のカスタムメタデータ値のインデックスが作成されるようにするため、これが必要になります。それ以外の場合は、インデックスが作成されるメタデータキーのタイプが文字列以外のときに必要です。
+       </para>
+<screen>
+POST /<replaceable>BUCKET</replaceable>?mdsearch
+x-amz-meta-search: &lt;key [; type]&gt; [, ...]
+       </screen>
+       <para>
+        複数のメタデータフィールドはコンマで区切る必要があります。「;」を使用して、フィールドに対してタイプを強制的に適用できます。現在許可されているタイプは、文字列(デフォルト)、整数、および日付です。たとえば、カスタムオブジェクトメタデータx-amz-meta-yearを整数、x-amz-meta-dateを日付タイプ、およびx-amz-meta-titleを文字列としてインデックスを作成する場合、次のように指定します。
+       </para>
+<screen>
+POST /mybooks?mdsearch
+x-amz-meta-search: x-amz-meta-year;int, x-amz-meta-release-date;date, x-amz-meta-title;string
+       </screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>カスタムメタデータ設定の削除</term>
+      <listitem>
+       <para>
+        カスタムメタデータのバケット設定を削除します。
+       </para>
+<screen>
+DELETE /<replaceable>BUCKET</replaceable>?mdsearch
+       </screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>カスタムメタデータ設定の取得</term>
+      <listitem>
+       <para>
+        カスタムメタデータのバケット設定を取得します。
+       </para>
+<screen>
+GET /<replaceable>BUCKET</replaceable>?mdsearch
+       </screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ogw-cloud-sync">
+   <title>クラウド同期モジュール</title>
+   <para>
+    このセクションでは、ゾーンデータをリモートクラウドサービスに同期するモジュールについて説明します。同期は単一方向のみです。日付はリモートゾーンから同期されません。このモジュールの主な目的は、データを複数のクラウドサービスプロバイダと同期できるようにすることです。現在のところ、AWS (S3)と互換性のあるクラウドプロバイダがサポートされています。
+   </para>
+   <para>
+    データをリモートクラウドサービスに同期するには、ユーザ資格情報を設定する必要があります。多くのクラウドサービスでは、各ユーザが作成できるバケットの数に制限を導入しているため、ソースオブジェクトとバケット、異なるターゲットから異なるバケットとバケットプレフィックスへのマッピングを設定できます。ソースのアクセスリスト(ACL)は保持されないことに注意してください。特定のソースユーザの許可を特定の宛先ユーザにマッピングできます。
+   </para>
+   <para>
+    APIの制限のため、元のオブジェクト変更時刻とHTTP ETag (エンティティタグ)を保持する方法はありません。クラウド同期モジュールは、これらを宛先オブジェクトのメタデータ属性として保存します。
+   </para>
+   <sect3 xml:id="cloud-sync-module">
+    <title>クラウド同期モジュールの設定</title>
+    <para>
+     以下はクラウド同期モジュールの単純な設定と複雑な設定の例です。単純な設定は複雑な設定と競合する可能性があることに注意してください。
+    </para>
+    <example>
+     <title>単純な設定</title>
+<screen>
+{
+  "connection": {
+    "access_key": <replaceable>ACCESS</replaceable>,
+    "secret": <replaceable>SECRET</replaceable>,
+    "endpoint": <replaceable>ENDPOINT</replaceable>,
+    "host_style": <replaceable>path | virtual</replaceable>,
+  },
+  "acls": [ { "type": <replaceable>id | email | uri</replaceable>,
+    "source_id": <replaceable>SOURCE_ID</replaceable>,
+    "dest_id": <replaceable>DEST_ID</replaceable> } ... ],
+  "target_path": <replaceable>TARGET_PATH</replaceable>,
+}
+</screen>
+    </example>
+    <example>
+     <title>複雑な設定</title>
+<screen>
+{
+  "default": {
+    "connection": {
+      "access_key": <replaceable>ACCESS</replaceable>,
+      "secret": <replaceable>SECRET</replaceable>,
+      "endpoint": <replaceable>ENDPOINT</replaceable>,
+      "host_style" <replaceable>path | virtual</replaceable>,
+    },
+    "acls": [
+    {
+      "type": <replaceable>id | email | uri</replaceable>,   #  optional, default is id
+      "source_id": <replaceable>ID</replaceable>,
+      "dest_id": <replaceable>ID</replaceable>
+    } ... ]
+    "target_path": <replaceable>PATH</replaceable> # optional
+  },
+  "connections": [
+  {
+    "connection_id": <replaceable>ID</replaceable>,
+    "access_key": <replaceable>ACCESS</replaceable>,
+    "secret": <replaceable>SECRET</replaceable>,
+    "endpoint": <replaceable>ENDPOINT</replaceable>,
+    "host_style": <replaceable>path | virtual</replaceable>,  # optional
+  } ... ],
+  "acl_profiles": [
+  {
+    "acls_id": <replaceable>ID</replaceable>, # acl mappings
+    "acls": [ {
+      "type": <replaceable>id | email | uri</replaceable>,
+      "source_id": <replaceable>ID</replaceable>,
+      "dest_id": <replaceable>ID</replaceable>
+    } ... ]
+  }
+  ],
+  "profiles": [
+  {
+   "source_bucket": <replaceable>SOURCE</replaceable>,
+   "connection_id": <replaceable>CONNECTION_ID</replaceable>,
+   "acls_id": <replaceable>MAPPINGS_ID</replaceable>,
+   "target_path": <replaceable>DEST</replaceable>,          # optional
+  } ... ],
+}
+</screen>
+    </example>
+    <para>
+     使用される設定用語の説明は次のとおりです。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>接続</term>
+      <listitem>
+       <para>
+        リモートクラウドサービスへの接続を表します。「connection_id」、「access_key」、「secret」、「endpoint」、および「host_style」が含まれます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>access_key</term>
+      <listitem>
+       <para>
+        特定の接続に使用されるリモートクラウドアクセスキー。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>secret</term>
+      <listitem>
+       <para>
+        リモートクラウドサービスの秘密鍵。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>endpoint</term>
+      <listitem>
+       <para>
+        リモートクラウドサービスエンドポイントのURL。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>host_style</term>
+      <listitem>
+       <para>
+        リモートクラウドエンドポイントにアクセスする際に使用されるホストスタイルのタイプ(「path」または「virtual」)。デフォルトは「path」です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>acls</term>
+      <listitem>
+       <para>
+        アクセスリストマッピングの配列。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>acl_mapping</term>
+      <listitem>
+       <para>
+        各「acl_mapping」構造には、「type」、「source_id」、および「dest_id」が含まれます。これらは、各オブジェクトのACL変換を定義します。ACL変換により、ソースユーザIDを宛先IDに変換できます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>type</term>
+      <listitem>
+       <para>
+        ACLのタイプ: 「id」はユーザIDを定義し、「email」は電子メールでユーザを定義し、「uri」はuri (グループ)でユーザを定義します。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>source_id</term>
+      <listitem>
+       <para>
+        ソースゾーンでのユーザのID。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>dest_id</term>
+      <listitem>
+       <para>
+        宛先でのユーザのID。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>target_path</term>
+      <listitem>
+       <para>
+        ターゲットパスの作成方法を定義する文字列。ターゲットパスは、ソースオブジェクト名の追加先のプレフィックスを指定します。ターゲットパスの設定可能項目には、次の任意の変数を含めることができます。
+       </para>
+       <variablelist>
+        <varlistentry>
+         <term>SID</term>
+         <listitem>
+          <para>
+           同期インスタンスIDを表す固有の文字列。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>ZONEGROUP</term>
+         <listitem>
+          <para>
+           ゾーングループの名前。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>ZONEGROUP_ID</term>
+         <listitem>
+          <para>
+           ゾーングループのID。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>ZONE</term>
+         <listitem>
+          <para>
+           ゾーンの名前。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>ZONE_ID</term>
+         <listitem>
+          <para>
+           ゾーンのID。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>BUCKET</term>
+         <listitem>
+          <para>
+           ソースバケットの名前。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>OWNER</term>
+         <listitem>
+          <para>
+           ソースバケット所有者のID。
+          </para>
+         </listitem>
+        </varlistentry>
+       </variablelist>
+       <para>
+        例: target_path = rgwx-<replaceable>ZONE</replaceable>-<replaceable>SID</replaceable>/<replaceable>OWNER</replaceable>/<replaceable>BUCKET</replaceable>
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>acl_profiles</term>
+      <listitem>
+       <para>
+        アクセスリストプロファイルの配列。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>acl_profile</term>
+      <listitem>
+       <para>
+        各プロファイルには、プロファイルを表す「acls_id」と、「acl_mapping」のリストを格納する「acls」配列が含まれます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>プロファイル</term>
+      <listitem>
+       <para>
+        プロファイルのリスト。各プロファイルには以下が含まれます。
+       </para>
+       <variablelist>
+        <varlistentry>
+         <term>source_bucket</term>
+         <listitem>
+          <para>
+           バケット名、またはこのプロファイルのソースバケットを定義するバケットプレフィックス(*で終わる場合)のいずれか。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>target_path</term>
+         <listitem>
+          <para>
+           説明については上記を参照。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>connection_id</term>
+         <listitem>
+          <para>
+           このプロファイルに使用する接続のID。
+          </para>
+         </listitem>
+        </varlistentry>
+        <varlistentry>
+         <term>acls_id</term>
+         <listitem>
+          <para>
+           このプロファイルに使用するACLのプロファイルのID。
+          </para>
+         </listitem>
+        </varlistentry>
+       </variablelist>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="s3-specific-configurables">
+    <title>S3固有の設定</title>
+    <para>
+     クラウド同期モジュールは、AWS S3と互換性のあるバックエンドでのみ機能します。S3クラウドサービスにアクセスする場合、その動作を微調整するために使用できる設定可能項目がいくつかあります。
+    </para>
+<screen>
+{
+  "multipart_sync_threshold": <replaceable>OBJECT_SIZE</replaceable>,
+  "multipart_min_part_size": <replaceable>PART_SIZE</replaceable>
+}
+</screen>
+    <variablelist>
+     <varlistentry>
+      <term>multipart_sync_threshold</term>
+      <listitem>
+       <para>
+        サイズがこの値以上のオブジェクトは、マルチパートアップロードを使用してクラウドサービスと同期されます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>multipart_min_part_size</term>
+      <listitem>
+       <para>
+        マルチパートアップロードを使用してオブジェクトを同期する際に使用する最小パーツサイズ。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="archive-sync-module">
+   <title>アーカイブ同期モジュール</title>
+   <para>
+    <emphasis>アーカイブ同期モジュール</emphasis>は、Object GatewayのS3オブジェクトのバージョン管理機能を利用します。<emphasis>アーカイブゾーン</emphasis>を設定することで、時間の経過とともに他のゾーンで異なるバージョンのS3オブジェクトが発生した場合にそれらをキャプチャできます。アーカイブゾーンが保持するバージョンの履歴は、アーカイブゾーンに関連付けられているゲートウェイを介してのみ削減できます。
+   </para>
+   <para>
+    このようなアーキテクチャにより、バージョン管理されていない複数のゾーンがゾーンゲートウェイを介してデータとメタデータをミラーリングし、エンドユーザに高可用性を提供できると同時に、アーカイブゾーンはすべてのデータ更新をキャプチャし、それらをS3オブジェクトのバージョンとして統合します。
+   </para>
+   <para>
+    マルチゾーン設定にアーカイブゾーンを含めることにより、一方のゾーンでS3オブジェクト履歴の柔軟性を利用しながら、残りのゾーンでは、バージョン管理されたS3オブジェクトのレプリカが使用する領域を節約できます。
+   </para>
+   <sect3 xml:id="archive-sync-module-configuration">
+    <title>アーカイブ同期モジュールの設定</title>
+    <tip>
+     <title>詳細</title>
+     <para>
+      マルチサイトゲートウェイの設定の詳細については、<xref linkend="ceph-rgw-fed"/>を参照してください。
+     </para>
+     <para>
+      同期モジュールの設定の詳細については、<xref linkend="ceph-rgw-sync"/>を参照してください。
+     </para>
+    </tip>
+    <para>
+     アーカイブ同期モジュールを使用するには、層タイプが<literal>archive</literal>に設定された新しいゾーンを作成する必要があります。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone create --rgw-zonegroup=<replaceable>ZONE_GROUP_NAME</replaceable> \
+ --rgw-zone=<replaceable>OGW_ZONE_NAME</replaceable> \
+ --endpoints=<replaceable>http://OGW_ENDPOINT1_URL[,http://OGW_ENDPOINT2_URL,...]</replaceable>
+ --tier-type=archive
+</screen>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-rgw-ldap">
+  <title>LDAP 認証</title>
+
+  <para>
+   デフォルトのローカルユーザ認証とは別に、Object GatewayでLDAPサーバのサービスを使用してユーザを認証することもできます。
+  </para>
+
+  <sect2 xml:id="ceph-rgw-ldap-how-works">
+   <title>認証メカニズム</title>
+   <para>
+    Object GatewayがトークンからユーザのLDAP資格情報を抽出します。ユーザ名から検索フィルタが構成されます。Object Gatewayは、設定済みのユーザアカウントを使用して、一致するエントリをディレクトリで検索します。エントリが見つかった場合、Object Gatewayは、トークンから抽出したパスワードを使用して、見つかった識別名へのバインドを試みます。資格情報が有効であれば、バインドが成功し、Object Gatewayはアクセスを許可します。
+   </para>
+   <para>
+    許可するユーザを制限するには、検索ベースを特定の部門に設定するか、カスタム検索フィルタを指定します。たとえば、特定のグループメンバーシップ、カスタムオブジェクトクラス、またはカスタム属性を要求できます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-ldap-reqs">
+   <title>要件</title>
+   <itemizedlist>
+    <listitem>
+     <para>
+      「LDAPまたはActive Directory」<emphasis/>: Object Gatewayがアクセス可能な動作中のLDAPインスタンス。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      「サービスアカウント」<emphasis/>: Object Gatewayが検索許可と共に使用するLDAP資格情報。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      「ユーザアカウント」<emphasis/>: LDAPディレクトリ内の1つ以上のユーザアカウント。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <important>
+    <title>LDAPユーザとローカルユーザを重複させない</title>
+    <para>
+     ローカルユーザの名前と、LDAPを使用して認証するユーザの名前に同じユーザ名を使用することはできません。Object Gatewayはこれらのユーザを区別できず、同じユーザとして扱います。
+    </para>
+   </important>
+   <tip>
+    <title>正常性チェック</title>
+    <para>
+     サービスアカウントまたはLDAP接続を確認するには、<command>ldapsearch</command>ユーティリティを使用します。例:
+    </para>
+<screen><prompt>tux &gt; </prompt>ldapsearch -x -D "uid=ceph,ou=system,dc=example,dc=com" -W \
+-H ldaps://example.com -b "ou=users,dc=example,dc=com" 'uid=*' dn</screen>
+    <para>
+     想定される問題を排除するため、必ずCephの設定ファイルと同じLDAPパラメータを使用してください。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-ldap-config">
+   <title>LDAP認証を使用するためのObject Gatewayの設定</title>
+   <para>
+    次のパラメータはLDAP認証と関連があります。
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><option>rgw_ldap_uri</option></term>
+     <listitem>
+      <para>
+       使用するLDAPサーバを指定します。プレーンテキストの資格情報がオープンに転送されるのを避けるため、必ず<literal>ldaps://<replaceable>FQDN</replaceable>:<replaceable>PORT</replaceable></literal>パラメータを使用してください。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>rgw_ldap_binddn</option></term>
+     <listitem>
+      <para>
+       Object Gatewayが使用するサービスアカウントの識別名(DN)。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>rgw_ldap_secret</option></term>
+     <listitem>
+      <para>
+       サービスアカウントのパスワード。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term>rgw_ldap_searchdn</term>
+     <listitem>
+      <para>
+       ユーザを検索するための、ディレクトリ情報ツリーのベースを指定します。users部門または具体的なOU(部門)にすることができます。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>rgw_ldap_dnattr</option></term>
+     <listitem>
+      <para>
+       ユーザ名を照合するために、構成された検索フィルタで使用される属性。DIT (ディレクトリ情報ツリー)に応じて、<literal>uid</literal>または<literal>cn</literal>になります。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><option>rgw_search_filter</option></term>
+     <listitem>
+      <para>
+       指定されていない場合、Object Gatewayは自動的に<option>rgw_ldap_dnattr</option>設定を使用して検索フィルタを構成します。このパラメータは、許可するユーザのリストを非常に柔軟な方法で絞り込む場合に使用します。詳細については、<xref linkend="ceph-rgw-ldap-filter"/>を参照してください。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-ldap-filter">
+   <title>カスタム検索フィルタを使用したユーザアクセスの制限</title>
+   <para>
+    <option>rgw_search_filter</option>パラメータは2つの方法で使用できます。
+   </para>
+   <sect3 xml:id="partial-filter-search-filter">
+    <title>構成された検索フィルタをさらに制限するための部分フィルタ</title>
+    <para>
+     次に、部分フィルタの例を示します。
+    </para>
+<screen>"objectclass=inetorgperson"</screen>
+    <para>
+     Object Gatewayは、トークンから抽出したユーザ名と値<option>rgw_ldap_dnattr</option>を使用して通常の方法で検索フィルタを生成します。続いて、構成されたフィルタが<option>rgw_search_filter</option>属性の部分フィルタと結合されます。ユーザ名と設定によっては、最終的な検索フィルタは次のようになります。
+    </para>
+<screen>"(&amp;(uid=hari)(objectclass=inetorgperson))"</screen>
+    <para>
+     この場合、ユーザ「hari」がLDAPディレクトリで見つかり、オブジェクトクラス「inetorgperson」を持っていて、有効なパスワードを指定したときにのみ、このユーザにアクセスが許可されます。
+    </para>
+   </sect3>
+   <sect3 xml:id="complete-filter">
+    <title>完全なフィルタ</title>
+    <para>
+     完全なフィルタには、認証試行中にユーザ名に置き換えられる<option>USERNAME</option>トークンが含まれる必要があります。この場合、<option>rgw_ldap_dnattr</option>パラメータは使用されなくなります。たとえば、有効なユーザを特定のグループに制限するには、次のフィルタを使用します。
+    </para>
+<screen>"(&amp;(uid=USERNAME)(memberOf=cn=ceph-users,ou=groups,dc=mycompany,dc=com))"</screen>
+    <note>
+     <title><literal>memberOf</literal>属性</title>
+     <para>
+      LDAP検索で<literal>memberOf</literal>属性を使用するには、特定のLDAPサーバ実装からのサーバサイドのサポートが必要です。
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-ldap-token">
+   <title>LDAP認証用アクセストークンの生成</title>
+   <para>
+    <command>radosgw-token</command>ユーティリティは、LDAPユーザ名とパスワードに基づいてアクセストークンを生成します。実際のアクセストークンであるBase-64エンコード文字列を出力します。好みのS3クライアント(<xref linkend="accessing-ragos-gateway"/>を参照)を使用し、このトークンをアクセスキーとして指定し、空の秘密鍵を使用します。
+   </para>
+<screen><prompt>tux &gt; </prompt>export RGW_ACCESS_KEY_ID="<replaceable>USERNAME</replaceable>"
+<prompt>tux &gt; </prompt>export RGW_SECRET_ACCESS_KEY="<replaceable>PASSWORD</replaceable>"
+<prompt>cephuser@adm &gt; </prompt>radosgw-token --encode --ttype=ldap</screen>
+   <important>
+    <title>クリアテキスト資格情報</title>
+    <para>
+     アクセストークンはBase-64エンコードのJSON構造で、LDAP資格情報がクリアテキストで含まれます。
+    </para>
+   </important>
+   <note>
+    <title>Active Directory</title>
+    <para>
+     Active Directoryでは、<option>--ttype=ad</option>パラメータを使用します。
+    </para>
+   </note>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ogw-bucket-sharding">
+  <title>バケットインデックスのシャーディング</title>
+
+  <para>
+   Object Gatewayは、バケットインデックスデータをインデックスプール(デフォルトでは<literal>.rgw.buckets.index</literal>)に保存します。1つのバケットに配置するオブジェクトが多すぎる(数十万個)場合、バケットあたりのオブジェクトの最大数のクォータ(<option>rgw bucket default quota max objects</option>)を設定しないと、インデックスプールのパフォーマンスが低下することがあります。「バケットインデックスのシャーディング」<emphasis/>は、このようなパフォーマンス低下を防止し、各バケットで大量のオブジェクトを使用できるようになります。
+  </para>
+
+  <sect2 xml:id="ogw-bucket-reshard">
+   <title>バケットインデックスのリシャーディング</title>
+   <para>
+    バケットが大容量になり、初期設定が十分ではなくなった場合、バケットのインデックスプールをリシャーディングする必要があります。オンラインの自動バケットインデックスリシャーディングを使用することも(<xref linkend="ogw-bucket-sharding-dyn"/>を参照)、バケットインデックスをオフラインで手動でリシャーディングすることもできます(<xref linkend="ogw-bucket-sharding-re"/>を参照)。
+   </para>
+   <sect3 xml:id="ogw-bucket-sharding-dyn">
+    <title>動的リシャーディング</title>
+    <para>
+     SUSE Enterprise Storage 5から、オンラインのバケットリシャーディングがサポートされています。これは、バケットあたりのオブジェクト数が一定のしきい値に達しているかどうかを検出し、バケットインデックスで使用されるシャードの数を自動的に増やします。このプロセスにより、各バケットインデックスシャードのエントリの数が減ります。
+    </para>
+    <para>
+     検出プロセスは次の条件で実行されます。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       バケットに新しいオブジェクトが追加された場合。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       すべてのバケットを定期的にスキャンするバックグラウンドプロセス内。これは、更新されない既存のバケットに対応するために必要です。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     リシャーディングが必要なバケットは<option>reshard_log</option>キューに追加され、後でリシャーディングするようスケジュールされます。リシャードスレッドはバックグラウンドで動作し、スケジュールされたリシャーディングを一度に1つずつ実行します。
+    </para>
+    <variablelist>
+     <title>動的リシャーディングの設定</title>
+     <varlistentry>
+      <term><option>rgw_dynamic_resharding</option></term>
+      <listitem>
+       <para>
+        動的バケットインデックスリシャーディングを有効/無効にします。設定可能な値は「true」または「false」です。デフォルトは「true」です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw_reshard_num_logs</option></term>
+      <listitem>
+       <para>
+        リシャーディングログの対象にするシャードの数。デフォルトは16です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw_reshard_bucket_lock_duration</option></term>
+      <listitem>
+       <para>
+        リシャーディング中のバケットオブジェクトに対するロック期間。デフォルトは120秒です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw_max_objs_per_shard</option></term>
+      <listitem>
+       <para>
+        バケットインデックスシャードあたりのオブジェクトの最大数。デフォルトは100000オブジェクトです。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw_reshard_thread_interval</option></term>
+      <listitem>
+       <para>
+        リシャードスレッド処理のラウンド間の最大時間。デフォルトは600秒です。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <variablelist>
+     <title>リシャーディングプロセスを管理するためのコマンド</title>
+     <varlistentry>
+      <term>リシャーディングキューへのバケットの追加</term>
+      <listitem>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin reshard add \
+ --bucket <replaceable>BUCKET_NAME</replaceable> \
+ --num-shards <replaceable>NEW_NUMBER_OF_SHARDS</replaceable>
+</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>リシャーディングキューの一覧</term>
+      <listitem>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin reshard list
+</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>バケットリシャーディングの処理/スケジュール</term>
+      <listitem>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin reshard process
+</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>バケットリシャーディングの状態の表示</term>
+      <listitem>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin reshard status --bucket <replaceable>BUCKET_NAME</replaceable>
+</screen>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>保留中のバケットリシャーディングのキャンセル</term>
+      <listitem>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin reshard cancel --bucket <replaceable>BUCKET_NAME</replaceable>
+</screen>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+   <sect3 xml:id="ogw-bucket-sharding-re">
+    <title>手動リシャーディング</title>
+    <para>
+     <xref linkend="ogw-bucket-sharding-dyn"/>で説明されている動的リシャーディングは、単純なObject Gateway設定でのみサポートされます。マルチサイト設定の場合は、このセクションで説明する手動リシャーディングを使用します。
+    </para>
+    <para>
+     バケットインデックスをオフラインで手動でリシャーディングするには、次のコマンドを使用します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin bucket reshard
+</screen>
+    <para>
+     <command>bucket reshard</command>コマンドは次の処理を実行します。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       指定したオブジェクトに対してバケットインデックスオブジェクトの新しいセットを作成する
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       これらのインデックスオブジェクトのすべてのエントリを分散する
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       新しいバケットインスタンスを作成する
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       新しいバケットインスタンスをバケットにリンクし、すべての新規インデックス操作が新しいバケットインデックスを経由するようにする
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       新旧のバケットIDを標準出力に出力する
+      </para>
+     </listitem>
+    </itemizedlist>
+    <tip>
+     <para>
+      多数のシャードを選択する場合、以下に注意をし、シャードあたり100000エントリ以下を目指してください。素数であるバケットインデックスのシャードは、シャード間で均等に分散しているバケットインデックスエントリで優れた動作になる傾向があります。たとえば、503個のバケットインデックスのシャードは素数であるため、500個のシャードよりも優れています。
+     </para>
+    </tip>
+    <procedure>
+     <title>バケットインデックスのリシャーディング</title>
+     <step>
+      <para>
+       バケットに対するすべての操作が停止していることを確認します。
+      </para>
+     </step>
+     <step>
+      <para>
+       元のバケットインデックスをバックアップします。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin bi list \
+ --bucket=<replaceable>BUCKET_NAME</replaceable> \
+ &gt; <replaceable>BUCKET_NAME</replaceable>.list.backup
+</screen>
+     </step>
+     <step>
+      <para>
+       バケットインデックスをリシャーディングします。
+      </para>
+<screen>
+ <prompt>cephuser@adm &gt; </prompt>radosgw-admin bucket reshard \
+ --bucket=<replaceable>BUCKET_NAME</replaceable> \
+ --num-shards=<replaceable>NEW_SHARDS_NUMBER</replaceable>
+</screen>
+      <tip>
+       <title>古いバケットID</title>
+       <para>
+        このコマンドは、出力の一部として新旧のバケットIDも出力します。
+       </para>
+      </tip>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ogw-bucket-sharding-new">
+   <title>新しいバケットのバケットインデックスシャーディング</title>
+   <para>
+    バケットインデックスシャーディングを制御するオプションは2つあります。
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      単純な設定の場合は、<option>rgw_override_bucket_index_max_shards</option>オプションを使用します。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      マルチサイト設定の場合は、<option>bucket_index_max_shards</option>オプションを使用します。
+     </para>
+    </listitem>
+   </itemizedlist>
+   <para>
+    これらのオプションを<literal>0</literal>に設定すると、バケットインデックスシャーディングが無効になります。<literal>0</literal>より大きい値にすると、バケットインデックスシャーディングが有効になり、シャードの最大数が設定されます。
+   </para>
+   <para>
+    シャードの推奨数を計算するには、次の式が役立ちます。
+   </para>
+<screen>
+number_of_objects_expected_in_a_bucket / 100000
+</screen>
+   <para>
+    シャードの最大数は7877であることに注意してください。
+   </para>
+   <sect3 xml:id="multisite-config-bucket">
+    <title>マルチサイト設定</title>
+    <para>
+     マルチサイト設定では、フェールオーバーを管理するために別のインデックスプールを設定できます。1つのゾーングループ内のゾーン全体に一貫したシャード数を設定するには、ゾーングループの設定で<option>bucket_index_max_shards</option>オプションを設定します。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       ゾーングループの設定を<filename>zonegroup.json</filename>ファイルにエクスポートします。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup get &gt; zonegroup.json
+</screen>
+     </step>
+     <step>
+      <para>
+       <filename>zonegroup.json</filename>ファイルを編集して、指定した各ゾーンに対して<option>bucket_index_max_shards</option>オプションを設定します。
+      </para>
+     </step>
+     <step>
+      <para>
+       ゾーングループをリセットします。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup set &lt; zonegroup.json
+</screen>
+     </step>
+     <step>
+      <para>
+       ピリオドを更新します。<xref linkend="ceph-rgw-fed-masterzone-updateperiod"/>を参照してください。
+      </para>
+     </step>
+    </procedure>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ogw-keystone">
+  <title>OpenStack Keystoneの統合</title>
+
+  <para>
+   OpenStack Keystoneは、OpenStack製品の識別情報サービスです。Object GatewayをKeystoneと統合して、Keystoneの認証トークンを受け付けるゲートウェイを設定できます。Keystoneによってゲートウェイにアクセスする権限が付与されたユーザは、Ceph Object Gateway側で確認され、必要であれば自動的に作成されます。Object Gatewayは、取り消されたトークンのリストを定期的にKeystoneに問い合わせます。
+  </para>
+
+  <sect2 xml:id="ogw-keystone-ostack">
+   <title>OpenStackの設定</title>
+   <para>
+    Ceph Object Gatewayを設定する前に、Swiftサービスを有効にしてCeph Object Gatewayを指すようにOpenStack Keystoneを設定する必要があります。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Swiftサービスを設定します。<emphasis/>OpenStackを使用してSwiftユーザを検証するには、まずSwiftサービスを作成します。
+     </para>
+<screen>
+<prompt>tux &gt; </prompt>openstack service create \
+ --name=swift \
+ --description="Swift Service" \
+ object-store
+</screen>
+    </step>
+    <step>
+     <para>
+      エンドポイントを設定します。<emphasis/>Swiftサービスを作成した後、Ceph Object Gatewayを指すようにします。<replaceable>REGION_NAME</replaceable>は、ゲートウェイのゾーングループ名またはリージョン名に置き換えます。
+     </para>
+<screen>
+<prompt>tux &gt; </prompt>openstack endpoint create --region <replaceable>REGION_NAME</replaceable> \
+ --publicurl   "http://radosgw.example.com:8080/swift/v1" \
+ --adminurl    "http://radosgw.example.com:8080/swift/v1" \
+ --internalurl "http://radosgw.example.com:8080/swift/v1" \
+ swift
+</screen>
+    </step>
+    <step>
+     <para>
+      設定を確認します。<emphasis/>Swiftサービスを作成してエンドポイントを設定した後、エンドポイントを表示して、すべての設定が正しいことを確認します。
+     </para>
+<screen>
+<prompt>tux &gt; </prompt>openstack endpoint show object-store
+</screen>
+    </step>
+   </procedure>
+  </sect2>
+
+  <sect2 xml:id="ogw-keystone-ogw">
+   <title>Ceph Object Gatewayの設定</title>
+   <sect3>
+    <title>SSL証明書の設定</title>
+    <para>
+     Ceph Object Gatewayは、取り消されたトークンのリストを定期的にKeystoneに問い合わせます。これらの要求はエンコードおよび署名されています。同様にエンコードおよび署名された自己署名トークンを提供するようKeystoneを設定することもできます。これらの署名されたメッセージをデコードして検証できるようゲートウェイを設定する必要があります。したがって、Keystoneが要求を作成するために使用するOpenSSL証明書を「nss db」フォーマットに変換する必要があります。
+    </para>
+<screen>
+<prompt role="root">root # </prompt>mkdir /var/ceph/nss
+<prompt role="root">root # </prompt>openssl x509 -in /etc/keystone/ssl/certs/ca.pem \
+ -pubkey | certutil -d /var/ceph/nss -A -n ca -t "TCu,Cu,Tuw"
+<systemitem class="username">root</systemitem>openssl x509 -in /etc/keystone/ssl/certs/signing_cert.pem \
+ -pubkey | certutil -A -d /var/ceph/nss -n signing_cert -t "P,P,P"
+</screen>
+    <para>
+     Ceph Object GatewayがOpenStack Keystoneと対話できるようにするため、OpenStack Keystoneで自己署名SSL証明書を使用できます。Ceph Object Gatewayが実行されているノードにKeystoneのSSL証明書をインストールするか、オプション<option>rgw keystone verify ssl</option>の値を「false」に設定します。<option>rgw keystone verify ssl</option>を「false」に設定すると、ゲートウェイが証明書の検証を試行しないことを意味します。
+    </para>
+   </sect3>
+   <sect3 xml:id="config-ogw-options">
+    <title>Object Gatewayのオプションの設定</title>
+    <para>
+     次のオプションを使用してKeystone統合を設定できます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><option>rgw keystone api version</option></term>
+      <listitem>
+       <para>
+        Keystone APIのバージョン。有効なオプションは2または3です。デフォルトは2です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone url</option></term>
+      <listitem>
+       <para>
+        Keystoneサーバの管理RESTful APIのURLとポート番号。<replaceable>SERVER_URL:PORT_NUMBER</replaceable>というパターンに従います。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone admin token</option></term>
+      <listitem>
+       <para>
+        管理要求に対してKeystone内部で設定されるトークンと共有シークレット。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone accepted roles</option></term>
+      <listitem>
+       <para>
+        要求を実行するために必要な役割。デフォルトは「Member, admin」です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone accepted admin roles</option></term>
+      <listitem>
+       <para>
+        ユーザが管理特権を得られるようにする役割のリスト。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone token cache size</option></term>
+      <listitem>
+       <para>
+        Keystoneトークンキャッシュのエントリの最大数。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone revocation interval</option></term>
+      <listitem>
+       <para>
+        拒否されたトークンを確認するまでの秒数。デフォルトは15 * 60です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone implicit tenants</option></term>
+      <listitem>
+       <para>
+        新しいユーザを同じ名前の専用のテナント内に作成します。デフォルトは「false」です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw s3 auth use keystone</option></term>
+      <listitem>
+       <para>
+        「true」に設定すると、Ceph Object GatewayはKeystoneを使用してユーザを認証します。デフォルトは「false」です。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>nss db path</option></term>
+      <listitem>
+       <para>
+        NSSデータベースのパス。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     OpenStackサービスの設定と同様の方法で、Keystoneサービステナント、およびKeystoneのユーザとパスワード(OpenStack Identity APIのバージョン2.0の場合)を設定することもできます。これにより、設定ファイルで共有シークレット<option>rgw keystone admin token</option>を設定するのを避けることができます。このような設定は運用環境では無効にする必要があります。サービステナントの資格情報には管理者特権を含める必要があります。詳細については、<link xlink:href="https://docs.openstack.org/keystone/latest/#setting-up-projects-users-and-roles">公式のOpenStack Keystoneのドキュメント</link>を参照してください。関連する設定オプションは次のとおりです。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><option>rgw keystone admin user</option></term>
+      <listitem>
+       <para>
+        Keystone管理者ユーザの名前。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone admin password</option></term>
+      <listitem>
+       <para>
+        Keystone管理者ユーザのパスワード。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone admin tenant</option></term>
+      <listitem>
+       <para>
+        Keystoneバージョン2.0の管理者ユーザのテナント。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Ceph Object GatewayのユーザはKeystoneテナントにマップされます。Keystoneユーザには、多くの場合、複数のテナントで複数の役割が割り当てられます。Ceph Object Gatewayは、チケットを取得すると、そのチケットに割り当てられているテナントとユーザの役割を確認し、<option>rgw keystone accepted roles</option>オプションの設定に従って要求を受け入れるか拒否します。
+    </para>
+    <tip>
+     <title>OpenStackテナントのマッピング</title>
+     <para>
+      SwiftテナントはデフォルトでObject Gatewayユーザにマップされますが、<option>rgw keystone implicit tenants</option>オプションを使用してOpenStackテナントにマップすることもできます。これにより、コンテナは、Object GatewayのデフォルトであるS3同様のグローバルネームスペースではなく、テナントのネームスペースを使用するようになります。混乱を避けるため、計画段階でマッピング方法を決定することをお勧めします。その理由は、後でこのオプションを切り替えた場合、テナント下にマッピングされた新しい要求のみが対象となり、前に作成された古いバケットはグローバルネームスペースに存在し続けるためです。
+     </para>
+    </tip>
+    <para>
+     OpenStack Identity APIのバージョン3では、<option>rgw keystone admin tenant</option>オプションを次の内容に置き換える必要があります。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><option>rgw keystone admin domain</option></term>
+      <listitem>
+       <para>
+        Keystone管理者ユーザのドメイン。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><option>rgw keystone admin project</option></term>
+      <listitem>
+       <para>
+        Keystone管理者ユーザのプロジェクト。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+   </sect3>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ogw-storage-classes">
+  <title>プールの配置とストレージクラス</title>
+
+  <sect2 xml:id="ogw-storage-classes-placement-targets">
+   <title>配置ターゲットの表示</title>
+   <para>
+    配置ターゲットは、特定のバケットにどのプールを関連付けるかを制御します。バケットの配置ターゲットは作成時に選択し、変更することはできません。次のコマンドを実行して、その<literal>placement_rule</literal>を表示できます。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin bucket stats
+</screen>
+   <para>
+    ゾーングループ設定には、「default-placement」という名前の初期ターゲットが設定された配置ターゲットのリストが含まれています。ゾーン設定により、各ゾーングループの配置ターゲットの名前がそのローカルストレージにマップされます。このゾーン配置情報には、バケットインデックスの「index_pool」の名前、不完全なマルチパートアップロードに関するメタデータの「data_extra_pool」の名前、および各ストレージクラスの「data_pool」の名前が含まれています。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ogw-storage-classes-itself">
+   <title>ストレージクラス</title>
+   <para>
+    ストレージクラスは、オブジェクトデータの配置をカスタマイズするのに役立ちます。S3バケットのライフサイクルルールを使用すると、ストレージクラス間でのオブジェクトの移行を自動化できます。
+   </para>
+   <para>
+    ストレージクラスは、配置ターゲットの観点から定義します。各ゾーングループ配置ターゲットには、使用可能なストレージクラスが「STANDARD」という名前の初期クラスで一覧にされます。ゾーン設定は、各ゾーングループのストレージクラスに「data_pool」プール名を提供する処理を受け持ちます。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ogw-storage-classes-zone-config">
+   <title>ゾーングループおよびゾーンの設定</title>
+   <para>
+    ゾーングループおよびゾーンに対して<command>radosgw-admin</command>コマンドを使用し、その配置を設定します。次のコマンドを使用して、ゾーングループ配置設定を問い合わせることができます。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup get
+{
+    "id": "ab01123f-e0df-4f29-9d71-b44888d67cd5",
+    "name": "default",
+    "api_name": "default",
+    ...
+    "placement_targets": [
+        {
+            "name": "default-placement",
+            "tags": [],
+            "storage_classes": [
+                "STANDARD"
+            ]
+        }
+    ],
+    "default_placement": "default-placement",
+    ...
+}
+</screen>
+   <para>
+    ゾーン配置設定を問い合わせるには、次のコマンドを実行します。
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone get
+{
+    "id": "557cdcee-3aae-4e9e-85c7-2f86f5eddb1f",
+    "name": "default",
+    "domain_root": "default.rgw.meta:root",
+    ...
+    "placement_pools": [
+        {
+            "key": "default-placement",
+            "val": {
+                "index_pool": "default.rgw.buckets.index",
+                "storage_classes": {
+                    "STANDARD": {
+                        "data_pool": "default.rgw.buckets.data"
+                    }
+                },
+                "data_extra_pool": "default.rgw.buckets.non-ec",
+                "index_type": 0
+            }
+        }
+    ],
+    ...
+}
+</screen>
+   <note>
+    <title>以前のマルチサイト設定がない場合</title>
+    <para>
+     以前にマルチサイト設定を実行したことがない場合は、「デフォルト」のゾーンとゾーングループが自動的に作成され、このゾーン/ゾーングループへの変更はCeph Object Gatewaysを再起動するまで有効になりません。マルチサイトのレルムを作成している場合は、ゾーン/ゾーングループの変更は、<command>radosgw-admin period update --commit</command>コマンドで変更をコミットした後で有効になります。
+    </para>
+   </note>
+   <sect3 xml:id="adding-placement-target">
+    <title>配置ターゲットの追加</title>
+    <para>
+     「temporary」という名前の新しい配置ターゲットを作成するには、まずそれをゾーングループに追加します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup placement add \
+      --rgw-zonegroup default \
+      --placement-id temporary
+</screen>
+    <para>
+     次に、そのターゲットのゾーン配置情報を指定します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone placement add \
+      --rgw-zone default \
+      --placement-id temporary \
+      --data-pool default.rgw.temporary.data \
+      --index-pool default.rgw.temporary.index \
+      --data-extra-pool default.rgw.temporary.non-ec
+</screen>
+   </sect3>
+   <sect3 xml:id="adding-storage-class">
+    <title>ストレージクラスの追加</title>
+    <para>
+     「COLD」という名前の新しいストレージクラスを「default-placement」ターゲットに追加するには、まずそれをゾーングループに追加します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup placement add \
+      --rgw-zonegroup default \
+      --placement-id default-placement \
+      --storage-class COLD
+</screen>
+    <para>
+     次に、そのストレージクラスのゾーン配置情報を指定します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zone placement add \
+      --rgw-zone default \
+      --placement-id default-placement \
+      --storage-class COLD \
+      --data-pool default.rgw.cold.data \
+      --compression lz4
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ogw-storage-classes-customizing-placement">
+   <title>配置のカスタマイズ</title>
+   <sect3 xml:id="edit-default-zgroup-placement">
+    <title>ゾーングループのデフォルトの配置の編集</title>
+    <para>
+     デフォルトでは、新しいバケットはそのゾーングループの<literal>default_placement</literal>ターゲットを使用します。次のコマンドを使用して、このゾーングループ設定を変更できます。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup placement default \
+      --rgw-zonegroup default \
+      --placement-id new-placement
+</screen>
+   </sect3>
+   <sect3 xml:id="edit-default-user-placement">
+    <title>ユーザのデフォルトの配置の編集</title>
+    <para>
+     Ceph Object Gatewayユーザは、ユーザ情報に空ではない<literal>default_placement</literal>フィールドを設定することにより、ゾーングループのデフォルトの配置ターゲットを上書きすることができます。同様に、<literal>default_storage_class</literal>を設定すると、デフォルトでオブジェクトに適用される<option>STANDARD</option>ストレージクラスを上書きできます。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin user info --uid testid
+{
+    ...
+    "default_placement": "",
+    "default_storage_class": "",
+    "placement_tags": [],
+    ...
+}
+</screen>
+    <para>
+     ゾーングループの配置ターゲットにタグが含まれている場合、ユーザは、その配置ターゲットを使用してバケットを作成できません。ただし、そのユーザ情報の「placement_tags」フィールドに、一致するタグが少なくとも1つ含まれている場合を除きます。これは、特定のタイプのストレージへのアクセスを制限するのに役立つ場合があります。
+    </para>
+    <para>
+     <command>radosgw-admin</command>コマンドでこれらのフィールドを直接変更することはできません。そのため、JSONフォーマットを手動で編集する必要があります。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin metadata get user:<replaceable>USER-ID</replaceable> &gt; user.json
+<prompt>tux &gt; </prompt>vi user.json     # edit the file as required
+<prompt>cephuser@adm &gt; </prompt>radosgw-admin metadata put user:<replaceable>USER-ID</replaceable> &lt; user.json
+</screen>
+   </sect3>
+   <sect3 xml:id="s3-bucket-default-placement">
+    <title>S3のデフォルトのバケットの配置の編集</title>
+    <para>
+     S3プロトコルでバケットを作成する場合、配置ターゲットを<option>LocationConstraint</option>の一部として指定し、ユーザとゾーングループのデフォルトの配置ターゲットを上書きすることができます。
+    </para>
+    <para>
+     通常、<option>LocationConstraint</option>は、ゾーングループの<option>api_name</option>に一致する必要があります。
+    </para>
+<screen>&lt;LocationConstraint&gt;default&lt;/LocationConstraint&gt;</screen>
+    <para>
+     カスタム配置ターゲットを、コロンに続く<option>api_name</option>に追加できます。
+    </para>
+<screen>&lt;LocationConstraint&gt;default:new-placement&lt;/LocationConstraint&gt;</screen>
+   </sect3>
+   <sect3 xml:id="swift-default-bucket-placement">
+    <title>Swiftのバケットの配置の編集</title>
+    <para>
+     Swiftプロトコルでバケットを作成する場合、HTTPヘッダの<literal>X-Storage-Policy</literal>で配置ターゲットを指定できます。
+    </para>
+<screen>X-Storage-Policy: <replaceable>NEW-PLACEMENT</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ogw-storage-classes-usage">
+   <title>ストレージクラスの使用</title>
+   <para>
+    すべての配置ターゲットには、新しいオブジェクトにデフォルトで適用される<option>STANDARD</option>ストレージクラスがあります。このデフォルトを、その<literal>default_storage_class</literal>で上書きできます。
+   </para>
+   <para>
+    デフォルト以外のストレージクラスにオブジェクトを作成するには、要求のHTTPヘッダでそのストレージクラス名を指定します。S3プロトコルでは<literal>X-Amz-Storage-Class</literal>ヘッダを使用し、Swiftプロトコルでは<literal>X-Object-Storage-Class</literal>ヘッダを使用します。
+   </para>
+   <para>
+    <option>Transition</option>アクションを使用してストレージクラス間でオブジェクトデータを移動するには、<emphasis>S3オブジェクトライフサイクル管理</emphasis>を使用できます。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="ceph-rgw-fed">
+  <title>マルチサイトObject Gateway</title>
+
+  <para>
+   Cephは、Ceph Object Gateway用のマルチサイト設定オプションを複数サポートしています。
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>マルチゾーン</term>
+    <listitem>
+     <para>
+      ゾーングループと複数のゾーンから構成されている設定で、それぞれのゾーンに1つまたは複数の<systemitem class="daemon">ceph-radosgw</systemitem>インスタンスがあります。それぞれのゾーンは、その独自のCeph Storage Clusterを利用しています。ゾーンの1つで重大な障害が発生した場合、ゾーングループ内の複数のゾーンがゾーングループに障害復旧を提供します。それぞれのゾーンがアクティブで、書き込み操作を受け付ける場合があります。障害復旧に加えて、複数のアクティブゾーンがコンテンツ配信ネットワークの基盤としても動作する場合があります。
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>マルチゾーングループ</term>
+    <listitem>
+     <para>
+      Ceph Object Gatewayは、複数のゾーングループをサポートしていて、それぞれのゾーングループに1つまたは複数のゾーンがあります。同じレルム内の1つのゾーングループのゾーンに別のゾーングループとして保存されているオブジェクトは、グルーバルオブジェクトネームスペースを共有するため、ゾーングループおよびゾーン間で固有のオブジェクトIDになります。
+     </para>
+     <note>
+      <para>
+       ゾーングループはそのゾーングループ内のメタデータ<emphasis>のみ</emphasis>を同期するということに留意することが重要です。データおよびメタデータは、ゾーングループ内のゾーンの間で複製されます。データやメタデータはレルム間では共有されません。
+      </para>
+     </note>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term>複数のレルム</term>
+    <listitem>
+     <para>
+      Ceph Object Gatewayは、グローバルに固有のネームスペースであるレルムという概念をサポートしています。1つまたは複数のゾーングループを含む複数のレルムがサポートされます。
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   アクティブ-アクティブゾーン設定で動作するようにそれぞれのObject Gatewayを設定し、非マスタゾーンへの書き込みを許可できます。マルチサイト設定はレルムと呼ばれるコンテナ内に保存されます。レルムは、ゾーングループ、ゾーン、および複数のエポックを含むピリオドを保存し、設定変更を追跡します。<systemitem class="daemon">rgw</systemitem>デーモンが同期を処理するため、個別の同期エージェントは不要です。この同期方法では、Ceph Object Gatewayは、アクティブ-パッシブ設定ではなくアクティブ-アクティブ設定で動作できます。
+  </para>
+
+  <sect2 xml:id="ceph-rgw-multi-req-assump">
+   <title>要件と前提</title>
+   <para>
+    マルチサイト設定では、2つ以上のCephストレージクラスタおよび2つ以上のCeph Object Gatewayインスタンス(各Cephストレージクラスタに1つ)が必要です。次の設定は、地理的に離れた場所に2つ以上のCephストレージクラスタがあることを想定しています。ただし、設定は同じサイトで動作できます。たとえば、<literal>rgw1</literal>と<literal>rgw2</literal>という名前であるとします。
+   </para>
+   <para>
+    マルチサイト設定では、マスタゾーングループおよびマスタゾーンが必要です。マスタゾーンは、マルチサイトクラスタのすべてのメタデータ操作に関する真実を語る資料です。また、それぞれのゾーングループにはマスタゾーンが必要です。ゾーングループには、1つまたは複数のセカンダリゾーンまたは非マスタゾーンがある場合があります。このガイドでは、<literal>rgw1</literal>ホストがマスタゾーングループのマスタゾーンとして動作し、<literal>rgw2</literal>ホストがマスタゾーングループのセカンダリゾーンとして動作します。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-config-master-zone">
+   <title>マスタゾーンの設定</title>
+   <para>
+    マルチサイト設定のすべてのゲートウェイは、マスタゾーングループおよびマスタゾーン内のホストの<systemitem class="daemon">ceph-radosgw</systemitem>デーモンから設定を取得します。マルチサイト設定でゲートウェイを設定するには、<systemitem class="daemon">ceph-radosgw</systemitem>インスタンスを選択してマスタゾーングループおよびマスタゾーンを設定します。
+   </para>
+   <sect3 xml:id="ceph-rgw-fed-realm">
+    <title>レルムの作成</title>
+    <para>
+     レルムは、1つまたは複数のゾーンを含む1つまたは複数のゾーングループから構成されるグローバルに固有のネームスペースを表します。ゾーンにはバケットが含まれていて、バケットにはオブジェクトが含まれています。レルムは、Ceph Object Gatewayを有効にし、同じハードウェアの複数のネームスペースおよびその設定をサポートします。レルムにはピリオドの概念が含まれています。それぞれのピリオドは、ゾーングループおよびゾーンの設定の状態を時間で表します。ゾーングループまたはゾーンを変更するたびに、ピリオドを更新し、コミットします。デフォルトでは、Ceph Object Gatewayは、下位互換性を満たすためにレルムを作成しません。ベストプラクティスとして、新しいクラスタにはレルムを作成することをお勧めします。
+    </para>
+    <para>
+     マルチサイト設定用に<literal>gold</literal>という新しいレルムを作成します。そのためには、マスタゾーングループおよびゾーンで使用するホストでコマンドラインインタフェースを開きます。次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin realm create --rgw-realm=gold --default</screen>
+    <para>
+     クラスタにレルムが1つある場合、<option>--default</option>フラグを指定します。<option>--default</option>が指定されると、<command>radosgw-admin</command>はデフォルトでこのレルムを使用します。<option>--default</option>を指定しない場合、ゾーングループおよびゾーンを追加するには、これらを追加するときに<option>--rgw-realm</option>フラグまたは<option>--realm-id</option>フラグのいずれかを指定する必要があります。
+    </para>
+    <para>
+     レルムを作成した後、<command>radosgw-admin</command>は、レルムの設定を返します。
+    </para>
+<screen>
+{
+  "id": "4a367026-bd8f-40ee-b486-8212482ddcd7",
+  "name": "gold",
+  "current_period": "09559832-67a4-4101-8b3f-10dfcd6b2707",
+  "epoch": 1
+}</screen>
+    <note>
+     <para>
+      Cephは、レルム用に固有のIDを生成します。必要に応じてレルムの名前を変更できます。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-createmasterzonegrp">
+    <title>マスタゾーングループの作成</title>
+    <para>
+     レルムには、レルムのマスタゾーングループとして動作する1つ以上のゾーングループが必要です。マルチサイト設定用に新しいマスタゾーングループを作成します。そのためには、マスタゾーングループおよびゾーンで使用するホストでコマンドラインインタフェースを開きます。次のコマンドを実行して<literal>us</literal>というマスタゾーングループを作成します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup create --rgw-zonegroup=us \
+--endpoints=http://rgw1:80 --master --default</screen>
+    <para>
+     レルムにゾーングループが1つしかない場合、<option>--default</option>フラグを指定します。<option>--default</option>が指定されると、<command>radosgw-admin</command>は、新しいゾーンを追加するときにデフォルトでこのゾーングループを使用します。<option>--default</option>を指定しない場合、ゾーンを追加するには、ゾーンを追加または変更するときに<option>--rgw-zonegroup</option>フラグまたは<option>--zonegroup-id</option>フラグのいずれかを指定してゾーングループを特定する必要があります。
+    </para>
+    <para>
+     マスタゾーングループを作成した後、<command>radosgw-admin</command>は、ゾーングループの設定を返します。例:
+    </para>
+<screen>{
+ "id": "d4018b8d-8c0d-4072-8919-608726fa369e",
+ "name": "us",
+ "api_name": "us",
+ "is_master": "true",
+ "endpoints": [
+     "http:\/\/rgw1:80"
+ ],
+ "hostnames": [],
+ "hostnames_s3website": [],
+ "master_zone": "",
+ "zones": [],
+ "placement_targets": [],
+ "default_placement": "",
+ "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7"
+}</screen>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-masterzone">
+    <title>マスタゾーンの作成</title>
+    <important>
+     <para>
+      ゾーンは、ゾーン内に配置するCeph Object Gatewayノードに作成する必要があります。
+     </para>
+    </important>
+    <para>
+     マルチサイト設定用に新しいマスタゾーンを作成します。そのためには、マスタゾーングループおよびゾーンで使用するホストでコマンドラインインタフェースを開きます。次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone create --rgw-zonegroup=us --rgw-zone=us-east-1 \
+--endpoints=http://rgw1:80 --access-key=<replaceable>SYSTEM_ACCESS_KEY</replaceable> --secret=<replaceable>SYSTEM_SECRET_KEY</replaceable></screen>
+    <note>
+     <para>
+      上の例では、<option>--access-key</option>オプションと<option>--secret</option>オプションを指定していません。これらの設定は、次のセクションでユーザを作成したときにゾーンに追加されます。
+     </para>
+    </note>
+    <para>
+     マスタゾーンを作成した後、<command>radosgw-admin</command>は、ゾーンの設定を返します。例:
+    </para>
+<screen>
+  {
+      "id": "56dfabbb-2f4e-4223-925e-de3c72de3866",
+      "name": "us-east-1",
+      "domain_root": "us-east-1.rgw.meta:root",
+      "control_pool": "us-east-1.rgw.control",
+      "gc_pool": "us-east-1.rgw.log:gc",
+      "lc_pool": "us-east-1.rgw.log:lc",
+      "log_pool": "us-east-1.rgw.log",
+      "intent_log_pool": "us-east-1.rgw.log:intent",
+      "usage_log_pool": "us-east-1.rgw.log:usage",
+      "reshard_pool": "us-east-1.rgw.log:reshard",
+      "user_keys_pool": "us-east-1.rgw.meta:users.keys",
+      "user_email_pool": "us-east-1.rgw.meta:users.email",
+      "user_swift_pool": "us-east-1.rgw.meta:users.swift",
+      "user_uid_pool": "us-east-1.rgw.meta:users.uid",
+      "otp_pool": "us-east-1.rgw.otp",
+      "system_key": {
+          "access_key": "1555b35654ad1656d804",
+          "secret_key": "h7GhxuBLTrlhVUyxSPUKUV8r/2EI4ngqJxD7iBdBYLhwluN30JaT3Q=="
+      },
+      "placement_pools": [
+          {
+              "key": "us-east-1-placement",
+              "val": {
+                  "index_pool": "us-east-1.rgw.buckets.index",
+                  "storage_classes": {
+                      "STANDARD": {
+                          "data_pool": "us-east-1.rgw.buckets.data"
+                      }
+                  },
+                  "data_extra_pool": "us-east-1.rgw.buckets.non-ec",
+                  "index_type": 0
+              }
+          }
+      ],
+      "metadata_heap": "",
+      "realm_id": ""
+  }</screen>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-deldefzonegrp">
+    <title>デフォルトのゾーンとグループの削除</title>
+    <important>
+     <para>
+      次の手順では、まだデータを保存していない新しくインストールしたシステムを使用するマルチサイト設定を想定しています。デフォルトのゾーンおよびそのプールを使用してデータを保存済みの場合、これらを<emphasis role="bold">削除しないでください</emphasis>。削除するとデータが削除され、回復できなくなります。
+     </para>
+    </important>
+    <para>
+     Object Gatewayをデフォルトインストールすると、<literal>default</literal>という名前のデフォルトのゾーングループが作成されます。デフォルトのゾーンがある場合、削除します。まず、デフォルトのゾーングループからデフォルトのゾーンを削除します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zonegroup delete --rgw-zonegroup=default</screen>
+    <para>
+     Cephストレージクラスタにデフォルトのプールがある場合、削除します。
+    </para>
+    <important>
+     <para>
+      次の手順では、現時点でデータが保存されていない新しくインストールしたシステムを使用するマルチサイト設定を想定しています。デフォルトのゾーングループを使用してデータを保存済みの場合、これらを<emphasis role="bold">削除しないでください</emphasis>。
+     </para>
+    </important>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.control default.rgw.control --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.data.root default.rgw.data.root --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.gc default.rgw.gc --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.log default.rgw.log --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.meta default.rgw.meta --yes-i-really-really-mean-it</screen>
+    <warning>
+     <para>
+      デフォルトのゾーングループを削除すると、システムユーザも削除されます。管理ユーザキーが伝搬されない場合、CephダッシュボードのObject Gateway管理機能は動作しません。この手順を続行する場合、次のセクションに進み、システムユーザを再作成します。
+     </para>
+    </warning>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-masterzone-createuser">
+    <title>システムユーザの作成</title>
+    <para>
+     レルムおよびピリオドの情報を取得するにはその前に、<systemitem class="daemon">ceph-radosgw</systemitem>デーモンを認証する必要があります。マスタゾーンで、システムユーザを作成し、デーモン間の認証を簡略化します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin user create --uid=zone.user \
+--display-name="Zone User" --access-key=<replaceable>SYSTEM_ACCESS_KEY</replaceable> \
+--secret=<replaceable>SYSTEM_SECRET_KEY</replaceable> --system</screen>
+    <para>
+     セカンダリゾーンでは<option>access_key</option>と<option>secret_key</option>をマスタゾーンで認証する必要があるため、これらをメモします。
+    </para>
+    <para>
+     システムユーザをマスタゾーンに追加します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zone=us-east-1 \
+--access-key=<replaceable>ACCESS-KEY</replaceable> --secret=<replaceable>SECRET</replaceable></screen>
+    <para>
+     ピリオドを更新して変更を有効にします。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-masterzone-updateperiod">
+    <title>ピリオドの更新</title>
+    <para>
+     マスタゾーンの設定を更新した後、ピリオドを更新します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+    <para>
+     ピリオドを更新した後、<command>radosgw-admin</command>は、ピリオドの設定を返します。例:
+    </para>
+<screen>{
+  "id": "09559832-67a4-4101-8b3f-10dfcd6b2707", "epoch": 1, "predecessor_uuid": "", "sync_status": [], "period_map":
+  {
+    "id": "09559832-67a4-4101-8b3f-10dfcd6b2707", "zonegroups": [], "short_zone_ids": []
+  }, "master_zonegroup": "", "master_zone": "", "period_config":
+  {
+     "bucket_quota": {
+     "enabled": false, "max_size_kb": -1, "max_objects": -1
+     }, "user_quota": {
+       "enabled": false, "max_size_kb": -1, "max_objects": -1
+     }
+  }, "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7", "realm_name": "gold", "realm_epoch": 1
+}</screen>
+    <note>
+     <para>
+      ピリオドを更新すると、エポックが変更され、その他のゾーンが更新した設定を受け取るようになります。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-masterzone-startrgw">
+    <title>Gatewayの起動</title>
+    <para>
+     Object Gatewayホストで、Ceph Object Gatewayサービスを起動し、有効にします。クラスタ固有のFSIDを識別するには、<command>ceph fsid</command>を実行します。Object Gatewayのデーモン名を識別するには、<command>ceph orch ps --hostname <replaceable>HOSTNAME</replaceable></command>を実行します。
+    </para>
+<screen><prompt>cephuser@ogw &gt; </prompt>systemctl start ceph-<replaceable>FSID</replaceable>@<replaceable>DAEMON_NAME</replaceable>
+<prompt>cephuser@ogw &gt; </prompt>systemctl enable ceph-<replaceable>FSID</replaceable>@<replaceable>DAEMON_NAME</replaceable></screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-config-secondaryzone">
+   <title>セカンダリゾーンの設定</title>
+   <para>
+    ゾーングループ内のゾーンは、各ゾーンに同じデータが存在するようにするため、すべてのデータを複製します。セカンダリゾーンを作成する場合は、セカンダリゾーンにサービスを提供するよう指定されたホスト上で次の操作をすべて実行します。
+   </para>
+   <note>
+    <para>
+     3つ目のゾーンを追加するには、セカンダリゾーンの追加と同じ手順を実行します。異なるゾーン名を使用してください。
+    </para>
+   </note>
+   <important>
+    <para>
+     ユーザ作成などのメタデータ操作は、マスタゾーン内のホストで実行する必要があります。マスタゾーンおよびセカンダリゾーンは、バケット操作を受け取ることができますが、セカンダリゾーンは、バケット操作をマスタゾーンにリダイレクトします。マスタゾーンがダウンしている場合、バケット操作は失敗します。
+    </para>
+   </important>
+   <sect3 xml:id="ceph-rgw-pull-realm">
+    <title>レルムのインポート</title>
+    <para>
+     URLのパス、アクセスキー、およびマスタゾーングループのマスタゾーンの秘密を使用して、レルムの設定をホストにインポートします。デフォルト以外のレルムをインポートするには、<option>--rgw-realm</option>設定オプションまたは<option>--realm-id</option>設定オプションを使用してレルムを指定します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin realm pull --url=<replaceable>url-to-master-zone-gateway</replaceable> --access-key=<replaceable>access-key</replaceable> --secret=<replaceable>secret</replaceable></screen>
+    <note>
+     <para>
+      レルムをインポートすると、リモートホストの現在のピリオドの設定も取得され、また、それがこのホストの現在のピリオドになります。
+     </para>
+    </note>
+    <para>
+     このレルムがデフォルトのレルムまたは唯一のレルムの場合、そのレルムをデフォルトのレルムにします。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin realm default --rgw-realm=<replaceable>REALM-NAME</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="cceph-rgw-create-secondaryzone">
+    <title>セカンダリゾーンの作成</title>
+    <para>
+     マルチサイト設定用にセカンダリゾーンを作成します。そのためには、セカンダリゾーンで使用するホストでコマンドラインインタフェースを開きます。ゾーングループID、新しいゾーン名およびゾーンのエンドポイントを指定します。<option>--master</option>フラグは使用<emphasis>しないでください</emphasis>。デフォルトでは、すべてのゾーンがアクティブ-アクティブ設定で動作します。セカンダリゾーンが書き込み操作を受け付けないようにする場合、<option>--read-only</option>フラグを指定して、マスタゾーンとセカンダリゾーンの間にアクティブ-パッシブ設定を作成します。また、マスタゾーングループのマスタゾーンに保存されている、生成済みのシステムユーザの<option>access_key</option>と<option>secret_key</option>を指定します。次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone create --rgw-zonegroup=<replaceable>ZONE-GROUP-NAME</replaceable>\
+                            --rgw-zone=<replaceable>ZONE-NAME</replaceable> --endpoints=<replaceable>URL</replaceable> \
+                            --access-key=<replaceable>SYSTEM-KEY</replaceable> --secret=<replaceable>SECRET</replaceable>\
+                            --endpoints=http://<replaceable>FQDN</replaceable>:80 \
+                            [--read-only]</screen>
+    <para>
+     例:
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone create --rgw-zonegroup=us --endpoints=http://rgw2:80 \
+--rgw-zone=us-east-2 --access-key=<replaceable>SYSTEM_ACCESS_KEY</replaceable> --secret=<replaceable>SYSTEM_SECRET_KEY</replaceable>
+{
+  "id": "950c1a43-6836-41a2-a161-64777e07e8b8",
+  "name": "us-east-2",
+  "domain_root": "us-east-2.rgw.data.root",
+  "control_pool": "us-east-2.rgw.control",
+  "gc_pool": "us-east-2.rgw.gc",
+  "log_pool": "us-east-2.rgw.log",
+  "intent_log_pool": "us-east-2.rgw.intent-log",
+  "usage_log_pool": "us-east-2.rgw.usage",
+  "user_keys_pool": "us-east-2.rgw.users.keys",
+  "user_email_pool": "us-east-2.rgw.users.email",
+  "user_swift_pool": "us-east-2.rgw.users.swift",
+  "user_uid_pool": "us-east-2.rgw.users.uid",
+  "system_key": {
+      "access_key": "1555b35654ad1656d804",
+      "secret_key": "h7GhxuBLTrlhVUyxSPUKUV8r\/2EI4ngqJxD7iBdBYLhwluN30JaT3Q=="
+  },
+  "placement_pools": [
+      {
+          "key": "default-placement",
+          "val": {
+              "index_pool": "us-east-2.rgw.buckets.index",
+              "data_pool": "us-east-2.rgw.buckets.data",
+              "data_extra_pool": "us-east-2.rgw.buckets.non-ec",
+              "index_type": 0
+          }
+      }
+  ],
+  "metadata_heap": "us-east-2.rgw.meta",
+  "realm_id": "815d74c2-80d6-4e63-8cfc-232037f7ff5c"
+}</screen>
+    <important>
+     <para>
+      次の手順では、まだデータが保存されていない新しくインストールしたシステムを使用するマルチサイト設定を想定しています。デフォルトのゾーンおよびそのプールを使用してデータを保存済みの場合、これらを<emphasis role="bold">削除しないでください</emphasis>。削除するとデータが失われ、回復できなくなります。
+     </para>
+    </important>
+    <para>
+     必要に応じてデフォルトのゾーンを削除します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone rm --rgw-zone=default</screen>
+    <para>
+     必要に応じてCephストレージクラスタのデフォルトのプールを削除します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.control default.rgw.control --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.data.root default.rgw.data.root --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.gc default.rgw.gc --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.log default.rgw.log --yes-i-really-really-mean-it
+<prompt>cephuser@adm &gt; </prompt>ceph osd pool rm default.rgw.users.uid default.rgw.users.uid --yes-i-really-really-mean-it</screen>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-secondzone-update-config">
+    <title>Ceph設定ファイルの更新</title>
+    <para>
+     セカンダリゾーンのホストでCeph設定ファイルを更新します。そのためには、<literal>rgw_zone</literal>設定オプションとセカンダリゾーンの名前をインスタンスのエントリに追加します。
+    </para>
+    <para>
+     そのためには、次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config set <replaceable>SERVICE_NAME</replaceable> rgw_zone us-west</screen>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-secondzone-updateperiod">
+    <title>ピリオドの更新</title>
+    <para>
+     マスタゾーンの設定を更新した後、ピリオドを更新します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit
+{
+  "id": "b5e4d3ec-2a62-4746-b479-4b2bc14b27d1",
+  "epoch": 2,
+  "predecessor_uuid": "09559832-67a4-4101-8b3f-10dfcd6b2707",
+  "sync_status": [ "[...]"
+  ],
+  "period_map": {
+      "id": "b5e4d3ec-2a62-4746-b479-4b2bc14b27d1",
+      "zonegroups": [
+          {
+              "id": "d4018b8d-8c0d-4072-8919-608726fa369e",
+              "name": "us",
+              "api_name": "us",
+              "is_master": "true",
+              "endpoints": [
+                  "http:\/\/rgw1:80"
+              ],
+              "hostnames": [],
+              "hostnames_s3website": [],
+              "master_zone": "83859a9a-9901-4f00-aa6d-285c777e10f0",
+              "zones": [
+                  {
+                      "id": "83859a9a-9901-4f00-aa6d-285c777e10f0",
+                      "name": "us-east-1",
+                      "endpoints": [
+                          "http:\/\/rgw1:80"
+                      ],
+                      "log_meta": "true",
+                      "log_data": "false",
+                      "bucket_index_max_shards": 0,
+                      "read_only": "false"
+                  },
+                  {
+                      "id": "950c1a43-6836-41a2-a161-64777e07e8b8",
+                      "name": "us-east-2",
+                      "endpoints": [
+                          "http:\/\/rgw2:80"
+                      ],
+                      "log_meta": "false",
+                      "log_data": "true",
+                      "bucket_index_max_shards": 0,
+                      "read_only": "false"
+                  }
+
+              ],
+              "placement_targets": [
+                  {
+                      "name": "default-placement",
+                      "tags": []
+                  }
+              ],
+              "default_placement": "default-placement",
+              "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7"
+          }
+      ],
+      "short_zone_ids": [
+          {
+              "key": "83859a9a-9901-4f00-aa6d-285c777e10f0",
+              "val": 630926044
+          },
+          {
+              "key": "950c1a43-6836-41a2-a161-64777e07e8b8",
+              "val": 4276257543
+          }
+
+      ]
+  },
+  "master_zonegroup": "d4018b8d-8c0d-4072-8919-608726fa369e",
+  "master_zone": "83859a9a-9901-4f00-aa6d-285c777e10f0",
+  "period_config": {
+      "bucket_quota": {
+          "enabled": false,
+          "max_size_kb": -1,
+          "max_objects": -1
+      },
+      "user_quota": {
+          "enabled": false,
+          "max_size_kb": -1,
+          "max_objects": -1
+      }
+  },
+  "realm_id": "4a367026-bd8f-40ee-b486-8212482ddcd7",
+  "realm_name": "gold",
+  "realm_epoch": 2
+}</screen>
+    <note>
+     <para>
+      ピリオドを更新すると、エポックが変更され、その他のゾーンが更新した設定を受け取るようになります。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-fed-secondzone-startrgw">
+    <title>Object Gatewayの起動</title>
+    <para>
+     Object Gatewayホストで、Ceph Object Gatewayサービスを起動し、有効にします。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch start rgw.us-east-2
+</screen>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-check-sync-status">
+    <title>同期の状態の確認</title>
+    <para>
+     セカンダリゾーンが稼働しているときに、同期の状態を確認します。同期では、マスタゾーンで作成したユーザとバケットがセカンダリゾーンにコピーされます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin sync status</screen>
+    <para>
+     同期操作の状態が出力に表示されます。例:
+    </para>
+<screen>realm f3239bc5-e1a8-4206-a81d-e1576480804d (gold)
+    zonegroup c50dbb7e-d9ce-47cc-a8bb-97d9b399d388 (us)
+         zone 4c453b70-4a16-4ce8-8185-1893b05d346e (us-west)
+metadata sync syncing
+              full sync: 0/64 shards
+              metadata is caught up with master
+              incremental sync: 64/64 shards
+    data sync source: 1ee9da3e-114d-4ae3-a8a4-056e8a17f532 (us-east)
+                      syncing
+                      full sync: 0/128 shards
+                      incremental sync: 128/128 shards
+                      data is caught up with source</screen>
+    <note>
+     <para>
+      セカンダリゾーンは、バケット操作を受け付けますが、これをマスタゾーンにリダイレクトし、マスタゾーンと同期を取り、バケット操作の結果を受け取ります。マスタゾーンがダウンしている場合、セカンダリゾーンで実行されたバケット操作は失敗しますが、オブジェクト操作は成功します。
+     </para>
+    </note>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-maintenance">
+   <title>Object Gatewayの一般的な保守</title>
+   <sect3 xml:id="ceph-rgw-check-sync">
+    <title>同期の状態の確認</title>
+    <para>
+     次のコマンドを使用して、ゾーンの複製の状態に関する情報を問い合わせることができます。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin sync status
+        realm b3bc1c37-9c44-4b89-a03b-04c269bea5da (gold)
+    zonegroup f54f9b22-b4b6-4a0e-9211-fa6ac1693f49 (us)
+         zone adce11c9-b8ed-4a90-8bc5-3fc029ff0816 (us-west)
+        metadata sync syncing
+              full sync: 0/64 shards
+              incremental sync: 64/64 shards
+              metadata is behind on 1 shards
+              oldest incremental change not applied: 2017-03-22 10:20:00.0.881361s
+data sync source: 341c2d81-4574-4d08-ab0f-5a2a7b168028 (us-east)
+                  syncing
+                  full sync: 0/128 shards
+                  incremental sync: 128/128 shards
+                  data is caught up with source
+          source: 3b5d1a3f-3f27-4e4a-8f34-6072d4bb1275 (us-3)
+                  syncing
+                  full sync: 0/128 shards
+                  incremental sync: 128/128 shards
+                  data is caught up with source</screen>
+   </sect3>
+   <sect3 xml:id="ceph-rgw-metadata-master">
+    <title>メタデータマスタゾーンの変更</title>
+    <important>
+     <para>
+      メタデータマスタにするゾーンを変更する際には注意してください。ゾーンで現在のマスタゾーンからのメタデータの同期が完了していない場合、マスタに昇格するときに残っていたエントリを操作できず、これらの変更は失われます。そのため、ゾーンの<command>radosgw-admin</command>の同期の状態がメタデータの同期に追いつくまで待機してからそのゾーンをマスタに昇格することをお勧めします。同様に、メタデータの変更が現在のマスタゾーンで処理されていて、別のゾーンがマスタに昇格している場合、これらの変更は失われる可能性が高いです。これを回避するには、前のマスタゾーンのObject Gatewayインスタンスをシャットダウンすることをお勧めします。別のゾーンを昇格した後、その新しいピリオドは<command>radosgw-admin</command>ピリオドの取得によってフェッチでき、そのゲートウェイを再起動できます。
+     </para>
+    </important>
+    <para>
+     ゾーン(たとえばゾーングループ<literal>us</literal>のゾーン<literal>us-west</literal>)をメタデータマスタに昇格するには、そのゾーンで次のコマンドを実行します。
+    </para>
+<screen><prompt>cephuser@ogw &gt; </prompt>radosgw-admin zone modify --rgw-zone=us-west --master
+<prompt>cephuser@ogw &gt; </prompt>radosgw-admin zonegroup modify --rgw-zonegroup=us --master
+<prompt>cephuser@ogw &gt; </prompt>radosgw-admin period update --commit</screen>
+    <para>
+     新しいピリオドが生成され、ゾーン<literal>us-west</literal>のObject Gatewayインスタンスによって、このピリオドがその他のゾーンに送信されます。
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="ceph-rgw-failover-dr">
+   <title>フェールオーバーと障害復旧機能を提供</title>
+   <para>
+    マスタゾーンに障害が発生した場合、障害復旧のためにセカンダリゾーンにフェールオーバーします。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      セカンダリゾーンをマスタおよびデフォルトのゾーンにします。例:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zone=<replaceable>ZONE-NAME</replaceable> --master --default</screen>
+     <para>
+      デフォルトでは、Ceph Object Gatewayはアクティブ-アクティブ設定で動作します。クラスタがアクティブ-パッシブ設定で動作するように設定されていた場合、セカンダリゾーンは読み込み専用ゾーンになっています。<option>--read-only</option>の状態を削除して、このゾーンが書き込み操作を受け付けることができるようにします。例:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zone=<replaceable>ZONE-NAME</replaceable> --master --default \
+                                                   --read-only=false
+</screen>
+    </step>
+    <step>
+     <para>
+      ピリオドを更新して変更を有効にします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+    </step>
+    <step>
+     <para>
+      Ceph Object Gatewayを再起動します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch restart rgw</screen>
+    </step>
+   </procedure>
+   <para>
+    前のマスタゾーンが復旧したら、操作を元に戻します。
+   </para>
+   <procedure>
+    <step>
+     <para>
+      復旧したゾーンで、現在のマスタゾーンから最新のレルムの設定をインポートします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin realm pull --url=<replaceable>URL-TO-MASTER-ZONE-GATEWAY</replaceable> \
+                           --access-key=<replaceable>ACCESS-KEY</replaceable> --secret=<replaceable>SECRET</replaceable>
+</screen>
+    </step>
+    <step>
+     <para>
+      復旧したゾーンをマスタおよびデフォルトのゾーンにします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zone=<replaceable>ZONE-NAME</replaceable> --master --default</screen>
+    </step>
+    <step>
+     <para>
+      ピリオドを更新して変更を有効にします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+    </step>
+    <step>
+     <para>
+      復旧したゾーンでCeph Object Gatewayを再起動します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch restart rgw@rgw</screen>
+    </step>
+    <step>
+     <para>
+      セカンダリゾーンを読み込み専用設定にする必要がある場合、セカンダリゾーンを更新します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin zone modify --rgw-zone=<replaceable>ZONE-NAME</replaceable> --read-only</screen>
+    </step>
+    <step>
+     <para>
+      ピリオドを更新して変更を有効にします。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>radosgw-admin period update --commit</screen>
+    </step>
+    <step>
+     <para>
+      セカンダリゾーンでCeph Object Gatewayを再起動します。
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch restart@rgw</screen>
+    </step>
+   </procedure>
+  </sect2>
+ </sect1>
+</chapter>

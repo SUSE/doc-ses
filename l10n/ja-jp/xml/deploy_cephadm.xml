@@ -1,0 +1,1631 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deploy_cephadm.xml" version="5.0" xml:id="deploy-cephadm">
+ <title>cephadmによる展開</title>
+ <info>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  SUSE Enterprise Storage 7はSaltベースの<systemitem class="resource">ceph-salt</systemitem>ツールを使用して、参加している各クラスタノードのオペレーティングシステムをcephadmを介した展開用に準備します。cephadmはSSHを介してCeph Managerデーモンからホストに接続してCephクラスタを展開、管理します。cephadmはCephクラスタのライフサイクル全体を管理します。ライフサイクルは単独のノード(1つのMONおよびMGRサービス)に小規模なクラスタをブートストラップすることから始まります。その後、オーケストレーションインターフェイスを使用して、クラスタをすべてのホストを含むように拡張するとともに、Cephサービスをすべてプロビジョニングします。この作業はCeph CLI(コマンドラインインターフェイス)から実施できます。一部はCephダッシュボード(GUI)からも行えます。
+ </para>
+ <important>
+  <para>
+   Cephコミュニティのドキュメントでは、最初の展開の際に<command>cephadm bootstrap</command>コマンドを使用していることに注意してください。<command>cephadm bootstrap</command>コマンドは<systemitem class="resource">ceph-salt</systemitem>から呼び出されます。直接実行しないでください。<command>cephadm bootstrap</command>を使用する手動のCephクラスタ展開はサポートされていません。
+  </para>
+ </important>
+ <para>
+  cephadmを使用してCephクラスタを展開するには、以下のタスクを実行する必要があります。
+ </para>
+ <orderedlist>
+  <listitem>
+   <para>
+    すべてのクラスタノードで、ベースとなるオペレーティングシステム(SUSE Linux Enterprise Server 15 SP2)のインストールと基本的な設定を行います。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <systemitem class="resource">ceph-salt</systemitem>を介した初期展開の準備のために、すべてのクラスタノードにSaltインフラストラクチャを展開します。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <systemitem class="resource">ceph-salt</systemitem>経由でクラスタの基本的なプロパティを設定し、展開します。
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    cephadmを使用してクラスタに新しいノードと役割を追加し、サービスを展開します。
+   </para>
+  </listitem>
+ </orderedlist>
+ <sect1 xml:id="deploy-os">
+  <title>SUSE Linux Enterprise Serverのインストールと設定</title>
+
+  <procedure>
+   <step>
+    <para>
+     各クラスタノードでSUSE Linux Enterprise Server 15 SP2のインストールと登録を行います。SUSE Enterprise Storageのインストール中にアップデートリポジトリへのアクセスが必要なため、登録は必須です。最低でも、次のモジュールを導入します。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Basesystem Module
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Server Applications Module
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     SUSE Linux Enterprise Serverのインストール方法の詳細については、<link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-install.html"/>を参照してください。
+    </para>
+   </step>
+   <step>
+    <para>
+     各クラスタノードに「SUSE Enterprise Storage 7」<emphasis/>の拡張機能をインストールします。
+    </para>
+    <tip>
+     <title>SUSE Linux Enterprise Serverと共にSUSE Enterprise Storageをインストールする</title>
+     <para>
+      SUSE Enterprise Storage 7の拡張機能は、SUSE Linux Enterprise Server 15 SP2のインストール後に分けてインストールすることも、SUSE Linux Enterprise Server 15 SP2のインストール手順の中で追加することもできます。
+     </para>
+    </tip>
+    <para>
+     拡張機能のインストール方法の詳細については、<link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-register-sle.html"/>を参照してください。
+    </para>
+   </step>
+   <step>
+    <para>
+     ネットワークを設定します。各ノードでDNS名が適切に解決されるようにする設定も含まれます。ネットワークの設定の詳細については、<link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#sec-network-yast"/>を参照してください。DNSサーバの設定の詳細については、<link xlink:href="https://documentation.suse.com/sles/15-SP2/single-html/SLES-admin/#cha-dns"/>を参照してください。
+    </para>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-salt">
+  <title>Saltの展開</title>
+
+  <para>
+   SUSE Enterprise Storageは最初のクラスタの準備にSaltと<systemitem class="resource">ceph-salt</systemitem>を使用します。Saltを使用すると、「Salt Master」<emphasis/>と呼ばれる単独の専用ホストから複数のクラスタノードに対して、同時に設定やコマンドを実行できます。Saltの展開前に、次の重要な点を考慮してください。
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis/>「Salt Minion」は、Salt Masterと呼ばれる専用のノードによって制御されるノードです。
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     仮にSalt MasterホストがCephクラスタの一部である場合は、独自のSalt Minionを実行する必要があります。ただしこれは必須ではありません。
+    </para>
+    <tip>
+     <title>1つのサーバで複数の役割を共有</title>
+     <para>
+      各役割を別個のノードに展開すると、Cephクラスタで最適なパフォーマンスを実現できます。しかし、実際の展開では、1つのノードを複数の役割のために共有しなければならない場合があります。パフォーマンスやアップグレード手順で問題が起きないようにするため、Ceph OSD、メタデータサーバ、またはCeph Monitorの役割は管理ノードに展開しないでください。
+     </para>
+    </tip>
+   </listitem>
+   <listitem>
+    <para>
+     Salt Minionは、ネットワークでSalt Masterのホスト名を正しく解決する必要があります。Salt Minionは、デフォルトでは<systemitem>salt</systemitem>というホスト名を検索しますが、ネットワーク経由でアクセス可能なほかのホスト名を<filename>/etc/salt/minion</filename>ファイルで指定できます。
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <procedure>
+   <step>
+    <para>
+     Salt Masterノードに<literal>salt-master</literal>をインストールします。
+    </para>
+<screen><prompt>root@master # </prompt>zypper in salt-master</screen>
+   </step>
+   <step>
+    <para>
+     <systemitem>salt-master</systemitem>サービスが有効になっていて起動していることを確認します。必要であれば、サービスを有効にして起動します。
+    </para>
+<screen><prompt>root@master # </prompt>systemctl enable salt-master.service
+<prompt>root@master # </prompt>systemctl start salt-master.service</screen>
+   </step>
+   <step>
+    <para>
+     ファイアウォールを使用する場合は、Salt Masterノードのポート4505と4506がすべてのSalt Minionノードに対して開いていることを確認します。これらのポートが閉じている場合は、<command>yast2 firewall</command>コマンドを使用してポートを開き、<guimenu>salt-master</guimenu>サービスに適切なゾーンを許可できます。たとえば、<literal>public</literal>を許可します。
+    </para>
+   </step>
+   <step>
+    <para>
+     パッケージ<literal>salt-minion</literal>をすべてのミニオンノードにインストールします。
+    </para>
+<screen><prompt>root@minion &gt; </prompt>zypper in salt-minion</screen>
+   </step>
+   <step>
+    <para>
+     <filename>/etc/salt/minion</filename>を編集し、次の行のコメントを解除します。
+    </para>
+<screen>#log_level_logfile: warning</screen>
+    <para>
+     <literal>warning</literal>ログレベルを<literal>info</literal>に変更します。
+    </para>
+    <note>
+     <title><option>log_level_logfile</option>と<option>log_level</option></title>
+     <para>
+      <option>log_level</option>は、どのログメッセージが画面に表示されるかを制御します。一方、<option>log_level_logfile</option>は、どのログメッセージが<filename>/var/log/salt/minion</filename>に書き込まれるかを制御します。
+     </para>
+    </note>
+    <note>
+     <para>
+      「すべて」の<emphasis/>クラスタ(ミニオン)ノードのログレベルを変更したか確認してください。
+     </para>
+    </note>
+   </step>
+   <step>
+    <para>
+     すべてのノードが他のノードの「完全修飾ドメイン名」<emphasis/>をパブリッククラスタネットワークのIPアドレスに解決できることを確認します。
+    </para>
+   </step>
+   <step>
+    <para>
+     すべてのミニオンをマスターに接続するように設定します。ホスト名<literal>salt</literal>でSalt Masterに接続できない場合は、ファイル<filename>/etc/salt/minion</filename>を編集するか、次の内容で新しいファイル<filename>/etc/salt/minion.d/master.conf</filename>を作成します。
+    </para>
+<screen>master: <replaceable>host_name_of_salt_master</replaceable></screen>
+    <para>
+     先に説明した設定ファイルを変更した場合は、すべての関連するSalt MinionのSaltサービスを再起動します。
+    </para>
+<screen><prompt>root@minion &gt; </prompt>systemctl restart salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     すべてのノードで<systemitem>salt-minion</systemitem>サービスが有効になっていて起動していることを確認します。必要であれば、次のコマンドを使用して有効にして起動します。
+    </para>
+<screen><prompt role="root">root # </prompt>systemctl enable salt-minion.service
+<prompt role="root">root # </prompt>systemctl start salt-minion.service</screen>
+   </step>
+   <step>
+    <para>
+     各Salt Minionの指紋を確認して、指紋が一致する場合、Salt Master上のすべてのSaltキーを受諾します。
+    </para>
+    <note>
+     <para>
+      Salt Minionの指紋が空に戻る場合は、Salt MinionがSalt Masterの設定を持っていて、Salt Masterと通信できることを確認します。
+     </para>
+    </note>
+    <para>
+     各ミニオンの指紋を表示します。
+    </para>
+<screen><prompt>root@minion &gt; </prompt>salt-call --local key.finger
+local:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     すべてのSalt Minionの指紋を収集した後、Salt Master上の、受諾されていない全ミニオンキーの指紋を一覧にします。
+    </para>
+<screen><prompt>root@master # </prompt>salt-key -F
+[...]
+Unaccepted Keys:
+minion1:
+3f:a3:2f:3f:b4:d3:d9:24:49:ca:6b:2c:e1:6c:3f:c3:83:37:f0:aa:87:42:e8:ff...</screen>
+    <para>
+     ミニオンの指紋が一致する場合は、それらを受諾します。
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --accept-all</screen>
+   </step>
+   <step>
+    <para>
+     キーが受諾されたことを確認します。
+    </para>
+<screen><prompt>root@master # </prompt>salt-key --list-all</screen>
+   </step>
+   <step>
+    <para>
+     すべてのSalt Minionが応答するかテストします。
+    </para>
+<screen><prompt>root@master # </prompt>salt-run manage.status</screen>
+   </step>
+  </procedure>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day1">
+  <title>Cephクラスタの展開</title>
+
+  <para>
+   このセクションでは、基本的なCephクラスタを展開する一連のプロセスを説明します。以下のサブセクションをよく読んで、記載されているコマンドを記載されている順番で実行してください。
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-cephsalt">
+   <title><systemitem class="resource">ceph-salt</systemitem>のインストール</title>
+   <para>
+    <systemitem class="resource">ceph-salt</systemitem>はcephadmに管理されるCephクラスタを展開するためのツールを提供します。<systemitem class="resource">ceph-salt</systemitem>はSaltインフラストラクチャを使用して、OSの管理(たとえば、ソフトウェアアップデートや時刻の同期)や、Salt Minionの役割の定義を行います。
+   </para>
+   <para>
+    Salt Master上で <package>ceph-salt</package> パッケージをインストールします。
+   </para>
+<screen><prompt>root@master # </prompt>zypper install ceph-salt</screen>
+   <para>
+    このコマンドは <package>ceph-salt-formula</package> を依存関係としてインストールします。この依存関係により、<filename>/etc/salt/master.d</filename>ディレクトリに追加のファイルを挿入することで、Salt Masterの設定が変更されます。変更を適用するには、<systemitem class="daemon">salt-master.service</systemitem>を再起動し、Saltモジュールを同期させます。
+   </para>
+<screen>
+<prompt>root@master # </prompt>systemctl restart salt-master.service
+<prompt>root@master # </prompt>salt \* saltutil.sync_all
+</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-configure">
+   <title>クラスタプロパティの設定</title>
+   <para>
+    <command>ceph-salt config</command>コマンドを使用して、クラスタの基本的なプロパティを設定します。
+   </para>
+   <important>
+    <para>
+     <filename>/etc/ceph/ceph.conf</filename>ファイルは、cephadmで管理されており、ユーザは編集しないでください。<emphasis/>Cephの設定パラメータは、新しい<command>ceph config</command>コマンドを使用して設定する必要があります。詳細については、<xref linkend="cha-ceph-configuration-db"/>を参照してください。
+    </para>
+   </important>
+   <sect3 xml:id="deploy-cephadm-configure-shell">
+    <title><systemitem class="resource">ceph-salt</systemitem>シェルの使用</title>
+    <para>
+     <command>ceph-salt config</command>をパスやサブコマンドを使わずに実行する場合、インタラクティブな<systemitem class="resource">ceph-salt</systemitem>シェルを入力します。このシェルは、1つのバッチで複数のプロパティを設定する必要がありますが、完全なコマンド構文を入力したくない場合に便利です。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config
+<prompt>/&gt;</prompt> ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [no minions]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [no minions]
+  |   o- bootstrap ........................................... [no minion]
+  |   o- cephadm ............................................ [no minions]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path .................................. [ no image path]
+  | o- dashboard ................................................... [...]
+  | | o- force_password_update ................................. [enabled]
+  | | o- password ................................................ [admin]
+  | | o- ssl_certificate ....................................... [not set]
+  | | o- ssl_certificate_key ................................... [not set]
+  | | o- username ................................................ [admin]
+  | o- mon_ip .................................................. [not set]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh ............................................... [no key pair set]
+  | o- private_key .................................. [no private key set]
+  | o- public_key .................................... [no public key set]
+  o- time_server ........................... [enabled, no server host set]
+    o- external_servers .......................................... [empty]
+    o- servers ................................................... [empty]
+    o- subnet .................................................. [not set]
+</screen>
+    <para>
+     <systemitem class="resource">ceph-salt</systemitem>の<command>ls</command>コマンドの出力を見るとわかるように、クラスタ構成がツリー構造に整理されます。<systemitem class="resource">ceph-salt</systemitem>シェルに含まれる、クラスタの特定のプロパティを設定するには、次の2つのオプションがあります。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       現在位置からコマンドを実行し、第1引数としてプロパティへの絶対パスを入力する
+      </para>
+<screen>
+<prompt>/&gt;</prompt> /cephadm_bootstrap/dashboard ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username .................................................... [admin]
+<prompt>/&gt; /cephadm_bootstrap/dashboard/username set ceph-admin</prompt>
+Value set.
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       設定する必要があるプロパティへのパスを変更してから、コマンドを実行する
+      </para>
+<screen>
+<prompt>/&gt;</prompt> cd /cephadm_bootstrap/dashboard/
+<prompt>/ceph_cluster/minions&gt;</prompt> ls
+o- dashboard ....................................................... [...]
+  o- force_password_update ..................................... [enabled]
+  o- password .................................................... [admin]
+  o- ssl_certificate ........................................... [not set]
+  o- ssl_certificate_key ....................................... [not set]
+  o- username ................................................[ceph-admin]
+</screen>
+     </listitem>
+    </itemizedlist>
+    <tip>
+     <title>設定スニペットの自動補完</title>
+     <para>
+      <systemitem class="resource">ceph-salt</systemitem>シェルの中では自動補完機能を使用できます。これは、通常のLinuxシェル(Bash)の自動補完と同じようなものです。この機能は設定パス、サブコマンド、またはSalt Minion名を補完します。設定パスを自動補完する場合は、次の2つのオプションがあります。
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        現在位置からの相対的なパスをシェルに補完させる場合は、TABキー<keycap function="tab"/>を2回押します。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        シェルに絶対パスを補完させる場合は、<keycap>/</keycap>を入力してからTABキー<keycap function="tab"/>を2回押します。
+       </para>
+      </listitem>
+     </itemizedlist>
+    </tip>
+    <tip>
+     <title>方向キーによる移動</title>
+     <para>
+      <systemitem class="resource">ceph-salt</systemitem>シェルからパスを使用せずに<command>cd</command>コマンドを入力すると、ツリー構造のクラスタ構成が出力され、現在パスの行がアクティブになります。上下の方向キーを使用して、それぞれの行に移動できます。<keycap function="enter"/>を押して確定すると、アクティブ行に設定パスが変更されます。
+     </para>
+    </tip>
+    <important>
+     <title>表記</title>
+     <para>
+      ドキュメントの整合性を維持するため、<systemitem class="resource">ceph-salt</systemitem>シェルを入力しない単一のコマンド構文を使用しています。たとえば、次のコマンドを使用してクラスタ構成のツリーを一覧にできます。
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config ls</screen>
+    </important>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-minions">
+    <title>Salt Minionの追加</title>
+    <para>
+     <xref linkend="deploy-salt"/>で展開し受諾したSalt Minionの全体またはサブセットをCephクラスタ構成に含めます。Salt Minionはフルネームで指定できます。また、「*」と「?」のグロブ表現を使用することで複数のSalt Minionを同時に含めることもできます。<literal>/ceph_cluster/minions</literal>パスで<command>add</command>サブコマンドを使用します。次のコマンドは受諾済みのSalt Minionをすべて含めます。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions add '*'</screen>
+    <para>
+     指定したSalt Minionが追加されたことを確認します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/minions ls
+o- minions ................................................. [Minions: 5]
+  o- ses-master.example.com .................................. [no roles]
+  o- ses-min1.example.com .................................... [no roles]
+  o- ses-min2.example.com .................................... [no roles]
+  o- ses-min3.example.com .................................... [no roles]
+  o- ses-min4.example.com .................................... [no roles]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-cephadm">
+    <title>cephadmで管理するSalt Minionの指定</title>
+    <para>
+     Cephクラスタに属し、cephadmで管理するノードを指定します。Cephサービスを実行するすべてのノードと、管理ノードを含めます。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/cephadm add '*'</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-admin">
+    <title>管理ノードの指定</title>
+    <para>
+     管理ノードは、<filename>ceph.conf</filename>設定ファイルとCeph管理キーリングがインストールされるノードです。通常、Ceph関連のコマンドは管理ノードで実行します。
+    </para>
+    <tip>
+     <title>同じノード上のSalt Masterと管理ノード</title>
+     <para>
+      すべての、または、ほとんどのホストがSUSE Enterprise Storageに所属するような均質な環境では、Salt Masterと同じホストに管理ノードを置くことお勧めします。
+     </para>
+     <para>
+      あるSaltインフラストラクチャが複数のクラスタのホストとなるような異種環境(たとえば、SUSE Enterprise Storageと共にSUSE Managerを使用するような環境)では、Salt Masterと同じホストに管理ノードを置かない<emphasis/>でください。
+     </para>
+    </tip>
+    <para>
+     管理ノードを指定するには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin add ses-master.example.com
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/admin ls
+o- admin ................................................... [Minions: 1]
+  o- ses-master.example.com ...................... [Other roles: cephadm]
+</screen>
+    <tip>
+     <title><filename>ceph.conf</filename>と管理キーリングを複数のノードにインストールする</title>
+     <para>
+      展開で必要な場合は、Ceph設定ファイルと管理キーリングを複数のノードにインストールすることもできます。セキュリティ上の理由から、すべてのクラスタのノードにインストールすることは避けてください。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-mon">
+    <title>最初のMON/MGRノードの指定</title>
+    <para>
+     クラスタをブートストラップするSalt Minionをクラスタ内から指定する必要があります。このミニオンはCeph MonitorとCeph Managerサービスを実行する最初のミニオンになります。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap set ses-min1.example.com
+Value set.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/bootstrap ls
+o- bootstrap ..................................... [ses-min1.example.com]
+</screen>
+    <para>
+     さらに、<option>public_network</option>パラメータが正しく設定されていることを確認するために、パブリックネットワーク上のブートストラップMONのIPアドレスを指定する必要があります。たとえば、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/mon_ip set 192.168.10.20
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-tuned-profiles">
+    <title>調整されるプロファイルの指定</title>
+    <para>
+     クラスタの中から、アクティブに調整されるプロファイルを保有するミニオンを指定する必要があります。そのためには、次のコマンドを実行して役割を明示的に追加してください。
+    </para>
+    <note>
+     <para>
+      1つのミニオンに<literal>latency</literal>と<literal>throughput</literal>の両方の役割を持たせることはできません。
+     </para>
+    </note>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/latency add ses-min1.example.com
+Adding ses-min1.example.com...
+1 minion added.
+<prompt>root@master # </prompt>ceph-salt config /ceph_cluster/roles/tuned/throughput add ses-min2.example.com
+Adding ses-min2.example.com...
+1 minion added.
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ssh">
+    <title>SSHキーペアの生成</title>
+    <para>
+     cephadmはSSHプロトコルを使用してクラスタノードと通信します。<literal>cephadm</literal>という名前のユーザアカウントが自動的に作成され、SSH通信に使用されます。
+    </para>
+    <para>
+     SSHキーペアの公開鍵と秘密鍵を生成する必要があります。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /ssh generate
+Key pair generated.
+<prompt>root@master # </prompt>ceph-salt config /ssh ls
+o- ssh .................................................. [Key Pair set]
+  o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-ntp">
+    <title>タイムサーバの設定</title>
+    <para>
+     すべてのクラスタノードは信頼できるタイムソースと時刻を同期する必要があります。時刻を同期するには、いくつかのシナリオがあります。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       最適なNTPサービスを使用して時刻を同期するように、すべてのクラスタノードを設定済みの場合、タイムサーバ処理を完全に無効化します。
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server disable
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       お使いのサイトに単一のタイムソースがすでに存在する場合は、そのタイムソースのホスト名を指定します。
+      </para>
+<screen>
+ <prompt>root@master # </prompt>ceph-salt config /time_server/servers add <replaceable>time-server.example.com</replaceable>
+</screen>
+     </listitem>
+     <listitem>
+      <para>
+       別の方法として、<systemitem class="resource">ceph-salt</systemitem>にはSalt Minionの1つを残りのクラスタのタイムサーバとして機能するように設定する機能があります。この機能は「内部タイムサーバ」と呼ばれることもあります。このシナリオでは、<systemitem class="resource">ceph-salt</systemitem>は内部タイムサーバ(Salt Minionの1つであるはず)を、<literal>pool.ntp.org</literal>などの外部のタイムサーバと時刻を同期するように設定します。同時に、それ以外のミニオンを内部タイムサーバから時刻を取得するように設定します。この方法は、次のように実現できます。
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/servers add ses-master.example.com
+<prompt>root@master # </prompt>ceph-salt config /time_server/external_servers add pool.ntp.org
+</screen>
+      <para>
+       <option>/time_server/subnet</option>オプションはサブネットを指定します。NTPクライアントはこのサブネットからNTPサーバへのアクセスを許可されます。サブネットは<option>/time_server/servers</option>を指定した際に自動で設定されます。変更や手動指定が必要な場合は、次のコマンドを実行します。
+      </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server/subnet set 10.20.6.0/24
+</screen>
+     </listitem>
+    </itemizedlist>
+    <para>
+     次のコマンドでタイムサーバの設定を確認します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /time_server ls
+o- time_server ................................................ [enabled]
+  o- external_servers ............................................... [1]
+  | o- pool.ntp.org ............................................... [...]
+  o- servers ........................................................ [1]
+  | o- ses-master.example.com ..................................... [...]
+  o- subnet .............................................. [10.20.6.0/24]
+</screen>
+    <para>
+     時刻同期設定の詳細については、<link xlink:href="https://documentation.suse.com/sles/15-SP2/html/SLES-all/cha-ntp.html#sec-ntp-yast"/>を参照してください。
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-dashboardlogin">
+    <title>Cephダッシュボードログインアカウント情報の設定</title>
+    <para>
+     基本的なクラスタが展開されると、Cephダッシュボードが使用可能になります。アクセスするには、有効なユーザ名とパスワードを設定する必要があります。次に例を示します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/username set admin
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/password set <replaceable>PWD</replaceable>
+</screen>
+    <tip>
+     <title>パスワードの更新を強制する</title>
+     <para>
+      デフォルトでは、最初のダッシュボードユーザはダッシュボードに最初にログインの際にパスワードの変更を求められます。機能を無効化するには、次のコマンドを実行します。
+     </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/dashboard/force_password_update disable</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-imagepath">
+    <title>コンテナイメージへのパスの設定</title>
+    <para>
+     cephadmは展開手順で使用されるコンテナイメージへの有効なURIパスを認識する必要があります。デフォルトパスが設定されているかどうかを確認します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path ls</screen>
+    <para>
+     デフォルトパスが設定されていない場合や、展開時に特定のパスを必要とする場合は、次のように追加してください。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_image_path set registry.suse.com/ses/7/ceph/ceph</screen>
+    <note>
+     <para>
+      監視スタックの場合、これ以外にもコンテナイメージが必要です。エアギャップに守られた環境で展開する場合や、ローカルレジストリから展開する場合に、対応するローカルレジストリを準備するために、こうしたコンテナイメージをこの時点で取得したい場合があります。
+     </para>
+     <para>
+      <systemitem class="resource">ceph-salt</systemitem>はこれらのコンテナイメージを展開に使用しないことに注意してください。これは、後の手順で監視コンポーネントの展開と移行のためにcephadmを使用するための準備です。
+     </para>
+     <para>
+      監視スタックが使用するイメージとそのカスタマイズ方法の詳細については、<xref linkend="monitoring-custom-images"/>を参照してください。
+     </para>
+    </note>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-registry">
+    <title>コンテナレジストリの設定</title>
+    <para>
+     必要に応じて、ローカルコンテナレジストリを設定できます。これは<literal>registry.suse.com</literal>レジストリのミラーとして機能します。<systemitem class="systemname">registry.suse.com</systemitem>から更新されたコンテナを新しく入手できるようになった際には、ローカルレジストリを再同期する必要があることに注意してください。
+
+    </para>
+    <para>
+     ローカルレジストリを作成すると、以下のようなシナリオで役立ちます。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       多数のクラスタノードを使用していて、コンテナイメージのローカルミラーを作成することで、ダウンロード時間と帯域幅を削減したい場合。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       クラスタがオンラインのレジストリにアクセスできないため(エアギャップ展開)、コンテナイメージを取得するローカルミラーを必要とする場合。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       設定やネットワークの問題により、クラスタがセキュアリンク経由でリモートレジストリにアクセスできないため、ローカルの暗号化されていないレジストリが必要な場合。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <important>
+     <para>
+      PTF(Program Temporary Fix)をサポートされたシステムに展開するには、ローカルコンテナレジストリを展開する必要があります。
+     </para>
+    </important>
+    <para>
+     アクセス資格情報と共にローカルレジストリのURLを設定するには、以下の手順に従います。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       ローカルレジストリのURLを設定します。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/registry set <replaceable>REGISTRY_URL</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       ローカルレジストリにアクセスするためのユーザ名とパスワードを設定します。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/username set <replaceable>REGISTRY_USERNAME</replaceable></screen>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph-salt config /containers/registry_auth/password set <replaceable>REGISTRY_PASSWORD</replaceable></screen>
+     </step>
+     <step>
+      <para>
+       <command>ceph-salt apply</command>を実行して、すべてのミニオンのSalt Pillarを更新します。
+      </para>
+     </step>
+    </procedure>
+    <tip>
+     <title>レジストリキャッシュ</title>
+     <para>
+      更新されたコンテナが新しく登場した際にローカルレジストリを再同期しないようにするには、「レジストリキャッシュ」<emphasis/>を設定できます。
+
+     </para>
+    </tip>
+    <para>
+     クラウドネイティブなアプリケーションの開発とデリバリーの手法は、コンテナイメージの開発と作成に、レジストリとCI/CD(継続的インテグレーション/デリバリー)インスタンスを必要とします。このインタンス内でプライベートレジストリを使用できます。
+
+    </para>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-inflight-encryption">
+    <title>データ転送中の暗号化(msgr2)の有効化</title>
+    <para>
+     MSGR2プロトコルは、Cephの通信プロトコルです。このプロトコルは、ネットワークを通過するすべてのデータを暗号化するセキュリティモードを提供し、認証ペイロードをカプセル化し、新しい認証モード(Kerberosなど)を将来的に統合することを可能にします。
+    </para>
+    <important>
+     <para>
+      現在のところ、CephFSやRADOS Block Deviceなどの、LinuxカーネルのCephFSクライアントはmsgr2をサポートしていません。
+     </para>
+    </important>
+    <para>
+     Cephデーモンは複数のポートにバインドできるため、古いCephクライアントとv2対応の新しいクライアントが同じクラスタに接続できます。デフォルトでは、MONはIANAが新しく割り当てた3300番ポート(CE4hまたは0xCE4)と、過去のデフォルトポートである6789番ポートにバインドされます。前者は新しいv2プロトコル用で、後者は旧式のv1プロトコル用です。
+    </para>
+    <para>
+     v2プロトコル(MSGR2)は2つの接続モードに対応しています。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>crcモード</term>
+      <listitem>
+       <para>
+        接続確立時の整合性チェックと、CRC32Cによる完全性チェックが行われます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>セキュアモード</term>
+      <listitem>
+       <para>
+        接続確立時の厳重な初回認証と、認証後のすべてのトラフィックの完全な暗号化が行われます。これには、暗号の完全性チェックが含まれます。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     ほとんどの接続については、オプションで使用するモードを制御できます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_cluster_mode</term>
+      <listitem>
+       <para>
+        Cephデーモン間のクラスタ内通信に使用される接続モード(または許可モード)。複数のモードが記載されている場合は、先頭に記載されたものが優先されます。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_service_mode</term>
+      <listitem>
+       <para>
+        クライアントがクラスタに接続する際に使用する許可モードのリスト。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_client_mode</term>
+      <listitem>
+       <para>
+        Cephクラスタと通信する際にクライアントが使用(または許可)する、優先度順の接続モードのリスト。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     Monitorだけに適用される、同様のオプションセットが存在します。これにより、管理者がMonitorとの通信に異なる要求(通常はより厳しい要求)を設定することができます。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term>ms_mon_cluster_mode</term>
+      <listitem>
+       <para>
+        Monitor間の通信に使用される接続モード(または許可モード)。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_service_mode</term>
+      <listitem>
+       <para>
+        クライアントや他のCephデーモンがMonitorに接続する際に使用する許可モードのリスト。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term>ms_mon_client_mode</term>
+      <listitem>
+       <para>
+        Monitorと通信する際にクライアントやMonitor以外のデーモンが使用する、優先度順の接続モードのリスト。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <para>
+     展開中にMSGR2の暗号化モードを有効化するには、<systemitem class="resource">ceph-salt</systemitem>設定に設定オプションをいくつか追加してから<command>ceph-salt apply</command>を実行します。
+    </para>
+    <para>
+     <literal>secure</literal>モードを使用するには、次のコマンドを実行します。
+    </para>
+    <para>
+     <systemitem class="resource">ceph-salt</systemitem>設定ツールの<filename>ceph_conf</filename>にグローバルセクションを追加します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global</screen>
+    <para>
+     次のオプションを設定します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode "secure crc"
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode "secure crc"
+</screen>
+    <note>
+     <para>
+      <literal>crc</literal>の前に<literal>secure</literal>がついているか確認してください。
+     </para>
+    </note>
+    <para>
+     <emphasis/> <literal>secure</literal>モードを強制するには、次のコマンドを実行します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_cluster_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_service_mode secure
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set ms_client_mode secure
+</screen>
+    <tip xml:id="update-inflight-encryption-settings">
+     <title>設定の更新</title>
+     <para>
+      上記の設定を変更したい場合、Monitor設定の保存先に変更内容を設定します。その手段として、<command>ceph config set</command>コマンドを使用します。
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global <replaceable>CONNECTION_OPTION</replaceable> <replaceable>CONNECTION_MODE</replaceable> [--force]</screen>
+     <para>
+      例:
+     </para>
+<screen><prompt>root@master # </prompt>ceph config set global ms_cluster_mode "secure crc"</screen>
+     <para>
+      現在値やデフォルト値を確認したい場合は、次のコマンドを実行します。
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get <replaceable>CEPH_COMPONENT</replaceable> <replaceable>CONNECTION_OPTION</replaceable></screen>
+     <para>
+      たとえば、OSDの<literal>ms_cluster_mode</literal>を取得するには、次のコマンドを実行します。
+     </para>
+<screen><prompt>root@master # </prompt>ceph config get osd ms_cluster_mode</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-enable-network">
+    <title>クラスタネットワークの設定</title>
+    <para>
+     必要に応じて分離されたクラスタネットワークを実行する場合は、クラスタのネットワークIPアドレスの末尾にスラッシュ記号で区切ったサブネットマスクを付加したアドレスを設定する必要がある場合があります。たとえば、<literal>192.168.10.22/24</literal>のようなアドレスです。
+    </para>
+    <para>
+     <literal>cluster_network</literal>を有効化するには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf add global
+<prompt>root@master # </prompt>ceph-salt config /cephadm_bootstrap/ceph_conf/global set cluster_network <replaceable>NETWORK_ADDR</replaceable>
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-verify">
+    <title>クラスタ設定の確認</title>
+    <para>
+     最低限のクラスタ設定が完了しました。明らかな誤りがないか、確認してください。
+    </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt config ls
+o- / ............................................................... [...]
+  o- ceph_cluster .................................................. [...]
+  | o- minions .............................................. [Minions: 5]
+  | | o- ses-master.example.com .................................. [admin]
+  | | o- ses-min1.example.com ......................... [bootstrap, admin]
+  | | o- ses-min2.example.com ................................. [no roles]
+  | | o- ses-min3.example.com ................................. [no roles]
+  | | o- ses-min4.example.com ................................. [no roles]
+  | o- roles ....................................................... [...]
+  |   o- admin .............................................. [Minions: 2]
+  |   | o- ses-master.example.com ....................... [no other roles]
+  |   | o- ses-min1.example.com ................. [other roles: bootstrap]
+  |   o- bootstrap ................................ [ses-min1.example.com]
+  |   o- cephadm ............................................ [Minions: 5]
+  |   o- tuned ..................................................... [...]
+  |     o- latency .......................................... [no minions]
+  |     o- throughput ....................................... [no minions]
+  o- cephadm_bootstrap ............................................. [...]
+  | o- advanced .................................................... [...]
+  | o- ceph_conf ................................................... [...]
+  | o- ceph_image_path ............... [registry.suse.com/ses/7/ceph/ceph]
+  | o- dashboard ................................................... [...]
+  |   o- force_password_update ................................. [enabled]
+  |   o- password ................................... [randomly generated]
+  |   o- username ................................................ [admin]
+  | o- mon_ip ............................................ [192.168.10.20]
+  o- containers .................................................... [...]
+  | o- registries_conf ......................................... [enabled]
+  | | o- registries .............................................. [empty]
+  | o- registry_auth ............................................... [...]
+  |   o- password .............................................. [not set]
+  |   o- registry .............................................. [not set]
+  |   o- username .............................................. [not set]
+  o- ssh .................................................. [Key Pair set]
+  | o- private_key ..... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  | o- public_key ...... [53:b1:eb:65:d2:3a:ff:51:6c:e2:1b:ca:84:8e:0e:83]
+  o- time_server ............................................... [enabled]
+    o- external_servers .............................................. [1]
+    | o- 0.pt.pool.ntp.org ......................................... [...]
+    o- servers ....................................................... [1]
+    | o- ses-master.example.com .................................... [...]
+    o- subnet ............................................. [10.20.6.0/24]
+</screen>
+    <tip>
+     <title>クラスタ設定のステータス</title>
+     <para>
+      次のコマンドを実行することで、クラスタ設定が有効かどうかを確認できます。
+     </para>
+<screen>
+<prompt>root@master # </prompt>ceph-salt status
+cluster: 5 minions, 0 hosts managed by cephadm
+config: OK
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-configure-export">
+    <title>クラスタ設定のエクスポート</title>
+    <para>
+     基本的なクラスタの設定が完了し、設定が有効であることを確認したら、クラスタ設定をファイルにエクスポートするとよいでしょう。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt export &gt; cluster.json</screen>
+    <warning>
+     <para>
+      <command>ceph-salt export</command>の出力にはSSHの秘密鍵が含まれます。セキュリティ上の不安がある場合は、適切な予防策を講じるまではコマンドを実行しないでください。
+     </para>
+    </warning>
+    <para>
+     クラスタ設定を破棄してバックアップの状態に戻す場合は、次のコマンドを実行します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt import cluster.json</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-deploy">
+   <title>ノードの更新と最小クラスタのブートストラップ</title>
+   <para>
+    クラスタを展開する前に、すべてのノードのソフトウェアパッケージをすべて更新してください。
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update</screen>
+   <para>
+    アップデート中にノードが<literal>Reboot is needed</literal>と報告した場合、重要なOSのパッケージ(カーネルなど)が新しいバージョンに更新されているため、ノードを再起動して変更を適用する必要があります。
+   </para>
+   <para>
+    再起動が必要なノードをすべて再起動するには、<option>--reboot</option>オプションを付加してください。
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt update --reboot</screen>
+   <para>
+    もしくは、個別に再起動してください。
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt reboot</screen>
+   <important>
+    <para>
+     Salt Masterは<command>ceph-salt update --reboot</command>や<command>ceph-salt reboot</command>コマンドでは再起動されません。Salt Masterの再起動が必要な場合、手動で再起動してください。
+    </para>
+   </important>
+   <para>
+    ノードの更新後、最小のクラスタをブートストラップします。
+   </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply</screen>
+   <note>
+    <para>
+     ブートストラップが完了すると、クラスタにはCeph MonitorとCeph Managerが1つずつ含まれます。
+    </para>
+   </note>
+   <para>
+    先のコマンドを実行すると、インタラクティブなユーザインターフェイスが開かれ、各ミニオンの現在の進行状況が表示されます。
+   </para>
+   <figure>
+    <title>最小クラスタの展開</title>
+    <mediaobject>
+     <imageobject role="fo">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+     <imageobject role="html">
+      <imagedata fileref="cephadm_deploy.png" width="75%"/>
+     </imageobject>
+    </mediaobject>
+   </figure>
+   <tip>
+    <title>非インタラクティブモード</title>
+    <para>
+     スクリプトから設定を適用する必要がある場合、非インタラクティブモードで展開することもできます。このモードは、リモートマシンからクラスタを展開する際にも有用です。ネットワーク経由で進捗状況を画面に更新し続けると、煩わしく感じる場合があるためです。
+    </para>
+<screen><prompt>root@master # </prompt>ceph-salt apply --non-interactive</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="deploy-min-cluster-final-steps">
+   <title>最終ステップの確認</title>
+   <para>
+    <command>ceph-salt apply</command>コマンドが完了すると、Ceph MonitorとCeph Managerが1つずつ存在するはずです。<literal>root</literal>に相当する<literal>admin</literal>の役割を与えられたミニオンか、<literal>sudo</literal>を使用する<literal>cephadm</literal>ユーザは、<command>ceph status</command>コマンドを正常に実行できるはずです。
+   </para>
+   <para>
+    次の手順には、cephadmを使用した追加のCeph Monitor、Ceph Manager、OSD、監視スタック、ゲートウェイの展開が含まれます。
+   </para>
+   <para>
+    続ける前に新しいクラスタのネットワーク設定を確認してください。この時点では、<literal>ceph-salt</literal>設定の<literal>/cephadm_bootstrap/mon_ip</literal>に入力された内容に従って、<literal>public_network</literal>設定が読み込まれます。しかし、この設定はCeph Monitorにしか適用されません。次のコマンドを使用して、この設定を確認できます。
+   </para>
+<screen><prompt>root@master # </prompt>ceph config get mon public_network</screen>
+   <para>
+    これがCephの動作に必要な最低限の設定ですが、この<literal>public_network</literal>設定を<literal>global</literal>に設定することをお勧めします。つまり、この設定がMONだけでなく、すべてのタイプのCephデーモンにも適用されます。
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set global public_network "$(ceph config get mon public_network)"</screen>
+   <note>
+    <para>
+     この手順は必須ではありません。しかしながら、この設定を使用しないと、Ceph OSDと(Ceph Monitorを除く)その他のデーモンが「すべてのアドレス」<emphasis/>をリスンすることになります。
+    </para>
+    <para>
+     完全に分離されたネットワークを使用して、OSDどうしを通信させたい場合は、次のコマンドを実行します。
+    </para>
+<screen><prompt>root@master # </prompt>ceph config set global cluster_network "<replaceable>cluster_network_in_cidr_notation</replaceable>"</screen>
+    <para>
+     このコマンドを実行すると、展開中に作成されるOSDは最初から所定のクラスタネットワークを使用するようになります。
+    </para>
+   </note>
+   <para>
+    クラスタが高密度なノード(ホストあたりのOSDが62個を超える)から構成されるように設定する場合は、Ceph OSDに十分なポートを割り当ててください。デフォルトのポート範囲(6800～7300)のままでは、ホストあたりのOSDは最大62個までです。高密度なノードを含むクラスタの場合、<literal>ms_bind_port_max</literal>の設定を適切な値に調整してください。各OSDは追加で8個のポートを使用します。たとえば、96個のOSDを実行するように設定されたホストの場合、768個のポートが必要になります。この場合、次のコマンドを実行して、<literal>ms_bind_port_max</literal>を少なくとも7568に設定する必要があります。
+   </para>
+<screen><prompt>root@master # </prompt>ceph config set osd.* ms_bind_port_max 7568</screen>
+   <para>
+    これを動作させるには、設定した値に応じてファイアウォールの設定も調整する必要があります。詳細については、<xref linkend="storage-bp-net-firewall"/>を参照してください。
+   </para>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day2">
+  <title>サービスとゲートウェイの展開</title>
+
+  <para>
+   基本的なCephクラスタを展開した後、より多くのクラスタノードにコアサービスを展開します。クライアントからクラスタのデータにアクセスできるようにするには、追加のサービスも展開します。
+  </para>
+
+  <para>
+   現時点では、Cephオーケストレータ(<command>ceph orch</command>サブコマンド)を使用したコマンドライン上でのCephサービスの展開がサポートされています。
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch">
+   <title><command>ceph orch</command>コマンド</title>
+   <para>
+    Cephオーケストレータコマンドである<command>ceph orch</command>は、新しいクラスタノード上で、クラスタコンポーネントの一覧とCephサービスの展開を行います。このコマンドはcephadmモジュールのインターフェイスです。
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-orch-status">
+    <title>オーケストレータステータスの表示</title>
+    <para>
+     次のコマンドは、Cephオーケストレータの現在モードとステータスを表示します。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch status</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-orch-list">
+    <title>デバイス、サービス、デーモンの一覧</title>
+    <para>
+     すべてのディスクデバイスを一覧にするには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch device ls
+Hostname   Path      Type  Serial  Size   Health   Ident  Fault  Available
+ses-master /dev/vdb  hdd   0d8a... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdc  hdd   8304... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdd  hdd   7b81... 10.7G  Unknown  N/A    N/A    No
+[...]
+</screen>
+    <tip>
+     <title>サービスとデーモン</title>
+     <para>
+      「サービス」<emphasis/>とは、特定のタイプのCephサービスを指す総称です。たとえば、Ceph Managerなどです。
+     </para>
+     <para>
+      「デーモン」<emphasis/>とは、サービスの特定のインスタンスを指します。たとえば、<literal>ses-min1</literal>という名前のノードで実行される<literal>mgr.ses-min1.gdlcik</literal>プロセスなどです。
+     </para>
+    </tip>
+    <para>
+     cephadmが認識しているすべてのサービスを一覧にするには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls
+NAME  RUNNING  REFRESHED  AGE  PLACEMENT  IMAGE NAME                  IMAGE ID
+mgr       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+mon       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+</screen>
+    <tip>
+     <para>
+      リストに特定のノードのサービスだけを表示するには、オプションの<option>-–host</option>パラメータを使用します。特定のタイプのサービスだけを表示するには、オプションの<option>--service-type</option>パラメータを使用します(指定できるタイプは<literal>mon</literal>、<literal>osd</literal>、<literal>mgr</literal>、<literal>mds</literal>、<literal>rgw</literal>です)。
+     </para>
+    </tip>
+    <para>
+     cephadmが展開した実行中のすべてのデーモンを一覧にするには、次のコマンドを実行します。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps
+NAME            HOST     STATUS   REFRESHED AGE VERSION    IMAGE ID     CONTAINER ID
+mgr.ses-min1.gd ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd b8104e09814c
+mon.ses-min1    ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd a719e0087369
+</screen>
+    <tip>
+     <para>
+      特定のデーモンのステータスを照会するには、<option>--daemon_type</option>と<option>--daemon_id</option>を使用します。OSDの場合、IDは数字のOSD IDです。MDSの場合、IDはファイルシステム名です。
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type osd --daemon_id 0
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type mds --daemon_id my_cephfs
+</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="cephadm-service-and-placement-specs">
+   <title>サービス仕様と配置仕様</title>
+   <para>
+    Cephサービスの展開内容を指定する方法としては、YAMLフォーマットのファイルを作成して、展開したいサービスの仕様を記載することをお勧めします。
+   </para>
+   <sect3 xml:id="cephadm-service-spec">
+    <title>サービス仕様の作成</title>
+    <para>
+     サービスタイプごとに個別の仕様ファイルを作成できます。以下に例を示します。
+    </para>
+<screen>
+<prompt>root@master # </prompt>cat nfs.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <para>
+     もしくは、各サービスを実行するノードを記載した単一のファイル(<filename>cluster.yml</filename>など)により、複数の(または、すべての)サービスタイプを指定することもできます。それぞれのサービスタイプを3つのダッシュ記号(<literal>---</literal>)で区切ることを忘れないでください。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+---
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+---
+[...]
+</screen>
+    <para>
+     各プロパティが意味するものは、以下の通りです。
+    </para>
+    <variablelist>
+     <varlistentry>
+      <term><literal>service_type</literal></term>
+      <listitem>
+       <para>
+        サービスのタイプです。次のいずれかを指定できます。Cephサービス(<literal>mon</literal>、<literal>mgr</literal>、<literal>mds</literal>、<literal>crash</literal>、<literal>osd</literal>、<literal>rbd-mirror</literal>)、ゲートウェイ(<literal>nfs</literal> 、<literal>rgw</literal>)、監視スタックの一部(<literal>alertmanager</literal>、<literal>grafana</literal>、<literal>node-exporter</literal>、<literal>prometheus</literal>)。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>service_id</literal></term>
+      <listitem>
+       <para>
+        サービスの名前です。次のサービスタイプについては、<literal>service_id</literal>プロパティは不要です。<literal>mon</literal>、<literal>mgr</literal>、<literal>alertmanager</literal>、<literal>grafana</literal>、<literal>node-exporter</literal>、<literal>prometheus</literal>。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>placement</literal></term>
+      <listitem>
+       <para>
+        どのノードがサービスを実行するかを指定します。詳細については、<xref linkend="cephadm-placement-specs"/>を参照してください。
+       </para>
+      </listitem>
+     </varlistentry>
+     <varlistentry>
+      <term><literal>spec</literal></term>
+      <listitem>
+       <para>
+        サービスタイプに関連する、追加仕様です。
+       </para>
+      </listitem>
+     </varlistentry>
+    </variablelist>
+    <tip>
+     <title>特定のサービスを適用する</title>
+     <para>
+      通常、Cephクラスタのサービスには、いくつかの固有のプロパティがあります。個別のサービス仕様の例と詳細については、<xref linkend="deploy-cephadm-day2-services"/>を参照してください。
+     </para>
+    </tip>
+   </sect3>
+   <sect3 xml:id="cephadm-placement-specs">
+    <title>配置仕様の作成</title>
+    <para>
+     Cephサービスを展開するには、サービスの展開先ノードをcephadmが認識する必要があります。<literal>placement</literal>プロパティを使用して、サービスを適用するノードのホスト名の略称を列挙してください。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+[...]
+placement:
+  hosts:
+  - host1
+  - host2
+  - host3
+[...]
+</screen>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs">
+    <title>クラスタ仕様の適用</title>
+    <para>
+     すべてのサービス仕様とサービスの配置仕様を記載した完全な<filename>cluster.yml</filename>ファイルの作成が完了したら、次のコマンドを実行して、クラスタに仕様を適用してください。
+    </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i cluster.yml</screen>
+    <para>
+     クラスタのステータスを確認するには、<command>ceph orch status</command>コマンドを実行します。詳細については、「<xref linkend="deploy-cephadm-day2-orch-status"/>」を参照してください。
+    </para>
+   </sect3>
+   <sect3 xml:id="cephadm-apply-cluster-specs-">
+    <title>実行中のクラスタ仕様のエクスポート</title>
+    <para>
+     <xref linkend="cephadm-service-and-placement-specs"/>で説明した仕様ファイルを用いてCephクラスタにサービスを展開したにもかかわらず、運用中にクラスタの設定が元の仕様から変わる場合もあります。また、誤って仕様ファイルを削除してしまうことも考えられます。
+    </para>
+    <para>
+     実行中のクラスタからすべての仕様を取得するには、次のコマンドを実行してください。
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls --export
+placement:
+  hosts:
+  - hostname: ses-min1
+    name: ''
+    network: ''
+service_id: my_cephfs
+service_name: mds.my_cephfs
+service_type: mds
+---
+placement:
+  count: 2
+service_name: mgr
+service_type: mgr
+---
+[...]
+</screen>
+    <tip>
+     <para>
+      <option>--format</option>オプションを付加することで、デフォルトの<literal>yaml</literal>出力フォーマットを変更できます。選択できるフォーマットは、<literal>json</literal>、<literal>json-pretty</literal>、<literal>yaml</literal>です。以下に例を示します。
+     </para>
+<screen>ceph orch ls --export --format json</screen>
+    </tip>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-services">
+   <title>Cephサービスの展開</title>
+   <para>
+    基本的なクラスタの実行後、他のノードにCephサービスを展開できます。
+   </para>
+   <sect3 xml:id="deploy-cephadm-day2-service-mon">
+    <title>Ceph MonitorとCeph Managerの展開</title>
+    <para>
+     Cephクラスタでは、3個または5個のMONを異なるノードに展開します。クラスタに5個以上のノードが含まれる場合、5個のMONを展開することをお勧めします。MONと同じノードにMGRを展開すると良いでしょう。
+    </para>
+    <important>
+     <title>ブートストラップMONを含める</title>
+     <para>
+      MONとMGRを展開する際は、<xref linkend="deploy-cephadm-configure-mon"/>で基本的なクラスタを構成した際に追加した、最初のMONを忘れずに含めてください。
+     </para>
+    </important>
+    <para>
+     MONを展開するには、次の仕様を適用してください。
+    </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <note>
+     <para>
+      別のノードを追加する必要がある場合は、同じYAMLリストにホスト名を付加してください。以下に例を示します。
+     </para>
+<screen>
+service_type: mon
+placement:
+ hosts:
+ - ses-min1
+ - ses-min2
+ - ses-min3
+ - ses-min4
+</screen>
+    </note>
+    <para>
+     同様に、MGRを展開するには次の仕様を適用してください。
+    </para>
+    <important>
+     <para>
+      展開ごとに、少なくとも3個のCeph Managerが展開されているかを確認してください。
+     </para>
+    </important>
+<screen>
+service_type: mgr
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <tip>
+     <para>
+      MONまたはMGRが同じサブネット上に存在しない<emphasis/>場合、サブネットアドレスを付加する必要があります。以下に例を示します。
+     </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1:10.1.2.0/24
+  - ses-min2:10.1.5.0/24
+  - ses-min3:10.1.10.0/24
+</screen>
+    </tip>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-osd">
+    <title>Ceph OSDの展開</title>
+    <important>
+     <title>ストレージデバイスが使用可能となる条件</title>
+     <para>
+      以下の条件をすべて満たす場合、ストレージデバイスは「使用可能」<emphasis/>とみなされます。
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        デバイスにパーティションが作成されていない。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        デバイスがLVM状態ではない。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        デバイスがマウント先になっていない。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        デバイスにファイルシステムが含まれない。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        デバイスにBlueStore OSDが含まれない。
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        デバイスのサイズが5GBを超えている。
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      これらの条件が満たされない場合、CephはそのOSDのプロビジョニングを拒否します。
+     </para>
+    </important>
+    <para>
+     OSDを展開する方法は2つあります。
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       「使用可能」とみなされた未使用のストレージデバイスをすべて使用するよう、Cephに指示する方法。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd --all-available-devices</screen>
+     </listitem>
+     <listitem>
+      <para>
+       DriveGroupsを使用してデバイスを記述したOSD仕様を作成し、そのプロパティを基にデバイスを展開する方法(<xref linkend="drive-groups"/>を参照してください)。プロパティの例としては、デバイスの種類(SSDまたはHDD)、デバイスのモデル名、サイズ、デバイスが存在するノードなどがあります。仕様の作成後、次のコマンドを実行して仕様を適用します。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd -i drive_groups.yml</screen>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-mds">
+    <title>メタデータサーバの展開</title>
+    <para>
+     CephFSは1つ以上のMDS(メタデータサーバ)サービスを必要とします。CephFSを作成するには、まず以下の仕様を適用して、MDSサーバを作成する必要があります。
+    </para>
+    <note>
+     <para>
+      最低でも2つのプールを作成してから以下の仕様を適用してください。1つはCephFSのデータ用、もう1つはCephFSのメタデータ用のプールです。
+     </para>
+    </note>
+<screen>
+service_type: mds
+service_id: <replaceable>CEPHFS_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+    <para>
+     MDSが機能したら、CephFSを作成します。
+    </para>
+<screen>ceph fs new <replaceable>CEPHFS_NAME</replaceable> <replaceable>metadata_pool</replaceable> <replaceable>data_pool</replaceable></screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-ogw">
+    <title>Object Gatewayの展開</title>
+    <para>
+     cephadmはObject Gatewayを、特定の「レルム」<emphasis/>と「ゾーン」<emphasis/>を管理するデーモンのコレクションとして展開します。
+    </para>
+    <para>
+     Object Gatewayサービスを既存のレルムとゾーンに関連付けることも(詳細については、<xref linkend="ceph-rgw-fed"/>を参照してください)、存在しない<replaceable>REALM_NAME</replaceable>と<replaceable>ZONE_NAME</replaceable>を指定することもできます。後者の場合、次の設定を適用すると自動的にゾーンとレルムが作成されます。
+    </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+</screen>
+    <sect4 xml:id="cephadm-deploy-using-secure-ssl-access">
+     <title>セキュアなSSLアクセスの使用</title>
+     <para>
+      Object Gatewayへの接続にセキュアなSSL接続を使用するには、有効なSSL証明書とキーファイルのペアが必要です(詳細については、<xref linkend="ceph-rgw-https"/>を参照してください)。必要な作業は、SSLの有効化、SSL接続のポート番号の指定、SSL証明書とキーファイルの指定です。
+     </para>
+     <para>
+      SSLを有効化し、ポート番号を指定するには、仕様に次の内容を記載します。
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+</screen>
+     <para>
+      SSL証明書とキーを指定するには、YAML仕様ファイルに内容を直接ペーストすることができます。行末のパイプ記号(<literal>|</literal>)は、構文解析の際に複数行にまたがる文字列を1つの値として認識させるためのものです。以下に例を示します。
+     </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+  rgw_frontend_ssl_certificate: |
+   -----BEGIN CERTIFICATE-----
+   MIIFmjCCA4KgAwIBAgIJAIZ2n35bmwXTMA0GCSqGSIb3DQEBCwUAMGIxCzAJBgNV
+   BAYTAkFVMQwwCgYDVQQIDANOU1cxHTAbBgNVBAoMFEV4YW1wbGUgUkdXIFNTTCBp
+   [...]
+   -----END CERTIFICATE-----
+   rgw_frontend_ssl_key: |
+   -----BEGIN PRIVATE KEY-----
+   MIIJRAIBADANBgkqhkiG9w0BAQEFAASCCS4wggkqAgEAAoICAQDLtFwg6LLl2j4Z
+   BDV+iL4AO7VZ9KbmWIt37Ml2W6y2YeKX3Qwf+3eBz7TVHR1dm6iPpCpqpQjXUsT9
+   [...]
+   -----END PRIVATE KEY-----
+</screen>
+     <tip>
+      <para>
+       SSL証明書とキーファイルの内容をペーストする代わりに、<literal>rgw_frontend_ssl_certificate:</literal>キーワードと<literal>rgw_frontend_ssl_key:</literal>キーワードを削除して、設定データベースにSSL証明書とキーファイルをアップロードすることもできます。
+      </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.crt \
+ -i <replaceable>SSL_CERT_FILE</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.key \
+ -i <replaceable>SSL_KEY_FILE</replaceable>
+</screen>
+     </tip>
+    </sect4>
+    <sect4 xml:id="cephadm-deploy-with-subcluster">
+     <title>サブクラスタを使用した展開</title>
+     <para>
+      「サブクラスタ」<emphasis/>はクラスタ内のノードの整理に役立ちます。これによりワークロードを分離することで、弾力的な拡張が容易になります。サブクラスタを使用して展開する場合は、次の設定を適用します。
+     </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>.<replaceable>SUBCLUSTER</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+  subcluster: <replaceable>SUBCLUSTER</replaceable>
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-igw">
+    <title>iSCSI Gatewayの展開</title>
+    <para>
+     cephadmが展開するiSCSI Gatewayは、クライアント(「イニシエータ」)から、リモートサーバ上のSCSIストレージデバイス(「ターゲット」)にSCSIコマンドを送信できるようにする、SAN(ストレージエリアネットワーク)プロトコルです。
+    </para>
+    <para>
+     展開するには以下の設定を適用します。<literal>trusted_ip_list</literal>にすべてのiSCSI GatewayノードとCeph ManagerノードのIPアドレスが含まれているか確認してください(以下の出力例を参照してください)。
+    </para>
+    <note>
+     <para>
+      以下の仕様を適用する前に、プールが作成されているか確認してください。
+     </para>
+    </note>
+<screen>
+service_type: iscsi
+service_id: <replaceable>EXAMPLE_ISCSI</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  api_user: <replaceable>EXAMPLE_USER</replaceable>
+  api_password: <replaceable>EXAMPLE_PASSWORD</replaceable>
+  trusted_ip_list: "<replaceable>IP_ADDRESS_1</replaceable>,<replaceable>IP_ADDRESS_2</replaceable>"
+</screen>
+    <note>
+     <para>
+      <literal>trusted_ip_list</literal>に列挙されたIPについて、カンマ区切りの後にスペースが入っていない<emphasis/>ことを確認してください。
+     </para>
+    </note>
+    <sect4>
+     <title>セキュアなSSLの設定</title>
+     <para>
+      セキュアなSSL接続をCephダッシュボードとiSCSIターゲットAPIの間で使用するには、有効なSSL証明書とキーファイルのペアが必要です。証明書とキーファイルは、CAが発行したものか自己署名したものを使用します(<xref linkend="self-sign-certificates"/>を参照してください)。SSLを有効化するには、仕様ファイルに<literal>api_secure: true</literal>設定を含めます。
+     </para>
+<screen>
+spec:
+  api_secure: true
+</screen>
+     <para>
+      SSL証明書とキーを指定するには、YAML仕様ファイルに内容を直接ペーストすることができます。行末のパイプ記号(<literal>|</literal>)は、構文解析の際に複数行にまたがる文字列を1つの値として認識させるためのものです。以下に例を示します。
+     </para>
+<screen>
+spec:
+  pool: EXAMPLE_POOL
+  api_user: EXAMPLE_USER
+  api_password: EXAMPLE_PASSWORD
+  trusted_ip_list: "IP_ADDRESS_1,IP_ADDRESS_2"
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-nfs">
+    <title>NFS Ganeshaの展開</title>
+    <para>
+     cephadmはNFS Ganeshaの展開に、事前定義されたRADOSプールとオプションのネームスペースを使用します。NFS Ganeshaを展開するには、次の仕様を適用してください。
+    </para>
+    <note>
+     <para>
+      事前定義されたRADOSプールが必要です。これが存在しない場合は、<command>ceph orch apply</command>処理に失敗します。プールの作成の詳細については、<xref linkend="ceph-pools-operate-add-pool"/>を参照してください。
+     </para>
+    </note>
+<screen>
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+    <itemizedlist>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_NFS</replaceable>にはNFSエクスポートを識別する任意の文字列を指定します。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_POOL</replaceable>にはNFS GaneshaのRADOS設定オブジェクトを保存するプール名を指定します。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <replaceable>EXAMPLE_NAMESPACE</replaceable>(オプション)には、希望するObject GatewayのNFSネームスペースを指定します(<literal>ganesha</literal>など)。
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-rbdmirror">
+    <title><systemitem class="daemon">rbd-mirror</systemitem>の展開</title>
+    <para>
+     <systemitem class="daemon">rbd-mirror</systemitem>サービスは2つのCephクラスタ間でRADOS Block Deviceイメージの同期を行います(詳細については<xref linkend="ceph-rbd-mirror"/>を参照してください)。<systemitem class="daemon">rbd-mirror</systemitem>を展開するには、次の仕様を使用してください。
+    </para>
+<screen>
+service_type: rbd-mirror
+service_id: <replaceable>EXAMPLE_RBD_MIRROR</replaceable>
+placement:
+  hosts:
+  - ses-min3
+</screen>
+   </sect3>
+   <sect3 xml:id="deploy-cephadm-day2-service-monitoring">
+    <title>監視スタックの展開</title>
+    <para>
+     監視スタックは、Prometheus、Prometheusエクスポータ、Prometheus Alertmanager、Grafanaから構成されます。Cephダッシュボードはこうしたコンポーネントを利用して、クラスタの使用量やパフォーマンスの詳細なメトリクスの保存と視覚化を行います。
+    </para>
+    <tip>
+     <para>
+      展開に監視スタックサービスのカスタムコンテナイメージやローカルコンテナイメージを必要とする場合は、<xref linkend="monitoring-custom-images"/>を参照してください。
+     </para>
+    </tip>
+    <para>
+     監視スタックを展開するには、以下の手順に従ってください。
+    </para>
+    <procedure>
+     <step>
+      <para>
+       Ceph Managerデーモンで<literal>prometheus</literal>モジュールを有効化します。これにより、Cephの内部メトリクスが公開され、Prometheusから読み取れるようになります。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable prometheus</screen>
+      <note>
+       <para>
+        このコマンドはPrometheusの展開前に実行してください。展開前にコマンドを実行していない場合、Prometheusを再展開してPrometheusの設定を更新する必要があります。
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch redeploy prometheus</screen>
+      </note>
+     </step>
+     <step>
+      <para>
+       次のような内容を含む仕様ファイル(<filename>monitoring.yaml</filename>など)を作成します。
+      </para>
+<screen>
+service_type: prometheus
+placement:
+  hosts:
+  - ses-min2
+---
+service_type: node-exporter
+---
+service_type: alertmanager
+placement:
+  hosts:
+  - ses-min4
+---
+service_type: grafana
+placement:
+  hosts:
+  - ses-min3
+</screen>
+     </step>
+     <step>
+      <para>
+       次のコマンドを実行して、監視サービスを適用します。
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i monitoring.yaml</screen>
+      <para>
+       監視サービスの展開には1、2分かかる場合があります。
+      </para>
+     </step>
+    </procedure>
+    <important>
+     <para>
+      Prometheus、Grafana、Cephダッシュボードは、お互いに通信できるようにすべて自動的に設定されます。そのため、この手順で展開されたとき、Cephダッシュボードには完全に機能するGrafanaが統合されています。
+     </para>
+     <para>
+      このルールの例外は、RBDイメージの監視だけです。詳細については、<xref linkend="monitoring-rbd-image"/>を参照してください。
+     </para>
+    </important>
+   </sect3>
+  </sect2>
+ </sect1>
+</chapter>
