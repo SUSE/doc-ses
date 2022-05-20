@@ -1,0 +1,751 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deploy_core.xml" version="5.0" xml:id="deploy-core">
+ <info>
+  <title>Distribuzione dei rimanenti servizi di base mediante cephadm</title>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  In seguito alla distribuzione del cluster Ceph di base, distribuire i servizi di base su altri nodi del cluster. Per rendere i dati del cluster accessibili ai client, distribuire anche dei servizi aggiuntivi.
+ </para>
+ <para>
+  Attualmente, la distribuzione dei servizi Ceph sulla riga di comando è supportata tramite l&apos;utilità di coordinamento Ceph (sottocomandi <command>ceph orch</command>).
+ </para>
+ <sect1 xml:id="deploy-cephadm-day2-orch">
+  <title>Il comando <command>ceph orch</command></title>
+
+  <para>
+   Il comando <command>ceph orch</command> dell&apos;utilità di coordinamento Ceph, un&apos;interfaccia del modulo cephadm, elenca i componenti del cluster e distribuisce i servizi Ceph sui nuovi nodi del cluster.
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch-status">
+   <title>Visualizzazione dello stato dell&apos;utilità di coordinamento</title>
+   <para>
+    Il comando seguente mostra lo stato e la modalità correnti dell&apos;utilità di coordinamento Ceph.
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch status</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch-list">
+   <title>Elenco di dispositivi, servizi e daemon</title>
+   <para>
+    Per elencare tutti i dispositivi disco, eseguire quanto riportato di seguito:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch device ls
+Hostname   Path      Type  Serial  Size   Health   Ident  Fault  Available
+ses-master /dev/vdb  hdd   0d8a... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdc  hdd   8304... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdd  hdd   7b81... 10.7G  Unknown  N/A    N/A    No
+[...]
+</screen>
+   <tip>
+    <title>servizi e daemon</title>
+    <para>
+     Con il termine generale <emphasis>servizio</emphasis> si indica un servizio Ceph di un tipo specifico, ad esempio Ceph Manager.
+    </para>
+    <para>
+     <emphasis>Daemon</emphasis> è un&apos;istanza specifica di un servizio, ad esempio un processo <literal>mgr.ses-min1.gdlcik</literal> in esecuzione su un nodo denominato <literal>ses-min1</literal>.
+    </para>
+   </tip>
+   <para>
+    Per elencare tutti i servizi noti a cephadm, eseguire:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls
+NAME  RUNNING  REFRESHED  AGE  PLACEMENT  IMAGE NAME                  IMAGE ID
+mgr       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+mon       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+</screen>
+   <tip>
+    <para>
+     Con il parametro facoltativo <option>-–host</option>, è possibile limitare l&apos;elenco ai servizi che si trovano su un determinato nodo, mentre con il parametro facoltativo <option>--service-type</option>, è possibile limitarlo ai servizi di un determinato tipo. I tipi accettabili sono <literal>mon</literal>, <literal>osd</literal>, <literal>mgr</literal>, <literal>mds</literal> e <literal>rgw</literal>.
+    </para>
+   </tip>
+   <para>
+    Per elencare tutti i daemon in esecuzione distribuiti da cephadm, eseguire:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps
+NAME            HOST     STATUS   REFRESHED AGE VERSION    IMAGE ID     CONTAINER ID
+mgr.ses-min1.gd ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd b8104e09814c
+mon.ses-min1    ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd a719e0087369
+</screen>
+   <tip>
+    <para>
+     Per interrogare lo stato di un daemon specifico, utilizzare <option>--daemon_type</option> e <option>--daemon_id</option>. Per gli OSD, l&apos;ID corrisponde all&apos;ID numerico dell&apos;OSD: Per MDS, l&apos;ID corrisponde al nome del file system:
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type osd --daemon_id 0
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type mds --daemon_id my_cephfs
+</screen>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cephadm-service-and-placement-specs">
+  <title>Specifica del servizio e del posizionamento</title>
+
+  <para>
+   Per specificare la distribuzione dei servizi Ceph, si consiglia di creare un file con formattazione YAML contenente la specifica dei servizi da distribuire.
+  </para>
+
+  <sect2 xml:id="cephadm-service-spec">
+   <title>Creazione di specifiche del servizio</title>
+   <para>
+    È possibile creare un file della specifica separato per ogni tipo di servizio, ad esempio:
+   </para>
+<screen>
+<prompt>root@master # </prompt>cat nfs.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+   <para>
+    In alternativa, è possibile specificare più tipi di servizi (o tutti) in un file, ad esempio <filename>cluster.yml</filename>, in cui sono indicati i nodi che eseguiranno i servizi specifici. È necessario separare i singoli tipi di servizi con tre trattini (<literal>---</literal>):
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+---
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+---
+[...]
+</screen>
+   <para>
+    Le proprietà descritte in precedenza hanno il significato seguente:
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><literal>service_type</literal></term>
+     <listitem>
+      <para>
+       Il tipo di servizio. Può trattarsi di un servizio Ceph (<literal>mon</literal>, <literal>mgr</literal>, <literal>mds</literal>, <literal>crash</literal>, <literal>osd</literal> o <literal>rbd-mirror</literal>), di un gateway (<literal>nfs</literal> o <literal>rgw</literal>) o di parte dello stack di monitoraggio (<literal>alertmanager</literal>, <literal>grafana</literal>, <literal>node-exporter</literal> o <literal>prometheus</literal>).
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>service_id</literal></term>
+     <listitem>
+      <para>
+       Il nome del servizio. Per le specifiche del tipo <literal>mon</literal>, <literal>mgr</literal>, <literal>alertmanager</literal>, <literal>grafana</literal>, <literal>node-exporter</literal> e <literal>prometheus</literal> non è necessaria la proprietà <literal>service_id</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>placement</literal></term>
+     <listitem>
+      <para>
+       Specifica quali nodi eseguiranno il servizio. Per ulteriori dettagli, fare riferimento alla <xref linkend="cephadm-placement-specs"/>.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>spec</literal></term>
+     <listitem>
+      <para>
+       Ulteriore specifica pertinente al tipo di servizio.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <tip>
+    <title>applicazione di servizi specifici</title>
+    <para>
+     In genere, i servizi del cluster Ceph dispongono di diverse proprietà specifiche. Per esempi e dettagli delle specifiche dei singoli servizi, fare riferimento alla <xref linkend="deploy-cephadm-day2-services"/>.
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="cephadm-placement-specs">
+   <title>Creazione della specifica di posizionamento</title>
+   <para>
+    Per distribuire i servizi Ceph, cephadm deve sapere su quali nodi agire. Utilizzare la proprietà <literal>placement</literal> ed elencare i nomi host abbreviati dei nodi a cui si applica il servizio:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+[...]
+placement:
+  hosts:
+  - host1
+  - host2
+  - host3
+[...]
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephadm-apply-cluster-specs">
+   <title>Applicazione della specifica del cluster</title>
+   <para>
+    Dopo aver creato un file <filename>cluster.yml</filename> completo con le specifiche di tutti i servizi e il relativo posizionamento, è possibile applicare il cluster eseguendo il comando seguente:
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i cluster.yml</screen>
+   <para>
+    Per visualizzare lo stato del cluster, eseguire il comando <command>ceph orch status</command>. Per ulteriori informazioni, vedere <xref linkend="deploy-cephadm-day2-orch-status"/>.
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephadm-apply-cluster-specs-">
+   <title>Esportazione della specifica di un cluster in esecuzione</title>
+   <para>
+    Durante il funzionamento, la configurazione del cluster potrebbe differire dalla specifica originale, anche se i servizi sono stati distribuiti sul cluster Ceph utilizzando i file della specifica descritti nella <xref linkend="cephadm-service-and-placement-specs"/>. Inoltre, i file della specifica potrebbero essere stati eliminati per errore.
+   </para>
+   <para>
+    Per recuperare la specifica completa di un cluster in esecuzione, eseguire:
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls --export
+placement:
+  hosts:
+  - hostname: ses-min1
+    name: ''
+    network: ''
+service_id: my_cephfs
+service_name: mds.my_cephfs
+service_type: mds
+---
+placement:
+  count: 2
+service_name: mgr
+service_type: mgr
+---
+[...]
+</screen>
+   <tip>
+    <para>
+     È possibile aggiungere l&apos;opzione <option>--format</option> per modificare il formato di output <literal>yaml</literal> di default. È possibile scegliere tra <literal>json</literal>, <literal>json-pretty</literal> o <literal>yaml</literal>. Esempio:
+    </para>
+<screen>ceph orch ls --export --format json</screen>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day2-services">
+  <title>Distribuzione dei servizi Ceph</title>
+
+  <para>
+   Una volta che il cluster di base è in esecuzione, è possibile distribuire i servizi Ceph su nodi aggiuntivi.
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-mon">
+   <title>Distribuzione di Ceph Monitor e Ceph Manager</title>
+   <para>
+    Il cluster Ceph dispone di tre o cinque MON distribuiti su nodi diversi. Se nel cluster sono presenti cinque o più nodi, si consiglia di distribuire cinque MON. Come buona prassi, distribuire gli MGR sugli stessi nodi dei MON.
+   </para>
+   <important>
+    <title>inclusione del MON di bootstrap</title>
+    <para>
+     Durante la distribuzione dei MON e degli MGR, ricordarsi di includere il primo MON aggiunto durante la configurazione del cluster di base nella <xref linkend="deploy-cephadm-configure-mon"/>.
+    </para>
+   </important>
+   <para>
+    Per distribuire i MON, applicare la specifica seguente:
+   </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+   <note>
+    <para>
+     Se è necessario aggiungere un altro nodo, aggiungere il nome host allo stesso elenco YAML. Esempio:
+    </para>
+<screen>
+service_type: mon
+placement:
+ hosts:
+ - ses-min1
+ - ses-min2
+ - ses-min3
+ - ses-min4
+</screen>
+   </note>
+   <para>
+    Analogamente, per distribuire gli MGR, applicare la specifica seguente:
+   </para>
+   <important>
+    <para>
+     Assicurarsi che per ogni distribuzione siano presenti almeno tre Ceph Manager.
+    </para>
+   </important>
+<screen>
+service_type: mgr
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+   <tip>
+    <para>
+     Se i MON o gli MGR <emphasis>non</emphasis> si trovano sulla stessa sottorete, è necessario aggiungere gli indirizzi delle sottoreti. Esempio:
+    </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1:10.1.2.0/24
+  - ses-min2:10.1.5.0/24
+  - ses-min3:10.1.10.0/24
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-osd">
+   <title>Distribuzione dei Ceph OSD</title>
+   <important>
+    <title>se è disponibile un dispositivo di memorizzazione</title>
+    <para>
+     Un dispositivo di memorizzazione è considerato <emphasis>disponibile</emphasis> se sono rispettate tutte le condizioni seguenti:
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       Il dispositivo non dispone di partizioni.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Il dispositivo non dispone di alcuno stato LVM.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Il dispositivo non è montato.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Il dispositivo non contiene un file system.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Il dispositivo non contiene un OSD BlueStore.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Il dispositivo ha una capacità maggiore di 5 GB.
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     Se le condizioni elencate sopra non sono rispettate, Ceph rifiuterà di eseguire il provisioning di questi OSD.
+    </para>
+   </important>
+   <para>
+    È possibile distribuire gli OSD in due modi:
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      Inviare a Ceph l&apos;istruzione di utilizzare tutti i dispositivi di memorizzazione disponibili e non in uso:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd --all-available-devices</screen>
+    </listitem>
+    <listitem>
+     <para>
+      Utilizzare i DriveGroups (vedere <xref linkend="drive-groups"/>) per creare una specifica OSD in cui sono descritti i dispositivi che verranno distribuiti in base alle relative proprietà, come il tipo di dispositivo (SSD o HDD), i nomi di modello, le dimensioni o i nodi su cui si trovano tali dispositivi. Quindi, applicare la specifica eseguendo il comando seguente:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd -i drive_groups.yml</screen>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-mds">
+   <title>Distribuzione dei Metadata Server</title>
+   <para>
+    Per CephFS sono necessari uno o più servizi Metadata Server (MDS). Per creare un CephFS, creare innanzitutto dei server MDS applicando la specifica seguente:
+   </para>
+   <note>
+    <para>
+     Assicurarsi di disporre di almeno due pool, uno per i dati e uno per i metadati di CephFS, creati prima dell&apos;applicazione della seguente specifica.
+    </para>
+   </note>
+<screen>
+service_type: mds
+service_id: <replaceable>CEPHFS_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+   <para>
+    Una volta che gli MDS saranno in funzione, creare il CephFS:
+   </para>
+<screen>ceph fs new <replaceable>CEPHFS_NAME</replaceable> <replaceable>metadata_pool</replaceable> <replaceable>data_pool</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-ogw">
+   <title>Distribuzione degli Object Gateway</title>
+   <para>
+    cephadm distribuisce gli Object Gateway sotto forma di raccolta di daemon che gestiscono un <emphasis>dominio</emphasis> e una <emphasis>zona</emphasis> specifici.
+   </para>
+   <para>
+    È possibile correlare un servizio Object Gateway a un dominio e a una zona già esistenti (fare riferimento a <xref linkend="ceph-rgw-fed"/> per ulteriori dettagli) oppure specificare un nome per un dominio e una zona non esistenti (<replaceable>REALM_NAME</replaceable> e <replaceable>ZONE_NAME</replaceable>), che verranno creati automaticamente in seguito all&apos;applicazione della configurazione seguente:
+   </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+</screen>
+   <sect3 xml:id="cephadm-deploy-using-secure-ssl-access">
+    <title>Uso dell&apos;accesso SSL sicuro</title>
+    <para>
+     Per utilizzare una connessione SSL sicura a Object Gateway, è necessaria una coppia di file di chiave e certificato SSL validi (vedere <xref linkend="ceph-rgw-https"/> per ulteriori dettagli). È necessario abilitare SSL, specificare un numero di porta per le connessioni SSL e i file di chiave e certificato SSL.
+    </para>
+    <para>
+     Per abilitare SSL e specificare il numero di porta, includere quanto segue nella specifica:
+    </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+</screen>
+    <para>
+     Per specificare la chiave e il certificato SSL, è possibile incollarne i contenuti direttamente nel file della specifica YAML. Il simbolo della barra verticale (<literal>|</literal>) alla fine della riga indica al parser che il valore sarà una stringa con più righe. Esempio:
+    </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+  rgw_frontend_ssl_certificate: |
+   -----BEGIN CERTIFICATE-----
+   MIIFmjCCA4KgAwIBAgIJAIZ2n35bmwXTMA0GCSqGSIb3DQEBCwUAMGIxCzAJBgNV
+   BAYTAkFVMQwwCgYDVQQIDANOU1cxHTAbBgNVBAoMFEV4YW1wbGUgUkdXIFNTTCBp
+   [...]
+   -----END CERTIFICATE-----
+   rgw_frontend_ssl_key: |
+   -----BEGIN PRIVATE KEY-----
+   MIIJRAIBADANBgkqhkiG9w0BAQEFAASCCS4wggkqAgEAAoICAQDLtFwg6LLl2j4Z
+   BDV+iL4AO7VZ9KbmWIt37Ml2W6y2YeKX3Qwf+3eBz7TVHR1dm6iPpCpqpQjXUsT9
+   [...]
+   -----END PRIVATE KEY-----
+</screen>
+    <tip>
+     <para>
+      Invece di incollare il contenuto dei file di chiave e certificato SSL, è possibile omettere le parole chiave <literal>rgw_frontend_ssl_certificate:</literal> e <literal>rgw_frontend_ssl_key:</literal> ed effettuarne l&apos;upload nel database di configurazione:
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.crt \
+ -i <replaceable>SSL_CERT_FILE</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.key \
+ -i <replaceable>SSL_KEY_FILE</replaceable>
+</screen>
+    </tip>
+    <sect4 xml:id="cephadm-deploy-ogw-ports">
+     <title>Configurazione dell&apos;Object Gateway per l&apos;ascolto su entrambe le porte 443 e 80</title>
+     <para>
+      Per configurare l&apos;Object Gateway per l&apos;ascolto su entrambe le porte 443 (HTTPS) e 80 (HTTP), seguire la procedura indicata di seguito:
+     </para>
+     <note>
+      <para>
+       I comandi della procedura utilizzano i valori <literal>di default</literal> per dominio e zona.
+      </para>
+     </note>
+     <procedure>
+      <step>
+       <para>
+        Distribuire l&apos;Object Gateway fornendo un file della specifica. Per ulteriori dettagli sulla specifica dell&apos;Object Gateway, fare riferimento alla <xref linkend="deploy-cephadm-day2-service-ogw"/>. Utilizzare il seguente comando:
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>SPEC_FILE</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        Se nel file della specifica non sono forniti i certificati SSL, aggiungerli utilizzando il seguente comando:
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/default/default.crt -i certificate.pem
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/default/default.key -i key.pem
+</screen>
+      </step>
+      <step>
+       <para>
+        Modificare il valore di default dell&apos;opzione <option>rgw_frontends</option>:
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set client.rgw.default.default rgw_frontends \
+ "beast port=80 ssl_port=443"
+</screen>
+      </step>
+      
+      <step>
+       <para>
+        Rimuovere la configurazione specifica creata da cephadm. Identificare per quale destinazione è stata configurata l&apos;opzione <option>rgw_frontends</option> eseguendo il comando:
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config dump | grep rgw</screen>
+       <para>
+        Ad esempio, la destinazione è <literal>client.rgw.default.default.node4.yiewdu</literal>. Rimuovere lo specifico valore <option>rgw_frontends</option> corrente:
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config rm client.rgw.default.default.node4.yiewdu rgw_frontends</screen>
+       <tip>
+        <para>
+         Anziché rimuovere un valore per <option>rgw_frontends</option>, è possibile specificarlo. Ad esempio:
+        </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set client.rgw.default.default.node4.yiewdu \
+ rgw_frontends "beast port=80 ssl_port=443"
+</screen>
+       </tip>
+      </step>
+      
+      <step>
+       <para>
+        Riavviare gli Object Gateway:
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch restart rgw.default.default</screen>
+      </step>
+     </procedure>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="cephadm-deploy-with-subcluster">
+    <title>Distribuzione con un sottocluster</title>
+    <para>
+     I <emphasis>sottocluster</emphasis> aiutano a organizzare i nodi nei cluster per isolare i workload e semplificare il ridimensionamento elastico. Per le distribuzioni con un sottocluster, applicare la configurazione seguente:
+    </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>.<replaceable>SUBCLUSTER</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+  subcluster: <replaceable>SUBCLUSTER</replaceable>
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-igw">
+   <title>Distribuzione di iSCSI Gateway</title>
+   <para>
+    cephadm esegue la distribuzione di iSCSI Gateway, ovvero un protocollo di rete dell&apos;area di memorizzazione (SAN) che consente ai client (denominati iniziatori) di inviare comandi SCSI ai dispositivi di memorizzazione SCSI (destinazioni) su server remoti.
+   </para>
+   <para>
+    Applicare la configurazione seguente per eseguire la distribuzione. Assicurarsi che <literal>trusted_ip_list</literal> contenga gli indirizzi IP di tutti i nodi iSCSI Gateway e Ceph Manager (vedere l&apos;output di esempio di seguito).
+   </para>
+   <note>
+    <para>
+     Assicurarsi che il pool sia stato creato prima di applicare la specifica seguente.
+    </para>
+   </note>
+<screen>
+service_type: iscsi
+service_id: <replaceable>EXAMPLE_ISCSI</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  api_user: <replaceable>EXAMPLE_USER</replaceable>
+  api_password: <replaceable>EXAMPLE_PASSWORD</replaceable>
+  trusted_ip_list: "<replaceable>IP_ADDRESS_1</replaceable>,<replaceable>IP_ADDRESS_2</replaceable>"
+</screen>
+   <note>
+    <para>
+     Assicurarsi che negli IP elencati per <literal>trusted_ip_list</literal> <emphasis>non</emphasis> sia presente uno spazio dopo la virgola di separazione.
+    </para>
+   </note>
+   <sect3>
+    <title>Configurazione SSL sicura</title>
+    <para>
+     Per utilizzare una connessione SSL sicura tra il Ceph Dashboard e l&apos;API della destinazione iSCSI, è necessaria una coppia di file di chiave e certificato SSL validi, emessi da un&apos;autorità di certificazione o autofirmati (vedere <xref linkend="self-sign-certificates"/>). Per abilitare SSL, includere l&apos;impostazione <literal>api_secure: true</literal> nel file della specifica:
+    </para>
+<screen>
+spec:
+  api_secure: true
+</screen>
+    <para>
+     Per specificare la chiave e il certificato SSL, è possibile incollarne i contenuti direttamente nel file della specifica YAML. Il simbolo della barra verticale (<literal>|</literal>) alla fine della riga indica al parser che il valore sarà una stringa con più righe. Esempio:
+    </para>
+<screen>
+spec:
+  pool: EXAMPLE_POOL
+  api_user: EXAMPLE_USER
+  api_password: EXAMPLE_PASSWORD
+  trusted_ip_list: "IP_ADDRESS_1,IP_ADDRESS_2"
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-nfs">
+   <title>Distribuzione di NFS Ganesha</title>
+    
+<important>
+ <para>
+  NFS Ganesha supporta NFS versione 4.1 e versioni successive. Non supporta NFS versione 3.
+ </para>
+</important>
+
+    <para>
+    cephadm esegue la distribuzione di NFS Ganesha tramite un pool RADOS predefinito e uno spazio dei nomi facoltativo. Per distribuire NFS Ganesha, applicare la specifica seguente:
+   </para>
+   <note>
+    <para>
+     Se non è presente un pool RADOS predefinito, l&apos;operazione <command>ceph orch apply</command> non andrà a buon fine. Per ulteriori informazioni sulla creazione di un pool, vedere <xref linkend="ceph-pools-operate-add-pool"/>.
+    </para>
+   </note>
+<screen>
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <replaceable>EXAMPLE_NFS</replaceable> con una stringa arbitraria che identifica l&apos;esportazione NFS.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <replaceable>EXAMPLE_POOL</replaceable> con il nome del pool in cui verrà archiviato l&apos;oggetto di configurazione RADOS di NFS Ganesha.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <replaceable>EXAMPLE_NAMESPACE</replaceable> (facoltativo) con lo spazio dei nomi NFS di Object Gateway desiderato (ad esempio, <literal>ganesha</literal>).
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-rbdmirror">
+   <title>Distribuzione <systemitem class="daemon">rbd-mirror</systemitem></title>
+   <para>
+    Il servizio <systemitem class="daemon">rbd-mirror</systemitem> sincronizza le immagini del dispositivo di blocco RADOS (RADOS Block Device, RBD) tra due cluster Ceph (per ulteriori dettagli, vedere <xref linkend="ceph-rbd-mirror"/>). Per distribuire <systemitem class="daemon">rbd-mirror</systemitem>, utilizzare la specifica seguente:
+   </para>
+<screen>
+service_type: rbd-mirror
+service_id: <replaceable>EXAMPLE_RBD_MIRROR</replaceable>
+placement:
+  hosts:
+  - ses-min3
+</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-monitoring">
+   <title>Distribuzione dello stack di monitoraggio</title>
+   <para>
+    Lo stack di monitoraggio è composto da Prometheus e dalle relative utilità di esportazione, da Prometheus Alertmanager e da Grafana. Il Ceph Dashboard utilizza questi componenti per archiviare e visualizzare metriche dettagliate sull&apos;utilizzo e le prestazioni del cluster.
+   </para>
+   <tip>
+    <para>
+     Se per la distribuzione sono necessarie immagini del container personalizzate o fornite in locale dei servizi dello stack di monitoraggio, fare riferimento a <xref linkend="monitoring-custom-images"/>.
+    </para>
+   </tip>
+   <para>
+    Per distribuire lo stack di monitoraggio, seguire la procedura indicata di seguito:
+   </para>
+   <procedure>
+    <step>
+     <para>
+      Abilitare il modulo <literal>prometheus</literal> nel daemon Ceph Manager. Questa operazione espone le metriche Ceph interne per consentirne la lettura da parte di Prometheus.
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable prometheus</screen>
+     <note>
+      <para>
+       Assicurarsi di eseguire questo comando prima di procedere con la distribuzione di Prometheus. Altrimenti, occorrerà ripetere la distribuzione di Prometheus per aggiornarne la configurazione:
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch redeploy prometheus</screen>
+     </note>
+    </step>
+    <step>
+     <para>
+      Creare un file della specifica (ad esempio <filename>monitoring.yaml</filename>) con un contenuto simile al seguente:
+     </para>
+<screen>
+service_type: prometheus
+placement:
+  hosts:
+  - ses-min2
+---
+service_type: node-exporter
+---
+service_type: alertmanager
+placement:
+  hosts:
+  - ses-min4
+---
+service_type: grafana
+placement:
+  hosts:
+  - ses-min3
+</screen>
+    </step>
+    <step>
+     <para>
+      Applicare i servizi di monitoraggio eseguendo:
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i monitoring.yaml</screen>
+     <para>
+      Per il completamento della distribuzione dei servizi di monitoraggio potrebbero essere necessari alcuni istanti.
+     </para>
+    </step>
+   </procedure>
+   <important>
+    <para>
+     Se la distribuzione viene eseguita come descritto sopra, la comunicazione reciproca tra Prometheus, Grafana e il Ceph Dashboard è configurata automaticamente, per un&apos;integrazione Grafana completamente funzionante nel Ceph Dashboard.
+    </para>
+    <para>
+     L&apos;unica eccezione a questa regola è costituita dal monitoraggio con le immagini RBD. Consultare <xref linkend="monitoring-rbd-image"/> per maggiori informazioni.
+    </para>
+   </important>
+  </sect2>
+ </sect1>
+</chapter>

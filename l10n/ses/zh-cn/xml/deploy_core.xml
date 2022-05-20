@@ -1,0 +1,751 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xlink="http://www.w3.org/1999/xlink" xml:base="deploy_core.xml" version="5.0" xml:id="deploy-core">
+ <info>
+  <title>使用 cephadm 部署其余核心服务</title>
+  <dm:docmanager xmlns:dm="urn:x-suse:ns:docmanager">
+   <dm:translation>yes</dm:translation>
+   <dm:release>SES 7</dm:release>
+  </dm:docmanager>
+ </info>
+ <para>
+  部署基本 Ceph 集群之后，请将核心服务部署到更多集群节点。为使客户端能够访问集群数据，还需要部署额外的服务。
+ </para>
+ <para>
+  目前，我们支持使用 Ceph orchestrator（<command>ceph orch</command> 子命令）在命令行上部署 Ceph 服务。
+ </para>
+ <sect1 xml:id="deploy-cephadm-day2-orch">
+  <title><command>ceph orch</command> 命令</title>
+
+  <para>
+   Ceph orchestrator 命令 <command>ceph orch</command> 是 cephadm 模块的接口，它负责列出集群组件并在新的集群节点上部署 Ceph 服务。
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch-status">
+   <title>显示 orchestrator 状态</title>
+   <para>
+    以下命令会显示当前模式和 Ceph orchestrator 的状态。
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch status</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-orch-list">
+   <title>列出设备、服务和守护进程</title>
+   <para>
+    要列出所有磁盘设备，请运行以下命令：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch device ls
+Hostname   Path      Type  Serial  Size   Health   Ident  Fault  Available
+ses-master /dev/vdb  hdd   0d8a... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdc  hdd   8304... 10.7G  Unknown  N/A    N/A    No
+ses-min1   /dev/vdd  hdd   7b81... 10.7G  Unknown  N/A    N/A    No
+[...]
+</screen>
+   <tip>
+    <title>服务和守护进程</title>
+    <para>
+     <emphasis>服务</emphasis>是表示特定类型的 Ceph 服务的一种通用术语，例如 Ceph Manager。
+    </para>
+    <para>
+     <emphasis>守护进程</emphasis>表示服务的特定实例，例如在名为 <literal>ses-min1</literal> 的节点上运行的进程 <literal>mgr.ses-min1.gdlcik</literal>。
+    </para>
+   </tip>
+   <para>
+    要列出 cephadm 已知的所有服务，请运行：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls
+NAME  RUNNING  REFRESHED  AGE  PLACEMENT  IMAGE NAME                  IMAGE ID
+mgr       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+mon       1/0  5m ago     -    &lt;no spec&gt;  registry.example.com/[...]  5bf12403d0bd
+</screen>
+   <tip>
+    <para>
+     您可以使用可选的 <option>-–host</option> 参数使列表仅显示特定节点上的服务，也可使用可选的 <option>--service-type</option> 参数使列表仅显示特定类型的服务。可接受的类型有 <literal>mon</literal>、<literal>osd</literal>、<literal>mgr</literal>、<literal>mds</literal> 和 <literal>rgw</literal>。
+    </para>
+   </tip>
+   <para>
+    要列出由 cephadm 部署的所有运行中守护进程，请运行：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps
+NAME            HOST     STATUS   REFRESHED AGE VERSION    IMAGE ID     CONTAINER ID
+mgr.ses-min1.gd ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd b8104e09814c
+mon.ses-min1    ses-min1 running) 8m ago    12d 15.2.0.108 5bf12403d0bd a719e0087369
+</screen>
+   <tip>
+    <para>
+     要查询某个特定守护进程的状态，请使用 <option>--daemon_type</option> 和 <option>--daemon_id</option>。对于 OSD，ID 为数字 OSD ID。对于 MDS，ID 为文件系统名称：
+    </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type osd --daemon_id 0
+<prompt>cephuser@adm &gt; </prompt>ceph orch ps --daemon_type mds --daemon_id my_cephfs
+</screen>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="cephadm-service-and-placement-specs">
+  <title>服务和归置规范</title>
+
+  <para>
+   指定 Ceph 服务部署的推荐方法是创建一个 YAML 格式的文件，其中包含所要部署服务的规范。
+  </para>
+
+  <sect2 xml:id="cephadm-service-spec">
+   <title>创建服务规范</title>
+   <para>
+    您可以为每种类型的服务创建单独的规范文件，例如：
+   </para>
+<screen>
+<prompt>root@master # </prompt>cat nfs.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+   <para>
+    或者，您可以在一个描述哪些节点将运行特定服务的文件（例如 <filename>cluster.yml</filename>）中指定多个（或所有）服务类型。请记得用三个破折号 (<literal>---</literal>) 分隔各个服务类型：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+---
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+---
+[...]
+</screen>
+   <para>
+    上述属性的含义如下：
+   </para>
+   <variablelist>
+    <varlistentry>
+     <term><literal>service_type</literal></term>
+     <listitem>
+      <para>
+       服务的类型。它可以是 Ceph 服务（<literal>mon</literal>、<literal>mgr</literal>、<literal>mds</literal>、<literal>crash</literal>、<literal>osd</literal> 或 <literal>rbd-mirror</literal>）、网关（<literal>nfs</literal> 或 <literal>rgw</literal>）或部分监控堆栈（<literal>alertmanager</literal>、<literal>grafana</literal>、<literal>node-exporter</literal> 或 <literal>prometheus</literal>）。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>service_id</literal></term>
+     <listitem>
+      <para>
+       服务的名称。<literal>mon</literal>、<literal>mgr</literal>、<literal>alertmanager</literal>、<literal>grafana</literal>、<literal>node-exporter</literal> 和 <literal>prometheus</literal> 类型的规范不需要 <literal>service_id</literal> 属性。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>placement</literal></term>
+     <listitem>
+      <para>
+       指定哪些节点将运行服务。有关更多详细信息，请参见<xref linkend="cephadm-placement-specs"/>。
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>spec</literal></term>
+     <listitem>
+      <para>
+       与服务类型相关的其他规范。
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+   <tip>
+    <title>应用特定服务</title>
+    <para>
+     Ceph 集群服务通常具有许多专属属性。有关各个服务规范的示例和详细信息，请参见<xref linkend="deploy-cephadm-day2-services"/>。
+    </para>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="cephadm-placement-specs">
+   <title>创建归置规范</title>
+   <para>
+    要部署 Ceph 服务，cephadm 需要知道要在其上部署这些服务的节点。请使用 <literal>placement</literal> 属性并列出要应用服务的节点的主机名简短名称：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>cat cluster.yml
+[...]
+placement:
+  hosts:
+  - host1
+  - host2
+  - host3
+[...]
+</screen>
+  </sect2>
+
+  <sect2 xml:id="cephadm-apply-cluster-specs">
+   <title>应用集群规范</title>
+   <para>
+    创建包含所有服务及其归置的规范的完整 <filename>cluster.yml</filename> 文件之后，您便可通过运行以下命令来应用集群：
+   </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i cluster.yml</screen>
+   <para>
+    要查看集群的状态，请运行 <command>ceph orch status</command> 命令。有关细节，请参见<xref linkend="deploy-cephadm-day2-orch-status"/>。
+   </para>
+  </sect2>
+
+  <sect2 xml:id="cephadm-apply-cluster-specs-">
+   <title>导出运行中集群的规范</title>
+   <para>
+    虽然您使用如<xref linkend="cephadm-service-and-placement-specs"/>中所述的规范文件将服务部署到 Ceph 集群，但在实际操作过程中集群的配置可能会偏离原始规范。另外，您也可能会无意间删除规范文件。
+   </para>
+   <para>
+    要检索运行中集群的完整规范，请运行：
+   </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph orch ls --export
+placement:
+  hosts:
+  - hostname: ses-min1
+    name: ''
+    network: ''
+service_id: my_cephfs
+service_name: mds.my_cephfs
+service_type: mds
+---
+placement:
+  count: 2
+service_name: mgr
+service_type: mgr
+---
+[...]
+</screen>
+   <tip>
+    <para>
+     您可以追加 <option>--format</option> 选项以更改默认的 <literal>yaml</literal> 输出格式。您可以从 <literal>json</literal>、<literal>json-pretty</literal> 或 <literal>yaml</literal> 中进行选择。例如：
+    </para>
+<screen>ceph orch ls --export --format json</screen>
+   </tip>
+  </sect2>
+ </sect1>
+ <sect1 xml:id="deploy-cephadm-day2-services">
+  <title>部署 Ceph 服务</title>
+
+  <para>
+   在运行基本集群之后，您可以将 Ceph 服务部署到其他节点。
+  </para>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-mon">
+   <title>部署 Ceph Monitor 和 Ceph Manager</title>
+   <para>
+    Ceph 集群的不同节点之间部署了三个或五个 MON。如果集群中有五个或更多节点，则建议部署五个 MON。好的做法是，将 MGR 部署在与 MON 相同的节点上。
+   </para>
+   <important>
+    <title>包含引导 MON</title>
+    <para>
+     在部署 MON 和 MGR 时，请记得包含在<xref linkend="deploy-cephadm-configure-mon"/>中配置基本集群时添加的第一个 MON。
+    </para>
+   </important>
+   <para>
+    要部署 MON，请应用以下规范：
+   </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+   <note>
+    <para>
+     如果需要添加另一个节点，请在同一 YAML 列表中追加主机名。例如：
+    </para>
+<screen>
+service_type: mon
+placement:
+ hosts:
+ - ses-min1
+ - ses-min2
+ - ses-min3
+ - ses-min4
+</screen>
+   </note>
+   <para>
+    同样，要部署 MGR，请应用以下规范：
+   </para>
+   <important>
+    <para>
+     确保您的部署在每个部署中至少有三个 Ceph Manager。
+    </para>
+   </important>
+<screen>
+service_type: mgr
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+   <tip>
+    <para>
+     如果 MON 或 MGR <emphasis>不</emphasis>在同一子网中，则需要追加子网地址。例如：
+    </para>
+<screen>
+service_type: mon
+placement:
+  hosts:
+  - ses-min1:10.1.2.0/24
+  - ses-min2:10.1.5.0/24
+  - ses-min3:10.1.10.0/24
+</screen>
+   </tip>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-osd">
+   <title>部署 Ceph OSD</title>
+   <important>
+    <title>当存储设备可用时</title>
+    <para>
+     如果满足以下所有条件，则存储设备将被视为<emphasis>可用</emphasis>：
+    </para>
+    <itemizedlist>
+     <listitem>
+      <para>
+       设备没有分区。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       设备没有任何 LVM 状态。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       设备未挂载。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       设备不包含文件系统。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       设备不包含 BlueStore OSD。
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       设备大于 5 GB。
+      </para>
+     </listitem>
+    </itemizedlist>
+    <para>
+     如果不符合上述条件，Ceph 将拒绝供给此类 OSD。
+    </para>
+   </important>
+   <para>
+    可以使用以下两种方式来部署 OSD：
+   </para>
+   <itemizedlist>
+    <listitem>
+     <para>
+      告知 Ceph 使用所有可用和未使用的存储设备：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd --all-available-devices</screen>
+    </listitem>
+    <listitem>
+     <para>
+      使用 DriveGroups（参见<xref linkend="drive-groups"/>）创建 OSD 规范，该规范描述了将根据设备属性（例如设备类型（SSD 或 HDD）、设备型号名称、大小或设备所在的节点）部署的设备。然后通过运行以下命令应用规范：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply osd -i drive_groups.yml</screen>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-mds">
+   <title>部署元数据服务器</title>
+   <para>
+    CephFS 需要一个或多个元数据服务器 (MDS) 服务。要创建 CephFS，首先要通过应用以下规范来创建 MDS 服务器：
+   </para>
+   <note>
+    <para>
+     在应用以下规范之前，请确保至少创建了两个存储池，一个用于存储 CephFS 数据，另一个用于存储 CephFS 元数据。
+    </para>
+   </note>
+<screen>
+service_type: mds
+service_id: <replaceable>CEPHFS_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+</screen>
+   <para>
+    MDS 正常运行后，创建 CephFS：
+   </para>
+<screen>ceph fs new <replaceable>CEPHFS_NAME</replaceable> <replaceable>metadata_pool</replaceable> <replaceable>data_pool</replaceable></screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-ogw">
+   <title>部署对象网关</title>
+   <para>
+    cephadm 会将对象网关部署为管理特定<emphasis>领域</emphasis>和<emphasis>区域</emphasis>的守护进程的集合。
+   </para>
+   <para>
+    您可以将对象网关服务与现有的领域和区域相关联（有关更多详细信息，请参见<xref linkend="ceph-rgw-fed"/>），也可以指定不存在的 <replaceable>REALM_NAME</replaceable> 和 <replaceable>ZONE_NAME</replaceable>，应用以下配置后会自动创建相应领域和区域：
+   </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+</screen>
+   <sect3 xml:id="cephadm-deploy-using-secure-ssl-access">
+    <title>使用安全 SSL 访问</title>
+    <para>
+     要使用到对象网关的安全 SSL 连接，您需要一对有效的 SSL 证书和密钥文件（有关更多详细信息，请参见<xref linkend="ceph-rgw-https"/>）。您需要启用 SSL，指定 SSL 连接的端口号以及 SSL 证书和密钥文件。
+    </para>
+    <para>
+     要启用 SSL 并指定端口号，请在规范中包含以下内容：
+    </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+</screen>
+    <para>
+     要指定 SSL 证书和密钥，可以将其内容直接粘贴到 YAML 规范文件中。行末的竖线符号 (<literal>|</literal>) 告知分析程序预期的值为多行字符串。例如：
+    </para>
+<screen>
+spec:
+  ssl: true
+  rgw_frontend_port: 443
+  rgw_frontend_ssl_certificate: |
+   -----BEGIN CERTIFICATE-----
+   MIIFmjCCA4KgAwIBAgIJAIZ2n35bmwXTMA0GCSqGSIb3DQEBCwUAMGIxCzAJBgNV
+   BAYTAkFVMQwwCgYDVQQIDANOU1cxHTAbBgNVBAoMFEV4YW1wbGUgUkdXIFNTTCBp
+   [...]
+   -----END CERTIFICATE-----
+   rgw_frontend_ssl_key: |
+   -----BEGIN PRIVATE KEY-----
+   MIIJRAIBADANBgkqhkiG9w0BAQEFAASCCS4wggkqAgEAAoICAQDLtFwg6LLl2j4Z
+   BDV+iL4AO7VZ9KbmWIt37Ml2W6y2YeKX3Qwf+3eBz7TVHR1dm6iPpCpqpQjXUsT9
+   [...]
+   -----END PRIVATE KEY-----
+</screen>
+    <tip>
+     <para>
+      您可以省略 <literal>rgw_frontend_ssl_certificate:</literal> 和 <literal>rgw_frontend_ssl_key:</literal> 关键字，并将它们上载到配置数据库，而不是粘贴 SSL 证书和密钥文件的内容：
+     </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.crt \
+ -i <replaceable>SSL_CERT_FILE</replaceable>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.key \
+ -i <replaceable>SSL_KEY_FILE</replaceable>
+</screen>
+    </tip>
+    <sect4 xml:id="cephadm-deploy-ogw-ports">
+     <title>将对象网关配置为同时侦听端口 443 和 80</title>
+     <para>
+      要将对象网关配置为同时侦听端口 443 (HTTPS) 和 80 (HTTP)，请执行以下步骤：
+     </para>
+     <note>
+      <para>
+       该过程中的命令使用 <literal>default</literal> 领域和区域。
+      </para>
+     </note>
+     <procedure>
+      <step>
+       <para>
+        提供规范文件以部署对象网关。有关对象网关规范的更多详细信息，请参见<xref linkend="deploy-cephadm-day2-service-ogw"/>。使用以下命令：
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i <replaceable>SPEC_FILE</replaceable></screen>
+      </step>
+      <step>
+       <para>
+        如果规范文件中未提供 SSL 证书，请使用以下命令添加证书：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/default/default.crt -i certificate.pem
+<prompt>cephuser@adm &gt; </prompt>ceph config-key set rgw/cert/default/default.key -i key.pem
+</screen>
+      </step>
+      <step>
+       <para>
+        更改 <option>rgw_frontends</option> 选项的默认值：
+       </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set client.rgw.default.default rgw_frontends \
+ "beast port=80 ssl_port=443"
+</screen>
+      </step>
+      
+      <step>
+       <para>
+        删除 cephadm 创建的特定配置。运行以下命令标识 <option>rgw_frontends</option> 选项是为哪个目标配置的：
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config dump | grep rgw</screen>
+       <para>
+        例如，目标是 <literal>client.rgw.default.default.node4.yiewdu</literal>。删除 <option>rgw_frontends</option> 当前的具体值：
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph config rm client.rgw.default.default.node4.yiewdu rgw_frontends</screen>
+       <tip>
+        <para>
+         您也可以不删除 <option>rgw_frontends</option> 的值，而是指定其值。例如：
+        </para>
+<screen>
+<prompt>cephuser@adm &gt; </prompt>ceph config set client.rgw.default.default.node4.yiewdu \
+ rgw_frontends "beast port=80 ssl_port=443"
+</screen>
+       </tip>
+      </step>
+      
+      <step>
+       <para>
+        重启动对象网关：
+       </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch restart rgw.default.default</screen>
+      </step>
+     </procedure>
+    </sect4>
+   </sect3>
+   <sect3 xml:id="cephadm-deploy-with-subcluster">
+    <title>使用子集群部署</title>
+    <para>
+     <emphasis>子集群</emphasis>可帮助您组织集群中的节点，以分隔工作负载，让弹性缩放更轻松。如果使用子集群进行部署，请应用以下配置：
+    </para>
+<screen>
+service_type: rgw
+service_id: <replaceable>REALM_NAME</replaceable>.<replaceable>ZONE_NAME</replaceable>.<replaceable>SUBCLUSTER</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  rgw_realm: <replaceable>RGW_REALM</replaceable>
+  rgw_zone: <replaceable>RGW_ZONE</replaceable>
+  subcluster: <replaceable>SUBCLUSTER</replaceable>
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-igw">
+   <title>部署 iSCSI 网关</title>
+   <para>
+    cephadm 可部署 iSCSI 网关，它是一种存储区域网络 (SAN) 协议，可让客户端（称作发起程序）将 SCSI 命令发送到远程服务器上的 SCSI 存储设备（目标）。
+   </para>
+   <para>
+    应用以下配置进行部署。确保 <literal>trusted_ip_list</literal> 包含所有 iSCSI 网关和 Ceph Manager 节点的 IP 地址（请参见下面的输出示例）。
+   </para>
+   <note>
+    <para>
+     请确保在应用以下规范之前创建存储池。
+    </para>
+   </note>
+<screen>
+service_type: iscsi
+service_id: <replaceable>EXAMPLE_ISCSI</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+  - ses-min3
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  api_user: <replaceable>EXAMPLE_USER</replaceable>
+  api_password: <replaceable>EXAMPLE_PASSWORD</replaceable>
+  trusted_ip_list: "<replaceable>IP_ADDRESS_1</replaceable>,<replaceable>IP_ADDRESS_2</replaceable>"
+</screen>
+   <note>
+    <para>
+     请确保针对 <literal>trusted_ip_list</literal> 列出的 IP 在逗号分隔后<emphasis>没有</emphasis>空格。
+    </para>
+   </note>
+   <sect3>
+    <title>安全 SSL 配置</title>
+    <para>
+     要在 Ceph Dashboard 和 iSCSI 目标 API 之间使用安全 SSL 连接，您需要一对有效的 SSL 证书和密钥文件。它们可以是 CA 颁发的，也可以是自我签名的（参见<xref linkend="self-sign-certificates"/>）。要启用 SSL，请在您的规范文件中包含 <literal>api_secure: true</literal> 设置：
+    </para>
+<screen>
+spec:
+  api_secure: true
+</screen>
+    <para>
+     要指定 SSL 证书和密钥，可以将其内容直接粘贴到 YAML 规范文件中。行末的竖线符号 (<literal>|</literal>) 告知分析程序预期的值为多行字符串。例如：
+    </para>
+<screen>
+spec:
+  pool: EXAMPLE_POOL
+  api_user: EXAMPLE_USER
+  api_password: EXAMPLE_PASSWORD
+  trusted_ip_list: "IP_ADDRESS_1,IP_ADDRESS_2"
+  api_secure: true
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    MIIDtTCCAp2gAwIBAgIYMC4xNzc1NDQxNjEzMzc2MjMyXzxvQ7EcMA0GCSqGSIb3
+    DQEBCwUAMG0xCzAJBgNVBAYTAlVTMQ0wCwYDVQQIDARVdGFoMRcwFQYDVQQHDA5T
+    [...]
+    -----END CERTIFICATE-----
+  ssl_key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC5jdYbjtNTAKW4
+    /CwQr/7wOiLGzVxChn3mmCIF3DwbL/qvTFTX2d8bDf6LjGwLYloXHscRfxszX/4h
+    [...]
+    -----END PRIVATE KEY-----
+</screen>
+   </sect3>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-nfs">
+   <title>部署 NFS Ganesha</title>
+    
+<important>
+ <para>
+  NFS Ganesha 支持 NFS 4.1 和更高版本，不支持 NFS 3 版本。
+ </para>
+</important>
+
+    <para>
+    cephadm 可使用预定义的 RADOS 存储池和可选的名称空间部署 NFS Ganesha。要部署 NFS Ganesha，请应用以下规范：
+   </para>
+   <note>
+    <para>
+     您需要有一个预定义的 RADOS 存储池，否则 <command>ceph orch apply</command> 操作将失败。有关创建存储池的详细信息，请参见<xref linkend="ceph-pools-operate-add-pool"/>。
+    </para>
+   </note>
+<screen>
+service_type: nfs
+service_id: <replaceable>EXAMPLE_NFS</replaceable>
+placement:
+  hosts:
+  - ses-min1
+  - ses-min2
+spec:
+  pool: <replaceable>EXAMPLE_POOL</replaceable>
+  namespace: <replaceable>EXAMPLE_NAMESPACE</replaceable>
+</screen>
+   <itemizedlist>
+    <listitem>
+     <para>
+      <replaceable>EXAMPLE_NFS</replaceable>，包含用于标识 NFS 导出项的任意字符串。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <replaceable>EXAMPLE_POOL</replaceable>，包含将存储 NFS Ganesha RADOS 配置对象的存储池的名称。
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <replaceable>EXAMPLE_NAMESPACE</replaceable>（可选），包含所需的对象网关 NFS 名称空间（例如，<literal>ganesha</literal>）。
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-rbdmirror">
+   <title>部署 <systemitem class="daemon">rbd-mirror</systemitem></title>
+   <para>
+    <systemitem class="daemon">rbd-mirror</systemitem> 服务负责在两个 Ceph 集群之间同步 RADOS 块设备映像（有关更多详细信息，请参见<xref linkend="ceph-rbd-mirror"/>）。要部署 <systemitem class="daemon">rbd-mirror</systemitem>，请使用以下规范：
+   </para>
+<screen>
+service_type: rbd-mirror
+service_id: <replaceable>EXAMPLE_RBD_MIRROR</replaceable>
+placement:
+  hosts:
+  - ses-min3
+</screen>
+  </sect2>
+
+  <sect2 xml:id="deploy-cephadm-day2-service-monitoring">
+   <title>部署监控堆栈</title>
+   <para>
+    监控堆栈包含 Prometheus、Prometheus 导出程序、Prometheus 告警管理器和 Grafana。Ceph Dashboard 使用这些组件来存储并直观呈现有关集群使用率和性能的详细度量。
+   </para>
+   <tip>
+    <para>
+     如果您的部署需要监控堆栈服务的自定义或本地提供的容器映像，请参见<xref linkend="monitoring-custom-images"/>。
+    </para>
+   </tip>
+   <para>
+    要部署监控堆栈，请执行以下步骤：
+   </para>
+   <procedure>
+    <step>
+     <para>
+      在 Ceph Manager 守护进程中启用 <literal>prometheus</literal> 模块。这将公开内部 Ceph 度量，以便 Prometheus 可以读取这些信息：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph mgr module enable prometheus</screen>
+     <note>
+      <para>
+       请确保在部署 Prometheus 之前运行此命令。如果部署前未运行该命令，则必须重新部署 Prometheus 才能更新 Prometheus 的配置：
+      </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch redeploy prometheus</screen>
+     </note>
+    </step>
+    <step>
+     <para>
+      创建包含如下内容的规范文件（例如 <filename>monitoring.yaml</filename>）：
+     </para>
+<screen>
+service_type: prometheus
+placement:
+  hosts:
+  - ses-min2
+---
+service_type: node-exporter
+---
+service_type: alertmanager
+placement:
+  hosts:
+  - ses-min4
+---
+service_type: grafana
+placement:
+  hosts:
+  - ses-min3
+</screen>
+    </step>
+    <step>
+     <para>
+      通过运行以下命令应用监控服务：
+     </para>
+<screen><prompt>cephuser@adm &gt; </prompt>ceph orch apply -i monitoring.yaml</screen>
+     <para>
+      部署监控服务可能需要一到两分钟。
+     </para>
+    </step>
+   </procedure>
+   <important>
+    <para>
+     Prometheus、Grafana 和 Ceph Dashboard 全都会自动配置为相互通讯，因而如上面所述进行部署时，Ceph Dashboard 中将实现功能完备的 Grafana 集成。
+    </para>
+    <para>
+     但使用 RBD 映像进行监控时不适用于此规则。有关更多信息，请参见<xref linkend="monitoring-rbd-image"/>。
+    </para>
+   </important>
+  </sect2>
+ </sect1>
+</chapter>
