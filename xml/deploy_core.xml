@@ -905,7 +905,7 @@ placement:
   </sect2>
 
   <sect2 xml:id="deploy-cephadm-day2-service-ha">
-   <title>Deploying the &ha; service for &ogw; and &ganesha;</title>
+   <title>Deploying the &ha; service for the &ogw; and &ganesha;</title>
    <para>
     You can create a high availability (HA) endpoints for &ogw; and &ganesha;
     services by deploying the &ingress; service. &ingress; includes a
@@ -914,14 +914,14 @@ placement:
    </para>
    <important>
     <para>
-     If your &ogw; deployment uses SSL connection, then SSL must be configured
-     and terminated by &ingress; and not by &ogw; itself.
+     If your &ogw; deployment uses an SSL connection, disable it and configure
+     &ingress; to use the SSL certificate instead of the &ogw; node.
     </para>
    </important>
-   <sect3 xml:id="how-ha-works">
-    <title>How the HA setup works ?</title>
+   <sect3 xml:id="how-nfs-ogw-ha-works">
+    <title>How the HA setup works?</title>
     <para>
-     The HA setup involves multiple &Ingress; hosts. We recommend at least
+     The HA setup involves multiple &ingress; hosts. We recommend at least
      three &ingress; hosts. Each &ingress; host includes a pair of &haproxy;
      and a &keepalived; daemons. A virtual IP address is automatically
      configured on only one of &ingress; hosts at a time.
@@ -951,130 +951,150 @@ placement:
      </figure>
      -->
    </sect3>
-   <sect3 xml:id="ceph-nfsganesha-ha">
-    <title>Setting up &ha; &ganesha;</title>
+   <sect3 xml:id="how-ogw-ha">
+    <title>Deploying &ha; for the &ogw;</title>
     <procedure>
      <step>
       <para>
-       On each &ingress; host, running, ensure that the following sysctl
-       variables are set:
+       Create specifications for the &ogw; and &ingress; services, for example:
+      </para>
+<screen>&prompt.user;cat rgw.yaml
+service_type: rgw
+service_id: myrealm.myzone
+placement:
+  hosts:
+    - ses-node1
+    - ses-node2
+    - ses-node3
+[...]
+</screen>
+<screen>&prompt.user;cat ingress.yaml
+service_type: ingress
+service_id: rgw.myrealm.myzone
+placement:
+  hosts:
+    - ingress-host1
+    - ingress-host2
+    - ingress-host3
+spec:
+  backend_service: rgw.myrealm.myzone
+  virtual_ip: 192.168.20.1/24
+  frontend_port: 8080
+  monitor_port: 1967     # used by HAproxy for load balancer status
+  ssl_cert: |
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+    -----BEGIN PRIVATE KEY-----
+    ...
+    -----END PRIVATE KEY-----
+</screen>
+     </step>
+     <step>
+      <para>
+       Apply the specifications:
       </para>
 <screen>
-          net.ipv4.ip_nonlocal_bind=1
-          net.ipv4.ip_forward=1
-        </screen>
+&prompt.cephuser;ceph orch apply -i rgw.yaml
+&prompt.cephuser;ceph orch apply -i ingress.yaml
+</screen>
+     </step>
+    </procedure>
+    <para></para>
+   </sect3>
+   <sect3 xml:id="ceph-nfsganesha-ha">
+    <title>Deploying &ha; for &ganesha;</title>
+    <procedure>
+     <step>
+      <para>
+       Ensure that the following sysctl variables are set on each &ingress;
+       host:
+      </para>
+<screen>
+net.ipv4.ip_nonlocal_bind=1
+net.ipv4.ip_forward=1
+</screen>
       <tip>
        <para>
-        &haproxy; and &keepalived; will always be running together on the same
-        node. They form the ingress.
-       </para>
-      </tip>
-      <tip>
-       <para>
-        You can persistently set the sysctl variables by creating a file named
-        <literal>90-ingress.conf</literal> in the directory
-        <literal>/etc/sysctl.d</literal> and apply to the running host with
-        <command>sysctl --system</command> or reboot the host.
+        You can persistently set the sysctl variables by creating a file
+        <filename>/etc/sysctl.d/90-ingress.conf</filename> and including the
+        above variables. To apply the changes, run <command>sysctl
+        --system</command> or reboot the host.
        </para>
       </tip>
      </step>
+     <warning>
+      <para>
+       We recommend running at least three &ganesha; daemons, otherwise mounted
+       clients may experience excessively long hangs.
+      </para>
+     </warning>
      <step>
       <para>
-       Create a &ha; &ganesha; cluster using the &mgr;. The following command
-       will create multiple &ganesha; daemons and the corresponding ingress.
+       Create specifications for the &ingress; and &ganesha; services, for
+       example:
+      </para>
+<screen>&prompt.user;cat nfs.yaml
+service_type: nfs
+service_id: nfs-ha
+service_name: nfs.nfs-ha
+placement:
+  hosts:
+  - node1
+  - node2
+  - node3
+spec:
+  port: 12049
+</screen>
+<screen>&prompt.user;cat ingress.yaml
+service_type: ingress
+service_id: nfs.nfs-ha
+service_name: ingress.nfs.nfs-ha
+placement:
+  count: 2
+spec:
+  backend_service: nfs.nfs-ha
+  frontend_port: 2049
+  monitor_port: 9049
+  virtual_ip: 10.20.27.111
+</screen>
+      <para>
+       Apply the customized service specifications:
       </para>
 <screen>
-          &prompt.cephuser;ceph nfs cluster create \
-          <replaceable>CLUSTER_NAME</replaceable> \
-          <replaceable>NODES</replaceable> \
-          --ingress \
-          --virtual_ip <replaceable>VRITUAL_IP</replaceable> \
-          --port <replaceable>PORT</replaceable>
-        </screen>
-      <para>
-       In this case, <replaceable>NODES</replaceable> should be a list of nodes
-       for the &ganesha; daemons to run on.
-      </para>
-      <warning>
-          It is advisable to run at least three &ganesha; daemons, otherwise
-          mounted clients may experience excessively long hangs.
-        </warning>
+&prompt.cephuser;ceph orch apply -i nfs.yaml
+&prompt.cephuser;ceph orch apply -i ingress.yaml
+</screen>
      </step>
      <step>
       <para>
-       Optionally, you can customize the placement of the ingress and nfs
-       daemons by using the <command>ceph orch</command> and service
-       specifications:
-      </para>
-<screen>
-          # ingress.yaml
-          ---
-          service_type: ingress
-          service_id: nfs.nfs-ha
-          service_name: ingress.nfs.nfs-ha
-          placement:
-            count: 2
-          spec:
-            backend_service: nfs.nfs-ha
-            frontend_port: 2049
-            monitor_port: 9049
-            virtual_ip: 10.20.27.111
-        </screen>
-<screen>
-          # nfs.yaml
-          ---
-          service_type: nfs
-          service_id: nfs-ha
-          service_name: nfs.nfs-ha
-          placement:
-            hosts:
-            - node1
-            - node2
-            - node3
-          spec:
-            port: 12049
-        </screen>
-      <para>
-       Apply the customized service specifications with your desired daemon
-       placement:
-      </para>
-<screen>
-          &prompt.cephuser;ceph orch apply -i nfs.yaml
-          &prompt.cephuser;ceph orch apply -i ingress.yaml
-        </screen>
-     </step>
-     <step>
-      <para>
-       Create a &ganesha; export. This can be done from the &dashboard; or
-       using the &mgr;.
+       Create a &ganesha; export. Find more details in
+       <xref
+       linkend="dash-webui-nfs-create"/>. Remember to select the
+       &ha; &ganesha; cluster and an appropriate storage back-end and pseudo
+       path.
       </para>
       <para>
-       When creating the export from the &dashboard;, navigate to the
-       <literal>NFS</literal> section and create a new &ganesha; export using
-       the <literal>Create</literal> button. Select the &ha; &ganesha; cluster
-       and an appropriate storage backend and pseudo path.
-      </para>
-      <para>
-       Alternatively create an export from the &mgr; command line:
+       Alternatively, create the export from the command line on the MGR node:
       </para>
 <screen>
-          &prompt.cephuser;ceph nfs export create \
-          <replaceable>STORAGE_BACKEND</replaceable> \
-          <replaceable>NFS_HA_CLUSTER</replaceable> \
-          <replaceable>NFS_PSEUDO_PATH</replaceable> \
-          <replaceable>STORAGE_BACKEND_INSTANCE</replaceable> \
-          <replaceable>EXPORT_PATH</replaceable>
-        </screen>
+&prompt.cephuser;ceph nfs export create \
+ <replaceable>STORAGE_BACKEND</replaceable> \
+ <replaceable>NFS_HA_CLUSTER</replaceable> \
+ <replaceable>NFS_PSEUDO_PATH</replaceable> \
+ <replaceable>STORAGE_BACKEND_INSTANCE</replaceable> \
+ <replaceable>EXPORT_PATH</replaceable>
+</screen>
      </step>
      <step>
       <para>
        Mount the &ganesha; share on your clients:
       </para>
 <screen>
-          &prompt.root;mount -t nfs \
-          <replaceable>VIRTUAL_IP</replaceable>:<replaceable>PORT</replaceable>/<replaceable>NFS_PSEUDO_PATH</replaceable> \
-          /mnt/nfs
-        </screen>
+&prompt.root;mount -t nfs \
+<replaceable>VIRTUAL_IP</replaceable>:<replaceable>PORT</replaceable>/<replaceable>NFS_PSEUDO_PATH</replaceable> \
+/mnt/nfs
+</screen>
      </step>
     </procedure>
    </sect3>
