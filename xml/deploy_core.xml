@@ -60,8 +60,8 @@ ses-node1  /dev/vdd  hdd   7b81... 10.7G  Unknown  N/A    N/A    No
     </para>
     <para>
      <emphasis>Daemon</emphasis> is a specific instance of a service, for
-     example a process <literal>mgr.ses-node1.gdlcik</literal> running on a node
-     called <literal>ses-node1</literal>.
+     example a process <literal>mgr.ses-node1.gdlcik</literal> running on a
+     node called <literal>ses-node1</literal>.
     </para>
    </tip>
    <para>
@@ -549,9 +549,10 @@ spec:
     <title>Using secure SSL access</title>
     <para>
      To use a secure SSL connection to the &ogw;, you need a file containing
-     both the valid SSL certificate and the key (see <xref linkend="ceph-rgw-https"/>
-     for more details). You need to enable SSL, specify a port number for SSL
-     connections, and the SSL certificate file.
+     both the valid SSL certificate and the key (see
+     <xref linkend="ceph-rgw-https"/> for more details). You need to enable
+     SSL, specify a port number for SSL connections, and the SSL certificate
+     file.
     </para>
     <para>
      To enable SSL and specify the port number, include the following in your
@@ -586,9 +587,9 @@ spec:
 </screen>
     <tip>
      <para>
-      Instead of pasting the content of a SSL certificate file, you can
-      omit the <literal>rgw_frontend_ssl_certificate:</literal> directive and
-      upload the certificate file to the configuration database:
+      Instead of pasting the content of a SSL certificate file, you can omit
+      the <literal>rgw_frontend_ssl_certificate:</literal> directive and upload
+      the certificate file to the configuration database:
      </para>
 <screen>
 &prompt.cephuser;ceph config-key set rgw/cert/<replaceable>REALM_NAME</replaceable>/<replaceable>ZONE_NAME</replaceable>.crt \
@@ -902,6 +903,7 @@ placement:
     </para>
    </important>
   </sect2>
+
   <sect2 xml:id="deploy-cephadm-day2-service-ha">
    <title>Deploying the &ha; service for &ogw; and &ganesha;</title>
    <para>
@@ -933,21 +935,148 @@ placement:
      master daemon, and the virtual IP address will be assigned to that node.
     </para>
     <!--
-    <figure>
+     <figure>
      <title>&ha; setup for &ogw;</title>
      <mediaobject>
-      <imageobject role="fo">
-       <imagedata fileref="" width="75%"/>
-      </imageobject>
-      <imageobject role="html">
-       <imagedata fileref="" width="75%"/>
-      </imageobject>
-      <textobject role="description">
-       <phrase></phrase>
-      </textobject>
+     <imageobject role="fo">
+     <imagedata fileref="" width="75%"/>
+     </imageobject>
+     <imageobject role="html">
+     <imagedata fileref="" width="75%"/>
+     </imageobject>
+     <textobject role="description">
+     <phrase></phrase>
+     </textobject>
      </mediaobject>
-    </figure>
-    -->
+     </figure>
+     -->
+   </sect3>
+   <sect3 xml:id="ceph-nfsganesha-ha">
+    <title>Setting up &ha; &ganesha;</title>
+    <procedure>
+     <step>
+      <para>
+       On each &ingress; host, running, ensure that the following sysctl
+       variables are set:
+      </para>
+<screen>
+          net.ipv4.ip_nonlocal_bind=1
+          net.ipv4.ip_forward=1
+        </screen>
+      <tip>
+       <para>
+        &haproxy; and &keepalived; will always be running together on the same
+        node. They form the ingress.
+       </para>
+      </tip>
+      <tip>
+       <para>
+        You can persistently set the sysctl variables by creating a file named
+        <literal>90-ingress.conf</literal> in the directory
+        <literal>/etc/sysctl.d</literal> and apply to the running host with
+        <command>sysctl --system</command> or reboot the host.
+       </para>
+      </tip>
+     </step>
+     <step>
+      <para>
+       Create a &ha; &ganesha; cluster using the &mgr;. The following command
+       will create multiple &ganesha; daemons and the corresponding ingress.
+      </para>
+<screen>
+          &prompt.cephuser;ceph nfs cluster create \
+          <replaceable>CLUSTER_NAME</replaceable> \
+          <replaceable>NODES</replaceable> \
+          --ingress \
+          --virtual_ip <replaceable>VRITUAL_IP</replaceable> \
+          --port <replaceable>PORT</replaceable>
+        </screen>
+      <para>
+       In this case, <replaceable>NODES</replaceable> should be a list of nodes
+       for the &ganesha; daemons to run on.
+      </para>
+      <warning>
+          It is advisable to run at least three &ganesha; daemons, otherwise
+          mounted clients may experience excessively long hangs.
+        </warning>
+     </step>
+     <step>
+      <para>
+       Optionally, you can customize the placement of the ingress and nfs
+       daemons by using the <command>ceph orch</command> and service
+       specifications:
+      </para>
+<screen>
+          # ingress.yaml
+          ---
+          service_type: ingress
+          service_id: nfs.nfs-ha
+          service_name: ingress.nfs.nfs-ha
+          placement:
+            count: 2
+          spec:
+            backend_service: nfs.nfs-ha
+            frontend_port: 2049
+            monitor_port: 9049
+            virtual_ip: 10.20.27.111
+        </screen>
+<screen>
+          # nfs.yaml
+          ---
+          service_type: nfs
+          service_id: nfs-ha
+          service_name: nfs.nfs-ha
+          placement:
+            hosts:
+            - node1
+            - node2
+            - node3
+          spec:
+            port: 12049
+        </screen>
+      <para>
+       Apply the customized service specifications with your desired daemon
+       placement:
+      </para>
+<screen>
+          &prompt.cephuser;ceph orch apply -i nfs.yaml
+          &prompt.cephuser;ceph orch apply -i ingress.yaml
+        </screen>
+     </step>
+     <step>
+      <para>
+       Create a &ganesha; export. This can be done from the &dashboard; or
+       using the &mgr;.
+      </para>
+      <para>
+       When creating the export from the &dashboard;, navigate to the
+       <literal>NFS</literal> section and create a new &ganesha; export using
+       the <literal>Create</literal> button. Select the &ha; &ganesha; cluster
+       and an appropriate storage backend and pseudo path.
+      </para>
+      <para>
+       Alternatively create an export from the &mgr; command line:
+      </para>
+<screen>
+          &prompt.cephuser;ceph nfs export create \
+          <replaceable>STORAGE_BACKEND</replaceable> \
+          <replaceable>NFS_HA_CLUSTER</replaceable> \
+          <replaceable>NFS_PSEUDO_PATH</replaceable> \
+          <replaceable>STORAGE_BACKEND_INSTANCE</replaceable> \
+          <replaceable>EXPORT_PATH</replaceable>
+        </screen>
+     </step>
+     <step>
+      <para>
+       Mount the &ganesha; share on your clients:
+      </para>
+<screen>
+          &prompt.root;mount -t nfs \
+          <replaceable>VIRTUAL_IP</replaceable>:<replaceable>PORT</replaceable>/<replaceable>NFS_PSEUDO_PATH</replaceable> \
+          /mnt/nfs
+        </screen>
+     </step>
+    </procedure>
    </sect3>
   </sect2>
  </sect1>
